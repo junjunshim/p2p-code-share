@@ -1,0 +1,70 @@
+{
+  "name": "p2p-code-share",
+  "displayName": "P2P Code Share",
+  "description": "P2P 실시간 코드 동시 편집 확장 프로그램",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:p2p-code-share-sidebar",
+    "onCommand:p2p-code-share.setViewer",
+    "onCommand:p2p-code-share.setEditor"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "p2p-code-share-explorer",
+          "title": "P2P Code Share",
+          "icon": "$(broadcast)"
+        }
+      ]
+    },
+    "views": {
+      "p2p-code-share-explorer": [
+        {
+          "id": "p2p-code-share-sidebar",
+          "type": "webview",
+          "name": "Control Panel"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "p2p-code-share.setViewer",
+        "title": "P2P Share: Set Guest as Viewer"
+      },
+      {
+        "command": "p2p-code-share.setEditor",
+        "title": "P2P Share: Set Guest as Editor"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "16.x",
+    "@types/simple-peer": "^9.11.5",
+    "typescript": "^4.9.5",
+    "eslint": "^8.34.0",
+    "@typescript-eslint/parser": "^5.53.0",
+    "@typescript-eslint/eslint-plugin": "^5.53.0"
+  },
+  "dependencies": {
+    "yjs": "^13.5.51",
+    "simple-peer": "^9.11.1",
+    "y-protocols": "^1.0.5"
+  }
+}
