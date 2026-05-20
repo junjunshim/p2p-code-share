@@ -1,0 +1,7 @@
+2026-05-19 23:02:44.279 [warning] Creation of workbench contribution 'workbench.contrib.chatSetup' took 21ms.
+2026-05-19 23:02:45.837 [info] Started local extension host with pid 22492.
+2026-05-19 23:02:46.676 [info] Loading development extension at c:\project\test
+2026-05-19 23:02:48.968 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:02:53.988 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:02:54.256 [info] Settings Sync: Account status changed from uninitialized to unavailable
+2026-05-19 23:02:55.591 [info] [perf] Render performance baseline is 85ms

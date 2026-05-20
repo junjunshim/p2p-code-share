@@ -1,0 +1,23 @@
+2026-05-19 22:56:19.559 [info] [main] Log level: Info
+2026-05-19 22:56:19.560 [info] [main] Validating found git in: "C:\Program Files\Git\cmd\git.exe"
+2026-05-19 22:56:19.560 [info] [main] Using git "2.52.0.windows.1" from "C:\Program Files\Git\cmd\git.exe"
+2026-05-19 22:56:19.560 [info] [Model][doInitialScan] Initial repository scan started
+2026-05-19 22:56:20.768 [info] > git rev-parse --show-toplevel [1219ms]
+2026-05-19 22:56:20.769 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:21.207 [info] > git rev-parse --show-toplevel [190ms]
+2026-05-19 22:56:21.207 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:21.227 [info] [Model][doInitialScan] Initial repository scan completed - repositories (0), closed repositories (0), parent repositories (0), unsafe repositories (0)
+2026-05-19 22:56:21.501 [info] > git rev-parse --show-toplevel [235ms]
+2026-05-19 22:56:21.501 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:21.778 [info] > git rev-parse --show-toplevel [266ms]
+2026-05-19 22:56:21.778 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:22.416 [info] > git rev-parse --show-toplevel [222ms]
+2026-05-19 22:56:22.416 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:22.968 [info] > git rev-parse --show-toplevel [169ms]
+2026-05-19 22:56:22.969 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:23.531 [info] > git rev-parse --show-toplevel [167ms]
+2026-05-19 22:56:23.532 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:24.171 [info] > git rev-parse --show-toplevel [135ms]
+2026-05-19 22:56:24.171 [info] fatal: not a git repository (or any of the parent directories): .git
+2026-05-19 22:56:48.346 [info] > git rev-parse --show-toplevel [92ms]
+2026-05-19 22:56:48.347 [info] fatal: not a git repository (or any of the parent directories): .git

@@ -1,0 +1,11 @@
+2026-05-19 23:39:16.161 [info] StorageMainService: creating application shared storage
+2026-05-19 23:39:16.161 [error] Error: Error mutex already exists
+    at Is.installMutex (file:///C:/Users/shimd/AppData/Local/Programs/Microsoft%20VS%20Code/0958016b2a/resources/app/out/main.js:519:24998)
+2026-05-19 23:39:16.161 [info] [shared storage] Creating shared storage database at 'c:\Users\shimd\.vscode-shared\sharedStorage\state.vscdb' (wasCreated: false)
+2026-05-19 23:39:16.162 [info] [shared storage] Initializing fallback application storage (path: c:\project\test\.vscode\host-data\User\globalStorage\state.vscdb)
+2026-05-19 23:39:16.222 [info] [shared storage] Fallback application storage initialized with 98 items
+2026-05-19 23:39:16.242 [info] update#setState idle
+2026-05-19 23:39:19.300 [info] update#killContextMenuComSurrogate: powershell exited with code 0
+2026-05-19 23:39:49.406 [info] update#setState checking for updates
+2026-05-19 23:39:49.519 [info] update#setState idle
+2026-05-19 23:40:57.575 [info] Extension host with pid 4868 exited with code: 0, signal: unknown.

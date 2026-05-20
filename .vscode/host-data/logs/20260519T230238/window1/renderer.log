@@ -1,0 +1,6 @@
+2026-05-19 23:02:41.213 [info] Started local extension host with pid 24192.
+2026-05-19 23:02:42.117 [info] Loading development extension at c:\project\test
+2026-05-19 23:02:44.075 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:02:49.135 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:02:50.345 [info] Settings Sync: Account status changed from uninitialized to unavailable
+2026-05-19 23:02:53.290 [info] [perf] Render performance baseline is 104ms

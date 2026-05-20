@@ -1,0 +1,18 @@
+2026-05-19 23:30:52.582 [info] Extension host with pid 11876 started
+2026-05-19 23:30:52.582 [info] Skipping acquiring lock for c:\project\test\.vscode\guest-data\User\workspaceStorage\3378663943800331055ee724d15df6aa.
+2026-05-19 23:30:52.702 [info] ExtensionService#_doActivateExtension vscode.github-authentication, startup: false, activationEvent: 'onAuthenticationRequest:github'
+2026-05-19 23:30:52.788 [info] ExtensionService#_doActivateExtension redhat.vscode-rsp-ui, startup: false, activationEvent: 'onLanguage:plaintext'
+2026-05-19 23:30:53.994 [info] ExtensionService#_doActivateExtension vscode.emmet, startup: false, activationEvent: 'onLanguage'
+2026-05-19 23:30:54.067 [info] ExtensionService#_doActivateExtension undefined_publisher.p2p-code-share, startup: false, activationEvent: 'onView:p2p-code-share-sidebar'
+2026-05-19 23:30:54.332 [info] ExtensionService#_doActivateExtension vscode.git-base, startup: true, activationEvent: '*', root cause: vscode.git
+2026-05-19 23:30:54.751 [info] ExtensionService#_doActivateExtension vscode.git, startup: true, activationEvent: '*'
+2026-05-19 23:30:54.970 [info] ExtensionService#_doActivateExtension vscode.github, startup: true, activationEvent: '*'
+2026-05-19 23:30:54.976 [warning] undefined_publisher.p2p-code-share created a webview without a content security policy: https://aka.ms/vscode-webview-missing-csp
+2026-05-19 23:30:55.157 [warning] [vscode.git] Accessing a resource scoped configuration without providing a resource is not expected. To get the effective value for 'git.openRepositoryInParentFolders', provide the URI of a resource or 'null' for any resource.
+2026-05-19 23:30:55.158 [warning] [vscode.git] Accessing a resource scoped configuration without providing a resource is not expected. To get the effective value for 'git.showProgress', provide the URI of a resource or 'null' for any resource.
+2026-05-19 23:30:55.258 [info] Eager extensions activated
+2026-05-19 23:30:55.313 [info] ExtensionService#_doActivateExtension vscode.debug-auto-launch, startup: false, activationEvent: 'onStartupFinished'
+2026-05-19 23:30:55.325 [info] ExtensionService#_doActivateExtension vscode.merge-conflict, startup: false, activationEvent: 'onStartupFinished'
+2026-05-19 23:30:55.381 [info] ExtensionService#_doActivateExtension ms-vscode-remote.remote-containers, startup: false, activationEvent: 'onStartupFinished'
+2026-05-19 23:30:55.719 [info] ExtensionService#_doActivateExtension ms-vscode-remote.remote-wsl, startup: false, activationEvent: 'onStartupFinished'
+2026-05-19 23:30:57.174 [info] ExtensionService#_doActivateExtension vscode.terminal-suggest, startup: false, activationEvent: 'onTerminalShellIntegration:*'

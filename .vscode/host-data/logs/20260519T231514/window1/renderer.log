@@ -1,0 +1,7 @@
+2026-05-19 23:15:16.619 [info] Started local extension host with pid 13804.
+2026-05-19 23:15:16.670 [info] Loading development extension at c:\project\test
+2026-05-19 23:15:17.824 [warning] No search provider registered for scheme: file, waiting
+2026-05-19 23:15:19.585 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:15:24.585 [info] Settings Sync: Account status changed from uninitialized to unavailable
+2026-05-19 23:15:24.587 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
+2026-05-19 23:15:27.096 [info] [perf] Render performance baseline is 93ms
