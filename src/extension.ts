@@ -6,16 +6,10 @@ let syncManager: SyncManager | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     const sidebarProvider = new P2PCodeShareSidebarProvider(context.extensionUri);
-    
-    // 1. 사이드바 등록
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebarProvider)
-    );
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebarProvider));
 
-    // 2. 본체 로직 생성 및 사이드바와 연결
     syncManager = new SyncManager(sidebarProvider, context);
 
-    // 3. 명령어 등록
     context.subscriptions.push(vscode.commands.registerCommand('p2p-code-share.shareActiveFile', () => {
         syncManager?.shareActiveFile();
     }));
@@ -25,9 +19,19 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('p2p-code-share.openSnapshot', (filePath: string) => {
-        vscode.workspace.openTextDocument(filePath).then(doc => {
-            vscode.window.showTextDocument(doc);
+        vscode.workspace.openTextDocument(filePath).then(doc => vscode.window.showTextDocument(doc));
+    }));
+
+    // [수정] VS Code 내장 입력창을 사용한 이름 변경
+    context.subscriptions.push(vscode.commands.registerCommand('p2p-code-share.renameUser', async () => {
+        const newName = await vscode.window.showInputBox({
+            placeHolder: "Enter your new nickname",
+            prompt: "Change your display name for this session"
         });
+        
+        if (newName) {
+            syncManager?.changeMyName(newName);
+        }
     }));
 }
 
