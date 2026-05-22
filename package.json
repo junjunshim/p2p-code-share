@@ -10,6 +10,7 @@
     "Other"
   ],
   "activationEvents": [
+    "*",
     "onView:p2p-code-share-sidebar",
     "onCommand:p2p-code-share.setViewer",
     "onCommand:p2p-code-share.setEditor"
@@ -35,6 +36,18 @@
       ]
     },
     "commands": [
+      {
+        "command": "p2p-code-share.openControlPanel",
+        "title": "P2P Share: Open Control Panel"
+      },
+      {
+        "command": "p2p-code-share.shareActiveFile",
+        "title": "P2P Share: Share Current Active File"
+      },
+      {
+        "command": "p2p-code-share.stopSharing",
+        "title": "P2P Share: Stop Sharing"
+      },
       {
         "command": "p2p-code-share.setViewer",
         "title": "P2P Share: Set Guest as Viewer"

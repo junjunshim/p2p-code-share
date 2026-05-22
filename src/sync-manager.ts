@@ -4,141 +4,136 @@ import * as fs from 'fs';
 
 export class SyncManager {
     private isApplyingRemoteChange: boolean = false;
-    private syncFilePath: string | undefined;
+    private sourceFilePath: string | undefined;
+    private snapshotFilePath: string | undefined;
     private isHost: boolean = false;
-    private permissions: number = 0x000002;
-    private remoteCursorDecoration: vscode.TextEditorDecorationType;
+    private storagePath: string;
+    private sharedFiles: { name: string, path: string }[] = [];
 
-    constructor(private sidebarProvider: P2PCodeShareSidebarProvider) {
-        // 커서 스타일 정의 (심플한 색상 선)
-        this.remoteCursorDecoration = vscode.window.createTextEditorDecorationType({
-            borderWidth: '0 0 0 2px',
-            borderStyle: 'solid',
-            light: { borderColor: 'rgba(255, 69, 0, 1)' }, // 주황색 (밝은 테마)
-            dark: { borderColor: 'rgba(0, 255, 255, 1)' }   // 하늘색 (어두운 테마)
-        });
+    constructor(private provider: any, private context: vscode.ExtensionContext) {
+        const workspaceName = vscode.workspace.name || 'default';
+        this.storagePath = path.join(context.globalStorageUri.fsPath, workspaceName);
+        this.ensureDirectory(this.storagePath);
 
-        // 1. 파일 생성 감지 (파일을 먼저 만드는 쪽이 Host가 됨)
-        vscode.workspace.onDidCreateFiles(e => {
-            if (e.files.length > 0) {
-                this.isHost = true;
-                const file = e.files[0];
-                this.syncFilePath = file.fsPath;
-                const fileName = path.basename(file.fsPath);
-                this.sendControlMessage('INIT_HOST', { fileName, content: '' });
-                vscode.window.showInformationMessage('You are the HOST. Sharing started.');
-            }
-        });
-
-        // 2. 에디터 변경 감지
-        vscode.workspace.onDidChangeTextDocument(e => {
-            if (this.isApplyingRemoteChange || !this.syncFilePath || e.document.uri.fsPath !== this.syncFilePath) return;
-
-            if (this.isHost) {
-                this.broadcastFullContent();
-            } else {
-                this.sendControlMessage('GUEST_EDIT', { content: e.document.getText() });
-            }
-        });
-
-        // 커서 이동 감지
-        vscode.window.onDidChangeTextEditorSelection(e => {
-            if (!this.syncFilePath || e.textEditor.document.uri.fsPath !== this.syncFilePath) return;
-            const index = e.textEditor.document.offsetAt(e.selections[0].active);
-            this.sendControlMessage('CURSOR_MOVE', { index });
-        });
-
-        // 3. 데이터 수신 처리
-        this.sidebarProvider.onDidReceiveData = async (data: any) => {
-            const arr = Array.isArray(data) ? data : Object.values(data);
-            if (arr.length === 0) return;
-            
-            const payload = new Uint8Array(arr);
-            const msg = JSON.parse(new TextDecoder().decode(payload));
-
-            switch (msg.type) {
-                case 'INIT_HOST':
-                    await this.handleInitHost(msg);
-                    break;
-                case 'SYNC_FULL':
-                    await this.updateEditorFull(msg.content);
-                    break;
-                case 'GUEST_EDIT':
-                    if (this.isHost) {
-                        await this.updateEditorFull(msg.content);
-                        this.broadcastFullContent();
-                    }
-                    break;
-                case 'CURSOR_MOVE':
-                    this.renderRemoteCursor(msg.index);
-                    break;
-            }
+        this.provider.onDidReceiveData = async (text: string) => {
+            try {
+                const msg = JSON.parse(text);
+                if (msg.type === 'SET_ROLE') {
+                    this.isHost = msg.isHost;
+                    vscode.window.showInformationMessage(`Role set as: ${this.isHost ? 'HOST' : 'GUEST'}`);
+                    return;
+                }
+                if (msg.type === 'INIT_SNAPSHOT') await this.handleInitSnapshot(msg);
+                else if (msg.type === 'SYNC_FULL') await this.updateSnapshotState(msg.content);
+                else if (msg.type === 'STOP_SHARING') await this.handleStopSharing();
+                else if (msg.type === 'GUEST_EDIT' && this.isHost) {
+                    await this.updateSnapshotState(msg.content);
+                    this.broadcastFullContent();
+                }
+            } catch (e) {}
         };
+
+        vscode.workspace.onDidChangeTextDocument(e => {
+            if (this.isApplyingRemoteChange || !this.snapshotFilePath || e.document.uri.fsPath !== this.snapshotFilePath) return;
+            if (this.isHost) this.broadcastFullContent();
+            else this.sendControlMessage('GUEST_EDIT', { content: e.document.getText() });
+        });
+
+        // Host에서 저장 시 원본 파일에 반영
+        vscode.workspace.onDidSaveTextDocument(async doc => {
+            if (this.isHost && this.snapshotFilePath && doc.uri.fsPath === this.snapshotFilePath && this.sourceFilePath) {
+                fs.writeFileSync(this.sourceFilePath, doc.getText());
+                vscode.window.showInformationMessage(`P2P: Merged changes to original file.`);
+            }
+        });
+    }
+
+    private ensureDirectory(dir: string) {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    }
+
+    public async shareActiveFile() {
+        if (!this.isHost) return;
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+        this.sourceFilePath = editor.document.uri.fsPath;
+        const fileName = path.basename(this.sourceFilePath);
+        this.snapshotFilePath = path.join(this.storagePath, fileName + '.shared');
+        fs.writeFileSync(this.snapshotFilePath, editor.document.getText());
+        this.addSharedFile(fileName, this.snapshotFilePath);
+        const doc = await vscode.workspace.openTextDocument(this.snapshotFilePath);
+        await vscode.window.showTextDocument(doc);
+        this.sendControlMessage('INIT_SNAPSHOT', { fileName, content: editor.document.getText() });
+    }
+
+    private async handleInitSnapshot(msg: any) {
+        this.isHost = false;
+        this.ensureDirectory(this.storagePath);
+        this.snapshotFilePath = path.join(this.storagePath, msg.fileName + '.shared');
+        fs.writeFileSync(this.snapshotFilePath, msg.content);
+        this.addSharedFile(msg.fileName, this.snapshotFilePath);
+        const doc = await vscode.workspace.openTextDocument(this.snapshotFilePath);
+        await vscode.window.showTextDocument(doc);
     }
 
     private broadcastFullContent() {
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.syncFilePath);
-        if (doc) {
-            this.sendControlMessage('SYNC_FULL', { content: doc.getText() });
-        }
+        if (!this.snapshotFilePath) return;
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.snapshotFilePath);
+        const content = doc ? doc.getText() : fs.readFileSync(this.snapshotFilePath, 'utf8');
+        this.sendControlMessage('SYNC_FULL', { content });
     }
 
     private sendControlMessage(type: string, data: any) {
-        const payload = new TextEncoder().encode(JSON.stringify({ type, ...data }));
-        this.sidebarProvider.sendToWebview({ type: 'peerData', value: Array.from(payload) });
+        this.provider.sendToWebview({ type: 'peerData', value: { type, ...data } });
     }
 
-    private async handleInitHost(msg: any) {
-        this.isHost = false; 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
+    // [버그 해결 핵심] 데이터 동기화 로직 최적화
+    private async updateSnapshotState(content: string) {
+        if (!this.snapshotFilePath) return;
 
-        const baseFolder = workspaceFolders[0].uri.fsPath;
-        const sharedFileName = msg.fileName.includes('.') 
-            ? msg.fileName.replace(/(\.[^.]+)$/, '_shared$1') : msg.fileName + '_shared';
-        const sharedFilePath = path.join(baseFolder, sharedFileName);
-        
-        if (!fs.existsSync(sharedFilePath)) fs.writeFileSync(sharedFilePath, msg.content);
-        this.syncFilePath = sharedFilePath;
+        // 1. 해당 문서가 VS Code 메모리에 열려 있는지 확인
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.snapshotFilePath);
 
-        const doc = await vscode.workspace.openTextDocument(sharedFilePath);
-        await vscode.window.showTextDocument(doc);
-        vscode.window.showInformationMessage('You are the GUEST. Connected to Host.');
+        if (doc) {
+            // 에디터가 열려 있다면 -> 메모리 버퍼만 수정 (저장 충돌 방지)
+            if (doc.getText() !== content) {
+                this.isApplyingRemoteChange = true;
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), content);
+                await vscode.workspace.applyEdit(edit);
+                this.isApplyingRemoteChange = false;
+            }
+        } else {
+            // 에디터가 닫혀 있다면 -> 디스크 파일에 직접 기록
+            fs.writeFileSync(this.snapshotFilePath, content);
+        }
     }
 
-    private async updateEditorFull(content: string) {
-        if (!this.syncFilePath) return;
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.syncFilePath);
-        if (!doc) return;
-
-        const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
-        if (!editor || doc.getText() === content) return;
-
-        this.isApplyingRemoteChange = true;
-        const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-        
-        await editor.edit(editBuilder => {
-            editBuilder.replace(fullRange, content);
-        }, { undoStopBefore: false, undoStopAfter: false });
-        
-        this.isApplyingRemoteChange = false;
+    private async handleStopSharing() {
+        if (this.snapshotFilePath && fs.existsSync(this.snapshotFilePath)) {
+            const tabs = vscode.window.tabGroups.all.flatMap(g => g.tabs);
+            const targetTab = tabs.find(t => (t.input as any).uri?.fsPath === this.snapshotFilePath);
+            if (targetTab) vscode.window.tabGroups.close(targetTab);
+            fs.unlinkSync(this.snapshotFilePath);
+        }
+        this.sharedFiles = [];
+        this.snapshotFilePath = undefined;
+        this.provider.sendToWebview({ type: 'updateFileList', files: [] });
     }
 
-    private renderRemoteCursor(index: number) {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || !this.syncFilePath || editor.document.uri.fsPath !== this.syncFilePath) return;
-
-        const pos = editor.document.positionAt(index);
-        const range = new vscode.Range(pos, pos);
-        editor.setDecorations(this.remoteCursorDecoration, [{ range }]);
+    public async stopSharing() {
+        if (!this.isHost || !this.snapshotFilePath || !this.sourceFilePath) return;
+        fs.writeFileSync(this.sourceFilePath, fs.readFileSync(this.snapshotFilePath, 'utf8'));
+        this.sendControlMessage('STOP_SHARING', {});
+        await this.handleStopSharing();
     }
 
-    public setPermissions(mask: number) {
-        this.permissions = mask;
+    private addSharedFile(name: string, filePath: string) {
+        if (!this.sharedFiles.find(f => f.path === filePath)) {
+            this.sharedFiles.push({ name, path: filePath });
+        }
+        this.provider.sendToWebview({ type: 'updateFileList', files: this.sharedFiles });
     }
-}
 
-interface P2PCodeShareSidebarProvider {
-    onDidReceiveData?: (data: any) => void;
-    sendToWebview(message: any): void;
+    public setPermissions(mask: number) {}
 }
