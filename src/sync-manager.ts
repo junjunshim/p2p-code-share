@@ -4,74 +4,75 @@ import * as fs from 'fs';
 
 export class SyncManager {
     private isApplyingRemoteChange: boolean = false;
-    private sourceFilePath: string | undefined;
-    private snapshotFilePath: string | undefined;
+    private sourceFilePath: string | undefined;   // Host만 사용
+    private snapshotFilePath: string | undefined; // Host만 사용
+    private guestDoc: vscode.TextDocument | undefined;
     private isHost: boolean = false;
     private storagePath: string;
     private sharedFiles: { name: string, path: string }[] = [];
     private myName: string = '';
     private participants: { [key: string]: string } = {}; 
-    
-    private lastLocalEditTime: number = 0;
-    private cachedRemoteContent: string | undefined;
+    private lastRemoteContent: string = '';
+    private pollingTimer: NodeJS.Timeout | undefined;
+    private roomName: string = '';
 
     constructor(private provider: any, private context: vscode.ExtensionContext) {
         const workspaceName = vscode.workspace.name || 'default';
         this.storagePath = path.join(context.globalStorageUri.fsPath, workspaceName);
-        this.ensureDirectory(this.storagePath);
 
         this.provider.onDidReceiveData = async (text: string) => {
             try {
                 const msg = JSON.parse(text);
-                
                 if (msg.type === 'SET_ROLE') {
                     this.isHost = msg.isHost;
+                    this.roomName = msg.roomName || 'Untitled Room';
                     this.myName = this.isHost ? 'Host' : 'Guest1';
                     this.participants = {};
-                    if (this.isHost) { this.participants['host'] = this.myName; this.broadcastUserList(); }
+                    if (this.isHost) {
+                        this.ensureDirectory(this.storagePath);
+                        this.participants['host'] = this.myName;
+                        this.broadcastUserList();
+                    } else {
+                        this.startPolling();
+                    }
+                    this.updateSidebarUI();
                     return;
                 }
-
                 if (msg.type === 'ON_CONNECTED') {
                     if (!this.isHost) this.sendControlMessage('GUEST_JOIN', { name: this.myName });
                     return;
                 }
 
                 switch (msg.type) {
-                    case 'INIT_SNAPSHOT': await this.handleInitSnapshot(msg); break;
+                    case 'INIT_SNAPSHOT': await this.handleGuestInit(msg); break;
                     case 'SYNC_FULL': 
-                        if (Date.now() - this.lastLocalEditTime > 500) {
-                            await this.updateSnapshotState(msg.content);
-                        } else {
-                            this.cachedRemoteContent = msg.content;
-                        }
+                        await this.forceUpdateEditor(msg.content);
                         break;
                     case 'STOP_SHARING': await this.handleStopSharing(); break;
+                    case 'REQUEST_FULL_SYNC': if (this.isHost) this.broadcastFullContent(); break;
                     case 'GUEST_JOIN':
-                        if (this.isHost) { this.participants['guest'] = msg.name; this.broadcastUserList(); }
+                        if (this.isHost) {
+                            this.participants['guest'] = msg.name;
+                            this.broadcastUserList();
+                            this.broadcastFullContent();
+                        }
                         break;
                     case 'GUEST_RENAME':
-                        if (this.isHost) { this.participants['guest'] = msg.newName; this.broadcastUserList(); }
+                        if (this.isHost) {
+                            this.participants['guest'] = msg.newName;
+                            this.broadcastUserList();
+                        }
                         break;
                     case 'USER_LIST_UPDATE':
                         this.participants = msg.users;
+                        this.roomName = msg.roomName || this.roomName;
                         const myKey = this.isHost ? 'host' : 'guest';
                         if (this.participants[myKey]) this.myName = this.participants[myKey];
                         this.updateSidebarUI();
                         break;
-
-                    // [핵심 추가] 게스트가 보낸 부분 변경 사항(Delta) 처리
-                    case 'GUEST_DELTA':
+                    case 'GUEST_EDIT':
                         if (this.isHost) {
-                            await this.applyDeltasToHost(msg.deltas);
-                            // 델타 적용 후 호스트가 최종본을 다시 모든 게스트에게 전파
-                            this.broadcastFullContent();
-                        }
-                        break;
-
-                    case 'GUEST_EDIT': // 하위 호환성 유지
-                        if (this.isHost) {
-                            await this.updateSnapshotState(msg.content);
+                            await this.forceUpdateEditor(msg.content);
                             this.broadcastFullContent();
                         }
                         break;
@@ -80,70 +81,36 @@ export class SyncManager {
         };
 
         vscode.workspace.onDidChangeTextDocument(e => {
-            if (this.isApplyingRemoteChange || !this.snapshotFilePath || e.document.uri.fsPath !== this.snapshotFilePath) return;
-            
-            this.lastLocalEditTime = Date.now();
+            if (this.isApplyingRemoteChange) return;
+            const isTargetDoc = this.isHost 
+                ? (this.snapshotFilePath && e.document.uri.fsPath === this.snapshotFilePath)
+                : (this.guestDoc && e.document === this.guestDoc);
+
+            if (!isTargetDoc) return;
+
+            const currentText = e.document.getText();
+            if (currentText === this.lastRemoteContent) return;
 
             if (this.isHost) {
-                this.broadcastFullContent();
+                this.sendControlMessage('SYNC_FULL', { content: currentText });
             } else {
-                // [수정] 게스트는 이제 전체 텍스트 대신 "바뀐 부분(Delta)"만 보냄
-                const deltas = e.contentChanges.map(c => ({
-                    range: [c.range.start.line, c.range.start.character, c.range.end.line, c.range.end.character],
-                    text: c.text
-                }));
-                this.sendControlMessage('GUEST_DELTA', { deltas });
-
-                // 최종 교정용 타이머 유지
-                setTimeout(() => {
-                    if (this.cachedRemoteContent && Date.now() - this.lastLocalEditTime >= 600) {
-                        this.updateSnapshotState(this.cachedRemoteContent);
-                        this.cachedRemoteContent = undefined;
-                    }
-                }, 600);
+                this.sendControlMessage('GUEST_EDIT', { content: currentText });
             }
         });
     }
 
-    private async applyDeltasToHost(deltas: any[]) {
-        if (!this.snapshotFilePath) return;
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.snapshotFilePath);
-        if (!doc) return;
+    private async forceUpdateEditor(content: string) {
+        const doc = this.isHost ? vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.snapshotFilePath) : this.guestDoc;
+        if (!doc || doc.getText() === content) return;
 
+        this.lastRemoteContent = content;
         this.isApplyingRemoteChange = true;
         const edit = new vscode.WorkspaceEdit();
-        
-        deltas.forEach(d => {
-            const range = new vscode.Range(d.range[0], d.range[1], d.range[2], d.range[3]);
-            edit.replace(doc.uri, range, d.text);
-        });
-
-        await vscode.workspace.applyEdit(edit);
-        this.isApplyingRemoteChange = false;
-    }
-
-    private ensureDirectory(dir: string) {
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    }
-
-    private broadcastUserList() {
-        if (this.isHost) {
-            this.sendControlMessage('USER_LIST_UPDATE', { users: this.participants });
-            this.updateSidebarUI();
-        }
-    }
-
-    private updateSidebarUI() {
-        this.provider.sendToWebview({ type: 'renderParticipants', myName: this.myName, others: this.participants });
-    }
-
-    public changeMyName(newName: string) {
-        if (this.isHost) {
-            this.myName = newName;
-            this.participants['host'] = newName;
-            this.broadcastUserList();
-        } else {
-            this.sendControlMessage('GUEST_RENAME', { newName });
+        edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), content);
+        try {
+            await vscode.workspace.applyEdit(edit);
+        } finally {
+            setTimeout(() => { this.isApplyingRemoteChange = false; }, 50);
         }
     }
 
@@ -152,20 +119,47 @@ export class SyncManager {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
         this.sourceFilePath = editor.document.uri.fsPath;
-        this.snapshotFilePath = path.join(this.storagePath, path.basename(this.sourceFilePath) + '.shared');
+        const fileName = path.basename(this.sourceFilePath);
+        this.snapshotFilePath = path.join(this.storagePath, fileName + '.shared');
         fs.writeFileSync(this.snapshotFilePath, editor.document.getText());
-        await vscode.workspace.openTextDocument(this.snapshotFilePath).then(doc => vscode.window.showTextDocument(doc));
-        this.sendControlMessage('INIT_SNAPSHOT', { fileName: path.basename(this.sourceFilePath), content: editor.document.getText() });
-        this.addSharedFile(path.basename(this.sourceFilePath), this.snapshotFilePath);
+        const doc = await vscode.workspace.openTextDocument(this.snapshotFilePath);
+        await vscode.window.showTextDocument(doc);
+        this.sendControlMessage('INIT_SNAPSHOT', { fileName, content: editor.document.getText() });
+        this.addSharedFile(fileName, this.snapshotFilePath);
     }
 
-    private async handleInitSnapshot(msg: any) {
+    private async handleGuestInit(msg: any) {
         this.isHost = false;
-        this.ensureDirectory(this.storagePath);
-        this.snapshotFilePath = path.join(this.storagePath, msg.fileName + '.shared');
-        fs.writeFileSync(this.snapshotFilePath, msg.content);
-        this.addSharedFile(msg.fileName, this.snapshotFilePath);
-        await vscode.workspace.openTextDocument(this.snapshotFilePath).then(doc => vscode.window.showTextDocument(doc));
+        const uri = vscode.Uri.parse(`p2p-shared:/${msg.fileName}`);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        this.guestDoc = doc;
+        this.isApplyingRemoteChange = true;
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), msg.content);
+        await vscode.workspace.applyEdit(edit);
+        this.isApplyingRemoteChange = false;
+        await vscode.window.showTextDocument(doc);
+    }
+
+    // [복구] 사용자 이름 변경 로직
+    public changeMyName(newName: string) {
+        if (this.isHost) {
+            this.myName = newName;
+            this.participants['host'] = newName;
+            this.broadcastUserList();
+        } else {
+            // 게스트는 호스트에게 변경 요청
+            this.sendControlMessage('GUEST_RENAME', { newName });
+        }
+    }
+
+    private startPolling() {
+        if (this.pollingTimer) clearInterval(this.pollingTimer);
+        this.pollingTimer = setInterval(() => {
+            if (!this.isHost && this.guestDoc) {
+                this.sendControlMessage('REQUEST_FULL_SYNC', {});
+            }
+        }, 5000);
     }
 
     private broadcastFullContent() {
@@ -179,32 +173,32 @@ export class SyncManager {
         this.provider.sendToWebview({ type: 'peerData', value: { type, ...data } });
     }
 
-    private async updateSnapshotState(content: string) {
-        if (!this.snapshotFilePath) return;
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.snapshotFilePath);
-        if (doc) {
-            if (doc.getText() !== content) {
-                this.isApplyingRemoteChange = true;
-                const edit = new vscode.WorkspaceEdit();
-                edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), content);
-                await vscode.workspace.applyEdit(edit);
-                this.isApplyingRemoteChange = false;
-            }
-        } else {
-            fs.writeFileSync(this.snapshotFilePath, content);
+    private ensureDirectory(dir: string) {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    }
+
+    private broadcastUserList() {
+        if (this.isHost) {
+            this.sendControlMessage('USER_LIST_UPDATE', { 
+                users: this.participants, 
+                roomName: this.roomName 
+            });
+            this.updateSidebarUI();
         }
     }
 
-    private async handleStopSharing() {
-        if (this.snapshotFilePath && fs.existsSync(this.snapshotFilePath)) {
-            const tabs = vscode.window.tabGroups.all.flatMap(g => g.tabs);
-            const targetTab = tabs.find(t => (t.input as any).uri?.fsPath === this.snapshotFilePath);
-            if (targetTab) vscode.window.tabGroups.close(targetTab);
-            fs.unlinkSync(this.snapshotFilePath);
-        }
-        this.sharedFiles = [];
-        this.snapshotFilePath = undefined;
-        this.provider.sendToWebview({ type: 'updateFileList', files: [] });
+    private updateSidebarUI() {
+        this.provider.sendToWebview({ 
+            type: 'renderParticipants', 
+            myName: this.myName, 
+            others: this.participants,
+            roomName: this.roomName 
+        });
+    }
+
+    private addSharedFile(name: string, filePath: string) {
+        if (!this.sharedFiles.find(f => f.path === filePath)) this.sharedFiles.push({ name, path: filePath });
+        this.provider.sendToWebview({ type: 'updateFileList', files: this.sharedFiles });
     }
 
     public async stopSharing() {
@@ -214,10 +208,16 @@ export class SyncManager {
         await this.handleStopSharing();
     }
 
-    private addSharedFile(name: string, filePath: string) {
-        if (!this.sharedFiles.find(f => f.path === filePath)) this.sharedFiles.push({ name, path: filePath });
-        this.provider.sendToWebview({ type: 'updateFileList', files: this.sharedFiles });
+    private async handleStopSharing() {
+        if (this.pollingTimer) clearInterval(this.pollingTimer);
+        if (this.isHost && this.snapshotFilePath && fs.existsSync(this.snapshotFilePath)) fs.unlinkSync(this.snapshotFilePath);
+        const tabs = vscode.window.tabGroups.all.flatMap(g => g.tabs);
+        const targetTab = tabs.find(t => {
+            const input = t.input as any;
+            return (this.isHost && input.uri?.fsPath === this.snapshotFilePath) || (!this.isHost && input.uri?.scheme === 'p2p-shared');
+        });
+        if (targetTab) vscode.window.tabGroups.close(targetTab);
+        this.sharedFiles = []; this.snapshotFilePath = undefined; this.guestDoc = undefined;
+        this.provider.sendToWebview({ type: 'updateFileList', files: [] });
     }
-
-    public setPermissions(mask: number) {}
 }
