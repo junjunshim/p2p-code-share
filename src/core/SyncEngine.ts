@@ -11,7 +11,7 @@ export class SyncEngine {
     private storagePath = '';
     private sharedFiles: SharedFile[] = [];
     private myName = '';
-    private myId = ''; // [추가] 내 고유 아이디 (host 또는 guest)
+    private myId = ''; 
     private initialName = '';
     private participants: { [key: string]: string } = {};
     private lastRemoteContentMap = new Map<string, string>();
@@ -21,7 +21,9 @@ export class SyncEngine {
     public isSetupMode = false; 
     public isConnected = false; 
 
+    // [커서 및 선택영역 공유용] 상대방 상태 관리
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
+    private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
 
     constructor(private hub: HubManager, private context: vscode.ExtensionContext, private updateUI: (state: any) => void) {
         this.setupHandlers();
@@ -71,7 +73,7 @@ export class SyncEngine {
             const selection = e.selections[0];
             this.sendMessage('CURSOR_UPDATE', {
                 fileName: file.name,
-                userId: this.myId, // [수정] 고유 아이디 전송
+                userId: this.myId,
                 userName: this.myName,
                 cursorPos: [selection.active.line, selection.active.character],
                 selectionRange: [selection.start.line, selection.start.character, selection.end.line, selection.end.character]
@@ -82,17 +84,19 @@ export class SyncEngine {
     private updateRemoteCursor(msg: any) {
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
         if (!file) return;
-
         const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
         if (!editor) return;
 
-        // [수정] userId를 키로 사용하여 이전 커서를 정확히 찾아 지움
-        let decoration = this.remoteCursorDecorations.get(msg.userId);
-        if (decoration) decoration.dispose();
+        // 1. 기존 데코레이션 삭제
+        const prevCursor = this.remoteCursorDecorations.get(msg.userId);
+        if (prevCursor) prevCursor.dispose();
+        const prevSelection = this.remoteSelectionDecorations.get(msg.userId);
+        if (prevSelection) prevSelection.dispose();
 
         const color = msg.userId === 'host' ? '#f44336' : '#4ec9b0'; 
 
-        decoration = vscode.window.createTextEditorDecorationType({
+        // 2. 커서 + 이름표 (텍스트를 밀지 않는 Absolute 방식)
+        const cursorDeco = vscode.window.createTextEditorDecorationType({
             borderWidth: '0 0 0 2px',
             borderStyle: 'solid',
             borderColor: color,
@@ -106,19 +110,25 @@ export class SyncEngine {
             }
         });
 
-        this.remoteCursorDecorations.set(msg.userId, decoration);
+        // 3. 드래그 선택 영역 (30% 투명도 배경색)
+        const selectionDeco = vscode.window.createTextEditorDecorationType({
+            backgroundColor: color + '4D'
+        });
 
-        const range = new vscode.Range(
-            new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]),
-            new vscode.Position(msg.cursorPos[0], msg.cursorPos[1])
-        );
+        this.remoteCursorDecorations.set(msg.userId, cursorDeco);
+        this.remoteSelectionDecorations.set(msg.userId, selectionDeco);
 
-        editor.setDecorations(decoration, [range]);
+        // 4. 적용
+        const cursorRange = [new vscode.Range(new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]), new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]))];
+        const selectionRange = [new vscode.Range(new vscode.Position(msg.selectionRange[0], msg.selectionRange[1]), new vscode.Position(msg.selectionRange[2], msg.selectionRange[3]))];
+
+        editor.setDecorations(cursorDeco, cursorRange);
+        editor.setDecorations(selectionDeco, selectionRange);
     }
 
     public handleSetRole(msg: any) {
         this.isHost = msg.isHost;
-        this.myId = this.isHost ? 'host' : 'guest'; // [아이디 부여]
+        this.myId = this.isHost ? 'host' : 'guest';
         this.roomName = msg.roomName || 'Untitled Room';
         this.myName = this.isHost ? 'Host' : 'Guest1';
         this.initialName = this.myName;
@@ -268,6 +278,8 @@ export class SyncEngine {
         this.sharedFiles.forEach(f => this.handleRemoteStop(f.name));
         this.remoteCursorDecorations.forEach(d => d.dispose());
         this.remoteCursorDecorations.clear();
+        this.remoteSelectionDecorations.forEach(d => d.dispose());
+        this.remoteSelectionDecorations.clear();
     }
 
     public reset() {
