@@ -37,26 +37,30 @@
     },
     "commands": [
       {
-        "command": "p2p-code-share.openControlPanel",
-        "title": "P2P Share: Open Control Panel"
-      },
-      {
         "command": "p2p-code-share.shareActiveFile",
-        "title": "P2P Share: Share Current Active File"
+        "title": "P2P: Share File to Room"
       },
       {
         "command": "p2p-code-share.stopSharing",
-        "title": "P2P Share: Stop Sharing"
-      },
-      {
-        "command": "p2p-code-share.setViewer",
-        "title": "P2P Share: Set Guest as Viewer"
-      },
-      {
-        "command": "p2p-code-share.setEditor",
-        "title": "P2P Share: Set Guest as Editor"
+        "title": "P2P: Stop Sharing"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "p2p-code-share.shareActiveFile",
+          "when": "p2pCodeShare.isConnected",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "p2p-code-share.shareActiveFile",
+          "when": "p2pCodeShare.isConnected",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

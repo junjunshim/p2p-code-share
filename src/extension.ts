@@ -7,7 +7,9 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
     const engine = new SyncEngine(hub, context, (state) => {
-        // [수정] 엔진에서 관리하는 isConnected 상태를 최우선으로 사용
+        // [수정] 우클릭 메뉴를 위해 연결 상태 공유
+        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
+        
         sidebar.postMessage({
             type: 'renderState',
             isConnected: state.isConnected,
@@ -24,15 +26,18 @@ export function activate(context: vscode.ExtensionContext) {
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
-    sidebar.onReady = () => {
-        engine.pushUIUpdate(); // 사이드바가 로드되면 현재 엔진 상태를 즉시 전송
+    sidebar.onReady = () => { engine.pushUIUpdate(); };
+
+    sidebar.onStopFileSharing = (fileName) => {
+        engine.stopSharingByName(fileName);
     };
 
     sidebar.onSignal = (sdp) => hub.applySignal(sdp);
     sidebar.onCancel = () => {
         hub.dispose();
-        hub.lastSdp = ''; // [추가] 기록된 SDP 삭제
+        hub.lastSdp = '';
         engine.reset();
+        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
     };
     sidebar.onRename = async () => {
         const n = await vscode.window.showInputBox({ placeHolder: "Enter new name" });
@@ -49,13 +54,17 @@ export function activate(context: vscode.ExtensionContext) {
         if (status === 'Connected') {
             hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }));
         } else if (status === 'Disconnected') {
-            engine.reset(); // [수정] 연결 끊김/패널 닫힘 시 전체 상태 리셋
+            engine.reset();
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
         }
     };
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebar),
-        vscode.commands.registerCommand('p2p-code-share.shareActiveFile', () => engine.shareActiveFile()),
+        // [수정] 우클릭 시 전달되는 URI 인자를 처리
+        vscode.commands.registerCommand('p2p-code-share.shareActiveFile', (uri?: vscode.Uri) => {
+            engine.shareActiveFile(uri);
+        }),
         vscode.commands.registerCommand('p2p-code-share.stopSharing', () => engine.stopSharing()),
         vscode.commands.registerCommand('p2p-code-share.openSnapshot', (p) => vscode.workspace.openTextDocument(p).then(d => vscode.window.showTextDocument(d)))
     );

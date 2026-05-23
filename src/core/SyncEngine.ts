@@ -21,7 +21,6 @@ export class SyncEngine {
     public isSetupMode = false; 
     public isConnected = false; 
 
-    // [커서 및 선택영역 공유용] 상대방 상태 관리
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
 
@@ -69,7 +68,6 @@ export class SyncEngine {
         vscode.window.onDidChangeTextEditorSelection(e => {
             const file = this.sharedFiles.find(f => f.path === e.textEditor.document.uri.fsPath);
             if (!file) return;
-
             const selection = e.selections[0];
             this.sendMessage('CURSOR_UPDATE', {
                 fileName: file.name,
@@ -87,7 +85,6 @@ export class SyncEngine {
         const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
         if (!editor) return;
 
-        // 1. 기존 데코레이션 삭제
         const prevCursor = this.remoteCursorDecorations.get(msg.userId);
         if (prevCursor) prevCursor.dispose();
         const prevSelection = this.remoteSelectionDecorations.get(msg.userId);
@@ -95,7 +92,6 @@ export class SyncEngine {
 
         const color = msg.userId === 'host' ? '#f44336' : '#4ec9b0'; 
 
-        // 2. 커서 + 이름표 (텍스트를 밀지 않는 Absolute 방식)
         const cursorDeco = vscode.window.createTextEditorDecorationType({
             borderWidth: '0 0 0 2px',
             borderStyle: 'solid',
@@ -110,15 +106,10 @@ export class SyncEngine {
             }
         });
 
-        // 3. 드래그 선택 영역 (30% 투명도 배경색)
-        const selectionDeco = vscode.window.createTextEditorDecorationType({
-            backgroundColor: color + '4D'
-        });
-
+        const selectionDeco = vscode.window.createTextEditorDecorationType({ backgroundColor: color + '4D' });
         this.remoteCursorDecorations.set(msg.userId, cursorDeco);
         this.remoteSelectionDecorations.set(msg.userId, selectionDeco);
 
-        // 4. 적용
         const cursorRange = [new vscode.Range(new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]), new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]))];
         const selectionRange = [new vscode.Range(new vscode.Position(msg.selectionRange[0], msg.selectionRange[1]), new vscode.Position(msg.selectionRange[2], msg.selectionRange[3]))];
 
@@ -205,18 +196,35 @@ export class SyncEngine {
         setTimeout(() => { this.isApplyingRemoteChange = false; }, 50);
     }
 
-    public async shareActiveFile() {
-        if (!this.isHost) return;
-        this.initializeStorage();
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || this.sharedFiles.find(f => f.source === editor.document.uri.fsPath)) return;
-        const sourcePath = editor.document.uri.fsPath;
+    // [수정] 특정 URI를 받아 공유할 수 있도록 개선
+    public async shareActiveFile(targetUri?: vscode.Uri) {
+        if (!this.isHost || !this.isStorageInitialized) return;
+        
+        let sourcePath: string;
+        let document: vscode.TextDocument;
+
+        if (targetUri) {
+            sourcePath = targetUri.fsPath;
+            document = await vscode.workspace.openTextDocument(targetUri);
+        } else {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) return;
+            sourcePath = editor.document.uri.fsPath;
+            document = editor.document;
+        }
+
         const fileName = path.basename(sourcePath);
+        if (this.sharedFiles.find(f => f.source === sourcePath)) {
+            vscode.window.showInformationMessage(`"${fileName}" is already shared.`);
+            return;
+        }
+
         const snapshotPath = path.join(this.storagePath, fileName + '.shared');
-        fs.writeFileSync(snapshotPath, editor.document.getText());
+        fs.writeFileSync(snapshotPath, document.getText());
         const doc = await vscode.workspace.openTextDocument(snapshotPath);
         await vscode.window.showTextDocument(doc);
-        this.sendMessage('INIT_SNAPSHOT', { fileName, content: editor.document.getText() });
+        
+        this.sendMessage('INIT_SNAPSHOT', { fileName, content: document.getText() });
         this.addSharedFile(fileName, snapshotPath, sourcePath);
     }
 
@@ -247,10 +255,31 @@ export class SyncEngine {
 
     public async stopSharing() {
         const editor = vscode.window.activeTextEditor;
-        const file = this.sharedFiles.find(f => f.path === editor?.document.uri.fsPath);
-        if (this.isHost && file?.source) {
-            await editor!.document.save();
-            fs.writeFileSync(file.source, editor!.document.getText());
+        if (!editor) return;
+        const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+        if (file) await this.stopSharingByName(file.name);
+    }
+
+    // [신규] 이름으로 특정 파일 공유 중지
+    public async stopSharingByName(fileName: string) {
+        if (!this.isHost) return;
+        
+        // [수정] 네이티브 확인창 사용
+        const answer = await vscode.window.showWarningMessage(
+            `Are you sure you want to stop sharing "${fileName}"?`,
+            { modal: true },
+            "Stop"
+        );
+
+        if (answer !== "Stop") return;
+
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (file && file.source) {
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
+            if (doc) {
+                await doc.save();
+                fs.writeFileSync(file.source, doc.getText());
+            }
             this.sendMessage('STOP_SHARING', { fileName: file.name });
             await this.handleRemoteStop(file.name);
         }
@@ -285,7 +314,15 @@ export class SyncEngine {
     public reset() {
         if (this.pollingTimer) clearInterval(this.pollingTimer);
         this.stopAll();
-        this.isHost = false; this.isConnected = false; this.roomName = ''; this.myName = ''; this.initialName = ''; this.participants = {}; this.isSetupMode = false; this.isStorageInitialized = false; this.lastRemoteContentMap.clear();
+        this.isHost = false;
+        this.isConnected = false;
+        this.roomName = '';
+        this.myName = '';
+        this.initialName = '';
+        this.participants = {};
+        this.isSetupMode = false;
+        this.isStorageInitialized = false;
+        this.lastRemoteContentMap.clear();
         this.pushUIUpdate();
     }
 

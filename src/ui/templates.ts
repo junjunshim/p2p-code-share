@@ -21,8 +21,24 @@ export function getSidebarTemplate() {
                 .me-badge { background: #28a745; color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold; }
                 .host-badge { background: #d73a49; color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold; }
                 .edit-name { color: var(--vscode-textLink-foreground); cursor: pointer; font-size: 10px; }
-                .file-item { padding: 12px; cursor: pointer; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-divider); margin-bottom: 8px; }
+                .file-item { padding: 8px 10px; cursor: pointer; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-divider); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
                 .file-item:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+                .stop-btn { 
+                    width: auto !important; 
+                    margin: 0 !important; 
+                    background: #d73a49; 
+                    color: white; 
+                    border: none; 
+                    padding: 3px 10px; 
+                    border-radius: 4px; 
+                    font-size: 10px; 
+                    cursor: pointer; 
+                    font-weight: bold; 
+                    opacity: 0.9;
+                    line-height: 1.2;
+                    flex-shrink: 0;
+                }
+                .stop-btn:hover { opacity: 1; background: #b31d28; }
                 h4 { margin: 20px 0 10px 0; color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; }
                 #hostForm { background: var(--vscode-sideBar-background); padding: 15px; border-radius: 6px; border: 1px solid var(--vscode-divider); margin-top: 10px; }
             </style>
@@ -32,18 +48,13 @@ export function getSidebarTemplate() {
                 <div style="font-size: 24px; margin-bottom: 10px;">📡</div>
                 <div style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; animation: blink 1.5s infinite;">Initializing Engine...</div>
             </div>
-
-            <style>
-                @keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
-            </style>
-
+            <style>@keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }</style>
             <div id="mainContent" class="hidden">
                 <div id="badge" class="badge">OFFLINE</div>
                 <div id="setup">
                     <div id="roleSelection">
                         <button id="btnHost" onclick="showHostForm()">Create Sharing Room</button>
                         <button id="btnGuest" onclick="init(false)">Join Sharing Room</button>
-
                         <div id="hostForm" class="hidden">
                             <p class="room-label">Set Room Name</p>
                             <input type="text" id="setupRoomName" placeholder="e.g. My Project Room">
@@ -65,22 +76,10 @@ export function getSidebarTemplate() {
                     <h4>Active Snapshots</h4><div id="files"></div>
                 </div>
             </div>
-
             <script>
                 const vscode = acquireVsCodeApi();
-
-                function showHostForm() {
-                    document.getElementById('hostForm').classList.remove('hidden');
-                    document.getElementById('btnHost').classList.add('hidden');
-                    document.getElementById('btnGuest').classList.add('hidden');
-                }
-
-                function hideHostForm() {
-                    document.getElementById('hostForm').classList.add('hidden');
-                    document.getElementById('btnHost').classList.remove('hidden');
-                    document.getElementById('btnGuest').classList.remove('hidden');
-                }
-
+                function showHostForm() { document.getElementById('hostForm').classList.remove('hidden'); document.getElementById('btnHost').classList.add('hidden'); document.getElementById('btnGuest').classList.add('hidden'); }
+                function hideHostForm() { document.getElementById('hostForm').classList.add('hidden'); document.getElementById('btnHost').classList.remove('hidden'); document.getElementById('btnGuest').classList.remove('hidden'); }
                 function init(i) { 
                     let rn = '';
                     if(i) {
@@ -90,7 +89,6 @@ export function getSidebarTemplate() {
                     document.getElementById('lsdp').value = ''; document.getElementById('rsdp').value = '';
                     vscode.postMessage({ type: 'initPeer', initiator: i, roomName: rn }); 
                 }
-
                 function conn() { vscode.postMessage({ type: 'signal', sdp: JSON.parse(document.getElementById('rsdp').value) }); }
                 function goBack() { vscode.postMessage({ type: 'cancel' }); }
                 function rename() { vscode.postMessage({ type: 'rename' }); }
@@ -99,12 +97,9 @@ export function getSidebarTemplate() {
                     const m = e.data;
                     if (m.type === 'sdpGenerated') { document.getElementById('lsdp').value = m.sdp; }
                     if (m.type === 'renderState' || m.type === 'refresh') {
-                        // [핵심] 첫 신호가 오면 로딩을 숨기고 메인 콘텐츠를 보여줌
                         document.getElementById('loading').classList.add('hidden');
                         document.getElementById('mainContent').classList.remove('hidden');
-
-                        if (m.type === 'refresh') return; // 엔진 상태가 올 때까지 대기
-
+                        if (m.type === 'refresh') return;
                         const b = document.getElementById('badge');
                         const roleSel = document.getElementById('roleSelection');
                         const connArea = document.getElementById('connArea');
@@ -112,10 +107,8 @@ export function getSidebarTemplate() {
                         const roleDisp = document.getElementById('roleTextDisp');
                         const dispRoom = document.getElementById('dispRoomName');
                         const lsdp = document.getElementById('lsdp');
-
                         b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
                         b.className = 'badge ' + (m.isConnected ? 'online' : '');
-
                         if (m.isConnected) {
                             roleSel.classList.add('hidden'); connArea.classList.add('hidden'); active.classList.remove('hidden');
                             dispRoom.innerText = m.roomName || 'Untitled Room';
@@ -126,12 +119,7 @@ export function getSidebarTemplate() {
                                 const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
                                 const nHTML = isMe ? '<b>' + name + '</b>' : name;
                                 const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-
-                                udiv.innerHTML += '<div class="user-item">' +
-                                    '<div class="user-name">' + nHTML + '</div>' +
-                                    '<div class="badge-area">' + bHTML + '</div>' +
-                                    '<div class="action-area">' + eHTML + '</div>' +
-                                    '</div>';
+                                udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + '</div></div>';
                             });
                         } else if (m.isSetupMode) {
                             roleSel.classList.add('hidden'); connArea.classList.remove('hidden'); active.classList.add('hidden');
@@ -140,23 +128,32 @@ export function getSidebarTemplate() {
                             lsdp.value = m.lastSdp || 'Generating...';
                         } else {
                             roleSel.classList.remove('hidden'); connArea.classList.add('hidden'); active.classList.add('hidden');
-                            // [수정] 모든 필드를 명시적으로 비움
-                            document.getElementById('setupRoomName').value = '';
-                            lsdp.value = '';
-                            document.getElementById('rsdp').value = '';
+                            document.getElementById('setupRoomName').value = ''; lsdp.value = ''; document.getElementById('rsdp').value = '';
                             hideHostForm();
                         }
                         const fdiv = document.getElementById('files'); fdiv.innerHTML = '';
+                        const isUserHost = m.lastSdp && m.lastSdp.includes('offer');
                         m.files.forEach(f => {
-                            const item = document.createElement('div'); item.className = 'file-item'; item.innerText = '📄 ' + f.name;
-                            item.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+                            const item = document.createElement('div'); item.className = 'file-item';
+                            const nameSpan = document.createElement('span');
+                            nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
+                            nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+                            item.appendChild(nameSpan);
+                            if (isUserHost) {
+                                const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
+                                stopBtn.onclick = (e) => { 
+                                    e.stopPropagation(); 
+                                    vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); 
+                                };
+                                item.appendChild(stopBtn);
+                            }
                             fdiv.appendChild(item);
                         });
                     }
                 });
                 vscode.postMessage({ type: 'ready' });
             </script></body></html>`;
-        }
+}
 
 export function getEngineTemplate(initiator: boolean) {
     return `<!DOCTYPE html><html><body style="font-family:sans-serif; padding:20px; background: #1e1e1e; color: #ccc; line-height: 1.5;">

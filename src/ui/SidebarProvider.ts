@@ -8,6 +8,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onSignal?: (sdp: any) => void;
     public onCancel?: () => void;
     public onRename?: () => void;
+    public onStopFileSharing?: (fileName: string) => void; // [추가]
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -19,12 +20,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
-                case 'ready': this.onReady?.(); break; // [수정]
+                case 'ready': this.onReady?.(); break;
                 case 'initPeer': this.onInitPeer?.(msg.initiator, msg.roomName); break;
                 case 'signal': this.onSignal?.(msg.sdp); break;
                 case 'cancel': this.onCancel?.(); break;
                 case 'rename': this.onRename?.(); break;
                 case 'openFile': vscode.commands.executeCommand('p2p-code-share.openSnapshot', msg.path); break;
+                case 'stopFileSharing': this.onStopFileSharing?.(msg.fileName); break; // [추가]
             }
         });
     }
