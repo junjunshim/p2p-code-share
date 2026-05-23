@@ -1,101 +1,5 @@
-import * as vscode from 'vscode';
-
-export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
-    constructor(private readonly _extensionUri: vscode.Uri) {}
-    private _view?: vscode.WebviewView;
-    private _hubPanel?: vscode.WebviewPanel;
-    private _isConnected = false;
-    private _sharedFiles: any[] = [];
-    private _lastSdp = '';
-    private _isSetupMode = false;
-    private _participants: any = { myName: '', others: {} };
-    private _roomName = '';
-
-    public resolveWebviewView(webviewView: vscode.WebviewView) {
-        this._view = webviewView;
-        webviewView.webview.options = { enableScripts: true, localResourceRoots: [this._extensionUri] };
-        webviewView.webview.html = this._getHtmlForSidebar();
-        (webviewView as any).retainContextWhenHidden = true;
-
-        this.updateSidebarState();
-
-        webviewView.webview.onDidReceiveMessage(async (msg) => {
-            if (msg.type === 'ready') this.updateSidebarState();
-            else if (msg.type === 'initPeer') {
-                this._isSetupMode = true;
-                this._roomName = msg.roomName || '';
-                this.onDidReceiveData?.(JSON.stringify({ type: 'SET_ROLE', isHost: msg.initiator, roomName: this._roomName }));
-                this.createHub(msg.initiator);
-                this.updateSidebarState();
-            }
-            else if (msg.type === 'cancel') this.resetAndNotify();
-            else if (msg.type === 'signal' || msg.type === 'peerData') {
-                if (this._hubPanel) this._hubPanel.webview.postMessage(msg);
-            } 
-            else if (msg.type === 'openFile') vscode.commands.executeCommand('p2p-code-share.openSnapshot', msg.path);
-            else if (msg.type === 'rename') vscode.commands.executeCommand('p2p-code-share.renameUser');
-        });
-    }
-
-    private createHub(initiator: boolean) {
-        if (this._hubPanel) { try { this._hubPanel.dispose(); } catch(e) {} }
-        this._hubPanel = vscode.window.createWebviewPanel('p2pHub', 'P2P Engine', vscode.ViewColumn.Two, { enableScripts: true, retainContextWhenHidden: true });
-        this._hubPanel.webview.html = this._getHtmlForHub(initiator);
-        this._hubPanel.webview.onDidReceiveMessage(msg => {
-            if (msg.type === 'sendData') this.onDidReceiveData?.(msg.value);
-            else if (msg.type === 'statusUpdate') {
-                this._isConnected = (msg.value === 'Connected');
-                if (this._isConnected) {
-                    this._isSetupMode = false;
-                    this.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }));
-                }
-                this.updateSidebarState();
-            } else if (msg.type === 'sdpGenerated') {
-                this._lastSdp = msg.sdp;
-                this.updateSidebarState();
-            }
-        });
-        this._hubPanel.onDidDispose(() => {
-            if (this._hubPanel === undefined) return;
-            this.resetAndNotify();
-        });
-    }
-
-    private resetAndNotify() {
-        if (this._hubPanel) { this._hubPanel.dispose(); this._hubPanel = undefined; }
-        this._isConnected = false; this._isSetupMode = false;
-        this._sharedFiles = []; this._lastSdp = ''; this._roomName = '';
-        this._participants = { myName: '', others: {} };
-        this.updateSidebarState();
-        this.onDidReceiveData?.(JSON.stringify({ type: 'STOP_SHARING' }));
-    }
-
-    private updateSidebarState() {
-        if (!this._view) return;
-        this._view.webview.postMessage({ 
-            type: 'renderState', 
-            isConnected: this._isConnected, 
-            isSetupMode: this._isSetupMode, 
-            files: this._sharedFiles, 
-            lastSdp: this._lastSdp,
-            participants: this._participants,
-            roomName: this._roomName
-        });
-    }
-
-    public onDidReceiveData?: (data: any) => void;
-    public sendToWebview(message: any) {
-        if (message.type === 'updateFileList') this._sharedFiles = message.files;
-        if (message.type === 'renderParticipants') {
-            this._participants = message;
-            if (message.roomName) this._roomName = message.roomName;
-        }
-        this.updateSidebarState();
-        this._hubPanel?.webview.postMessage(message);
-    }
-
-    private _getHtmlForSidebar() {
-        return `<!DOCTYPE html><html><head>
+export function getSidebarTemplate() {
+    return `<!DOCTYPE html><html><head>
             <style>
                 * { box-sizing: border-box; }
                 body { font-family: sans-serif; padding: 15px; color: var(--vscode-foreground); line-height: 1.4; }
@@ -124,35 +28,47 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
             </style>
         </head>
         <body>
-            <div id="badge" class="badge">OFFLINE</div>
-            <div id="setup">
-                <div id="roleSelection">
-                    <button id="btnHost" onclick="showHostForm()">Create Sharing Room</button>
-                    <button id="btnGuest" onclick="init(false)">Join Sharing Room</button>
-                    
-                    <div id="hostForm" class="hidden">
-                        <p class="room-label">Set Room Name</p>
-                        <input type="text" id="setupRoomName" placeholder="e.g. My Project Room">
-                        <button onclick="init(true)" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">START ENGINE</button>
-                        <button onclick="hideHostForm()" class="secondary-button">Cancel</button>
+            <div id="loading" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80vh; color: var(--vscode-descriptionForeground);">
+                <div style="font-size: 24px; margin-bottom: 10px;">📡</div>
+                <div style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; animation: blink 1.5s infinite;">Initializing Engine...</div>
+            </div>
+
+            <style>
+                @keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
+            </style>
+
+            <div id="mainContent" class="hidden">
+                <div id="badge" class="badge">OFFLINE</div>
+                <div id="setup">
+                    <div id="roleSelection">
+                        <button id="btnHost" onclick="showHostForm()">Create Sharing Room</button>
+                        <button id="btnGuest" onclick="init(false)">Join Sharing Room</button>
+
+                        <div id="hostForm" class="hidden">
+                            <p class="room-label">Set Room Name</p>
+                            <input type="text" id="setupRoomName" placeholder="e.g. My Project Room">
+                            <button onclick="init(true)" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">START ENGINE</button>
+                            <button onclick="hideHostForm()" class="secondary-button">Cancel</button>
+                        </div>
+                    </div>
+                    <div id="connArea" class="hidden">
+                        <p id="roleTextDisp" style="font-weight:bold; color:var(--vscode-charts-blue)"></p>
+                        <p>Your Connection ID:</p><textarea id="lsdp" readonly></textarea>
+                        <p>Partner's Connection ID:</p><textarea id="rsdp" placeholder="Paste here..."></textarea>
+                        <button onclick="conn()" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">ESTABLISH CONNECTION</button>
+                        <button onclick="goBack()" class="secondary-button">← Back</button>
                     </div>
                 </div>
-                <div id="connArea" class="hidden">
-                    <p id="roleTextDisp" style="font-weight:bold; color:var(--vscode-charts-blue)"></p>
-                    <p>Your Connection ID:</p><textarea id="lsdp" readonly></textarea>
-                    <p>Partner's Connection ID:</p><textarea id="rsdp" placeholder="Paste here..."></textarea>
-                    <button onclick="conn()" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">ESTABLISH CONNECTION</button>
-                    <button onclick="goBack()" class="secondary-button">← Back</button>
+                <div id="active" class="hidden">
+                    <div class="room-info"><div class="room-label">Room Name</div><div id="dispRoomName" class="room-value"></div></div>
+                    <h4>Connected Users</h4><div id="users"></div>
+                    <h4>Active Snapshots</h4><div id="files"></div>
                 </div>
             </div>
-            <div id="active" class="hidden">
-                <div class="room-info"><div class="room-label">Room Name</div><div id="dispRoomName" class="room-value"></div></div>
-                <h4>Connected Users</h4><div id="users"></div>
-                <h4>Active Snapshots</h4><div id="files"></div>
-            </div>
+
             <script>
                 const vscode = acquireVsCodeApi();
-                
+
                 function showHostForm() {
                     document.getElementById('hostForm').classList.remove('hidden');
                     document.getElementById('btnHost').classList.add('hidden');
@@ -182,7 +98,13 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                 window.addEventListener('message', e => {
                     const m = e.data;
                     if (m.type === 'sdpGenerated') { document.getElementById('lsdp').value = m.sdp; }
-                    if (m.type === 'renderState') {
+                    if (m.type === 'renderState' || m.type === 'refresh') {
+                        // [핵심] 첫 신호가 오면 로딩을 숨기고 메인 콘텐츠를 보여줌
+                        document.getElementById('loading').classList.add('hidden');
+                        document.getElementById('mainContent').classList.remove('hidden');
+
+                        if (m.type === 'refresh') return; // 엔진 상태가 올 때까지 대기
+
                         const b = document.getElementById('badge');
                         const roleSel = document.getElementById('roleSelection');
                         const connArea = document.getElementById('connArea');
@@ -190,10 +112,10 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                         const roleDisp = document.getElementById('roleTextDisp');
                         const dispRoom = document.getElementById('dispRoomName');
                         const lsdp = document.getElementById('lsdp');
-                        
+
                         b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
                         b.className = 'badge ' + (m.isConnected ? 'online' : '');
-                        
+
                         if (m.isConnected) {
                             roleSel.classList.add('hidden'); connArea.classList.add('hidden'); active.classList.remove('hidden');
                             dispRoom.innerText = m.roomName || 'Untitled Room';
@@ -204,7 +126,7 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                                 const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
                                 const nHTML = isMe ? '<b>' + name + '</b>' : name;
                                 const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                                
+
                                 udiv.innerHTML += '<div class="user-item">' +
                                     '<div class="user-name">' + nHTML + '</div>' +
                                     '<div class="badge-area">' + bHTML + '</div>' +
@@ -218,6 +140,10 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                             lsdp.value = m.lastSdp || 'Generating...';
                         } else {
                             roleSel.classList.remove('hidden'); connArea.classList.add('hidden'); active.classList.add('hidden');
+                            // [수정] 모든 필드를 명시적으로 비움
+                            document.getElementById('setupRoomName').value = '';
+                            lsdp.value = '';
+                            document.getElementById('rsdp').value = '';
                             hideHostForm();
                         }
                         const fdiv = document.getElementById('files'); fdiv.innerHTML = '';
@@ -230,10 +156,10 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                 });
                 vscode.postMessage({ type: 'ready' });
             </script></body></html>`;
-    }
+        }
 
-    private _getHtmlForHub(initiator: boolean) {
-        return `<!DOCTYPE html><html><body style="font-family:sans-serif; padding:20px; background: #1e1e1e; color: #ccc; line-height: 1.5;">
+export function getEngineTemplate(initiator: boolean) {
+    return `<!DOCTYPE html><html><body style="font-family:sans-serif; padding:20px; background: #1e1e1e; color: #ccc; line-height: 1.5;">
             <h2 style="color: #569cd6; margin-top: 0;">📡 P2P Engine</h2>
             <div style="margin-bottom: 10px;"><span style="font-weight: bold; color: #9cdcfe;">Status :</span> <span id="st" style="color:#ce9178;">Initializing...</span></div>
             <hr style="border: 0; border-top: 1px solid #444; margin: 15px 0;"><div id="log" style="font-size:12px; color:#858585; font-family: 'Courier New', monospace;"></div>
@@ -272,5 +198,4 @@ export class P2PCodeShareSidebarProvider implements vscode.WebviewViewProvider {
                     setInterval(() => { if(peer && peer.connected) peer.send(new Uint8Array([255])); }, 5000);
                 } catch(e) { log('Fatal: ' + e.message); }
             </script></body></html>`;
-    }
 }
