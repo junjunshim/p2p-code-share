@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { HubManager } from './HubManager';
-import { SharedFile, ParticipantState, P2PMessage } from '../types';
+import { SharedFile, P2PMessage } from '../types';
 import { sanitizePath, ensureDirectory } from '../utils/helpers';
 
 export class SyncEngine {
@@ -11,6 +11,7 @@ export class SyncEngine {
     private storagePath = '';
     private sharedFiles: SharedFile[] = [];
     private myName = '';
+    private myId = ''; // [추가] 내 고유 아이디 (host 또는 guest)
     private initialName = '';
     private participants: { [key: string]: string } = {};
     private lastRemoteContentMap = new Map<string, string>();
@@ -20,9 +21,12 @@ export class SyncEngine {
     public isSetupMode = false; 
     public isConnected = false; 
 
+    private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
+
     constructor(private hub: HubManager, private context: vscode.ExtensionContext, private updateUI: (state: any) => void) {
         this.setupHandlers();
         this.setupTextListeners();
+        this.setupSelectionListeners();
     }
 
     public setupHandlers() {
@@ -53,24 +57,74 @@ export class SyncEngine {
                     case 'GUEST_EDIT': if (this.isHost) { await this.handleGuestEdit(msg); } break;
                     case 'REQUEST_FULL_SYNC': if (this.isHost) this.broadcastAll(); break;
                     case 'STOP_SHARING': await this.handleRemoteStop(msg.fileName); break;
+                    case 'CURSOR_UPDATE': this.updateRemoteCursor(msg); break;
                 }
             } catch (e) {}
         };
     }
 
+    private setupSelectionListeners() {
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            const file = this.sharedFiles.find(f => f.path === e.textEditor.document.uri.fsPath);
+            if (!file) return;
+
+            const selection = e.selections[0];
+            this.sendMessage('CURSOR_UPDATE', {
+                fileName: file.name,
+                userId: this.myId, // [수정] 고유 아이디 전송
+                userName: this.myName,
+                cursorPos: [selection.active.line, selection.active.character],
+                selectionRange: [selection.start.line, selection.start.character, selection.end.line, selection.end.character]
+            });
+        });
+    }
+
+    private updateRemoteCursor(msg: any) {
+        const file = this.sharedFiles.find(f => f.name === msg.fileName);
+        if (!file) return;
+
+        const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
+        if (!editor) return;
+
+        // [수정] userId를 키로 사용하여 이전 커서를 정확히 찾아 지움
+        let decoration = this.remoteCursorDecorations.get(msg.userId);
+        if (decoration) decoration.dispose();
+
+        const color = msg.userId === 'host' ? '#f44336' : '#4ec9b0'; 
+
+        decoration = vscode.window.createTextEditorDecorationType({
+            borderWidth: '0 0 0 2px',
+            borderStyle: 'solid',
+            borderColor: color,
+            after: {
+                contentText: msg.userName,
+                backgroundColor: color,
+                color: 'white',
+                margin: '1.4em 0 0 0',
+                fontWeight: 'bold',
+                textDecoration: `none; font-size: 12px; padding: 2px 6px; border-radius: 4px; position: absolute; z-index: 100; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3);`
+            }
+        });
+
+        this.remoteCursorDecorations.set(msg.userId, decoration);
+
+        const range = new vscode.Range(
+            new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]),
+            new vscode.Position(msg.cursorPos[0], msg.cursorPos[1])
+        );
+
+        editor.setDecorations(decoration, [range]);
+    }
+
     public handleSetRole(msg: any) {
         this.isHost = msg.isHost;
+        this.myId = this.isHost ? 'host' : 'guest'; // [아이디 부여]
         this.roomName = msg.roomName || 'Untitled Room';
         this.myName = this.isHost ? 'Host' : 'Guest1';
         this.initialName = this.myName;
         this.isSetupMode = true; 
-        
-        if (this.isHost) { 
-            this.initializeStorage(); 
-            this.participants['host'] = this.myName; 
-        } else { 
-            this.startPolling(); 
-        }
+        if (this.isHost) { this.initializeStorage(); this.participants['host'] = this.myName; } 
+        else this.startPolling();
         this.pushUIUpdate();
     }
 
@@ -86,12 +140,7 @@ export class SyncEngine {
     private handleUserListUpdate(msg: any) {
         this.participants = msg.users;
         if (msg.roomName) this.roomName = msg.roomName;
-        
-        // [수정] 게스트인 경우 방 이름을 받은 이 시점에 폴더를 생성함
-        if (!this.isHost && !this.isStorageInitialized && this.roomName) {
-            this.initializeStorage();
-        }
-
+        if (!this.isHost && !this.isStorageInitialized && this.roomName) this.initializeStorage();
         const myKey = this.isHost ? 'host' : 'guest';
         if (this.participants[myKey]) this.myName = this.participants[myKey];
         this.pushUIUpdate();
@@ -106,11 +155,7 @@ export class SyncEngine {
     }
 
     private handleGuestJoin(msg: any) {
-        if (this.isHost) {
-            this.participants['guest'] = msg.name;
-            this.broadcastUserList();
-            this.broadcastAll();
-        }
+        if (this.isHost) { this.participants['guest'] = msg.name; this.broadcastUserList(); this.broadcastAll(); }
     }
 
     private setupTextListeners() {
@@ -142,7 +187,6 @@ export class SyncEngine {
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
         if (!doc) { fs.writeFileSync(filePath, content); return; }
         if (doc.getText() === content) return;
-
         this.lastRemoteContentMap.set(fileName, content);
         this.isApplyingRemoteChange = true;
         const edit = new vscode.WorkspaceEdit();
@@ -222,20 +266,14 @@ export class SyncEngine {
     public stopAll() {
         if (this.pollingTimer) clearInterval(this.pollingTimer);
         this.sharedFiles.forEach(f => this.handleRemoteStop(f.name));
+        this.remoteCursorDecorations.forEach(d => d.dispose());
+        this.remoteCursorDecorations.clear();
     }
 
     public reset() {
         if (this.pollingTimer) clearInterval(this.pollingTimer);
         this.stopAll();
-        this.isHost = false;
-        this.isConnected = false;
-        this.roomName = '';
-        this.myName = '';
-        this.initialName = '';
-        this.participants = {};
-        this.isSetupMode = false;
-        this.isStorageInitialized = false;
-        this.lastRemoteContentMap.clear();
+        this.isHost = false; this.isConnected = false; this.roomName = ''; this.myName = ''; this.initialName = ''; this.participants = {}; this.isSetupMode = false; this.isStorageInitialized = false; this.lastRemoteContentMap.clear();
         this.pushUIUpdate();
     }
 
@@ -245,14 +283,6 @@ export class SyncEngine {
     }
 
     public pushUIUpdate() { 
-        this.updateUI({
-            type: 'renderParticipants',
-            myName: this.myName,
-            others: this.participants,
-            roomName: this.roomName,
-            files: this.sharedFiles,
-            isSetupMode: this.isSetupMode,
-            isConnected: this.isConnected
-        });
+        this.updateUI({ type: 'renderParticipants', myName: this.myName, others: this.participants, roomName: this.roomName, files: this.sharedFiles, isSetupMode: this.isSetupMode, isConnected: this.isConnected });
     }
 }
