@@ -1,1 +1,0 @@
-2026-05-19 23:29:20.897 [error] Could not parse status output: "Running tunnel CLI\nstatus Spawning: c:\\Users\\shimd\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code-tunnel.exe tunnel status\nstatus exit(23080): + 0"

@@ -1,7 +1,0 @@
-2026-05-19 22:56:15.258 [warning] Creation of workbench contribution 'workbench.contrib.configurationDefaultOverridesContribution' took 22ms.
-2026-05-19 22:56:16.642 [info] Started local extension host with pid 21280.
-2026-05-19 22:56:17.731 [info] Loading development extension at c:\project\test
-2026-05-19 22:56:20.507 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
-2026-05-19 22:56:25.007 [info] Settings Sync: Account status changed from uninitialized to unavailable
-2026-05-19 22:56:25.449 [info] [AccountPolicyGate] apply: state=inactive, reason=undefined, isRestricted=false
-2026-05-19 22:56:26.755 [info] [perf] Render performance baseline is 66ms
