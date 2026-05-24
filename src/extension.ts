@@ -7,7 +7,6 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
     const engine = new SyncEngine(hub, context, (state) => {
-        // [수정] 우클릭 메뉴를 위해 연결 상태 및 호스트 여부 공유
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
         
@@ -18,7 +17,7 @@ export function activate(context: vscode.ExtensionContext) {
             files: state.files,
             participants: state,
             roomName: state.roomName,
-            lastSdp: hub.lastSdp || ''
+            invitingSdp: state.invitingSdp // [수정] hub.lastSdp 대신 state에서 온 값 사용
         });
     });
 
@@ -29,36 +28,49 @@ export function activate(context: vscode.ExtensionContext) {
 
     sidebar.onReady = () => { engine.pushUIUpdate(); };
 
+    sidebar.onInviteGuest = () => {
+        engine.inviteGuest();
+    };
+
     sidebar.onStopFileSharing = (fileName) => {
         engine.stopSharingByName(fileName);
     };
 
-    sidebar.onSignal = (sdp) => hub.applySignal(sdp);
-    sidebar.onCancel = () => {
-        hub.dispose();
-        hub.lastSdp = '';
-        engine.reset();
-        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
-        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+    sidebar.onSignal = (sdp, peerId) => hub.applySignal(sdp, peerId || 'default');
+    
+    sidebar.onCancel = (data?: any) => {
+        if (engine.isConnected && engine.isHost && engine.isSetupMode) {
+            engine.isSetupMode = false;
+            engine.pushUIUpdate();
+        } else {
+            hub.dispose();
+            engine.reset();
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+        }
     };
+
     sidebar.onRename = async () => {
         const n = await vscode.window.showInputBox({ placeHolder: "Enter new name" });
         if (n) engine.changeMyName(n);
     };
 
-    hub.onSdpGenerated = (sdp) => {
-        hub.lastSdp = sdp;
-        sidebar.postMessage({ type: 'sdpGenerated', sdp });
+    hub.onSdpGenerated = (sdp, peerId) => {
+        sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });
         engine.pushUIUpdate();
     };
 
-    hub.onStatusUpdate = (status) => {
+    hub.onStatusUpdate = (status, peerId) => {
         if (status === 'Connected') {
-            hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }));
+            hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }), peerId);
         } else if (status === 'Disconnected') {
-            engine.reset();
-            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
-            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+            if (peerId === 'all') {
+                engine.reset();
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+            } else {
+                engine.handlePeerDisconnect(peerId);
+            }
         }
     };
 
