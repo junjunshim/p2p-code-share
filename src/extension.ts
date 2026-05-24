@@ -7,8 +7,9 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
     const engine = new SyncEngine(hub, context, (state) => {
-        // [수정] 우클릭 메뉴를 위해 연결 상태 공유
+        // [수정] 우클릭 메뉴를 위해 연결 상태 및 호스트 여부 공유
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
+        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
         
         sidebar.postMessage({
             type: 'renderState',
@@ -38,6 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
         hub.lastSdp = '';
         engine.reset();
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
     };
     sidebar.onRename = async () => {
         const n = await vscode.window.showInputBox({ placeHolder: "Enter new name" });
@@ -56,12 +58,12 @@ export function activate(context: vscode.ExtensionContext) {
         } else if (status === 'Disconnected') {
             engine.reset();
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
         }
     };
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebar),
-        // [수정] 우클릭 시 전달되는 URI 인자를 처리
         vscode.commands.registerCommand('p2p-code-share.shareActiveFile', (uri?: vscode.Uri) => {
             engine.shareActiveFile(uri);
         }),
