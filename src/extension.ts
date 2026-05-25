@@ -1,15 +1,30 @@
+/**
+ * @file extension.ts
+ * @description p2p-code-share를 위한 VS Code 확장 프로그램 진입점입니다.
+ * 핵심 컴포넌트를 조율하고 확장 프로그램 명령어를 등록합니다.
+ */
+
+// VS Code API 및 핵심 확장 컴포넌트
 import * as vscode from 'vscode';
 import { SidebarProvider } from './ui/SidebarProvider';
 import { HubManager } from './core/HubManager';
 import { SyncEngine } from './core/SyncEngine';
 
+/**
+ * 확장 프로그램을 활성화합니다.
+ * 주요 컴포넌트를 초기화하고 UI 및 P2P 로직을 위한 이벤트 핸들러를 설정합니다.
+ * @param context VS Code 확장 프로그램 컨텍스트.
+ */
 export function activate(context: vscode.ExtensionContext) {
+    // UI 제공자 및 핵심 P2P 엔진 초기화
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
     const engine = new SyncEngine(hub, context, (state) => {
+        // P2P 연결 상태에 따라 VS Code 컨텍스트 상태 업데이트
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
         
+        // 상태 업데이트를 사이드바에 알림
         sidebar.postMessage({
             type: 'renderState',
             isConnected: state.isConnected,
@@ -17,32 +32,40 @@ export function activate(context: vscode.ExtensionContext) {
             files: state.files,
             participants: state,
             roomName: state.roomName,
-            invitingSdp: state.invitingSdp // [수정] hub.lastSdp 대신 state에서 온 값 사용
+            invitingSdp: state.invitingSdp
         });
     });
 
+    // 사이드바로부터 피어 초기화 요청 처리
     sidebar.onInitPeer = (initiator, roomName) => {
         hub.createHub(initiator);
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
+    // 사이드바가 준비되면 초기 UI 동기화 실행
     sidebar.onReady = () => { engine.pushUIUpdate(); };
 
+    // 게스트 초대 프로세스 시작
     sidebar.onInviteGuest = () => {
         engine.inviteGuest();
     };
 
+    // 특정 파일 공유 중지
     sidebar.onStopFileSharing = (fileName) => {
         engine.stopSharingByName(fileName);
     };
 
+    // P2P 연결을 위한 시그널링 데이터 적용
     sidebar.onSignal = (sdp, peerId) => hub.applySignal(sdp, peerId || 'default');
     
+    // 취소 처리 및 엔진 상태 초기화
     sidebar.onCancel = (data?: any) => {
         if (engine.isConnected && engine.isHost && engine.isSetupMode) {
+            // 설정 모드 종료
             engine.isSetupMode = false;
             engine.pushUIUpdate();
         } else {
+            // 연결 해제 및 엔진 초기화
             hub.dispose();
             engine.reset();
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
@@ -50,20 +73,25 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    // 사용자 이름 변경 처리
     sidebar.onRename = async () => {
-        const n = await vscode.window.showInputBox({ placeHolder: "Enter new name" });
+        const n = await vscode.window.showInputBox({ placeHolder: "새 이름을 입력하세요" });
         if (n) engine.changeMyName(n);
     };
 
+    // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });
         engine.pushUIUpdate();
     };
 
+    // P2P 상태 업데이트 관리
     hub.onStatusUpdate = (status, peerId) => {
         if (status === 'Connected') {
+            // 연결 상태 알림
             hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }), peerId);
         } else if (status === 'Disconnected') {
+            // 피어 연결 해제 처리
             if (peerId === 'all') {
                 engine.reset();
                 vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
@@ -74,6 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    // 확장 프로그램 명령어 및 제공자 등록
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebar),
         vscode.commands.registerCommand('p2p-code-share.shareActiveFile', (uri?: vscode.Uri) => {
@@ -84,4 +113,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
+/**
+ * 확장 프로그램을 비활성화합니다.
+ */
 export function deactivate() {}
