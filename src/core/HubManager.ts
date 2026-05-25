@@ -21,6 +21,9 @@ export class HubManager {
     public onDidReceiveData?: (data: string, peerId: string) => void;
     public onStatusUpdate?: (status: string, peerId: string) => void;
     public onSdpGenerated?: (sdp: string, peerId: string) => void;
+    public onRequireInvite?: () => void;
+    public onRoomNameSuccess?: () => void;
+    public onRoomNameError?: (errorType: string) => void;
 
     /**
      * HubManager의 새 인스턴스를 생성합니다.
@@ -30,9 +33,10 @@ export class HubManager {
     /**
      * P2P 허브 Webview를 초기화합니다.
      * @param initiator 현재 노드가 연결 시작자인지 여부.
+     * @param roomName 자동 시그널링에 사용할 방 이름.
      * @param peerId 피어의 고유 식별자.
      */
-    public createHub(initiator: boolean, peerId: string = 'default') {
+    public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default') {
         if (!this._hubPanel) {
             // P2P 엔진을 위한 숨겨진 Webview 패널 생성
             this._hubPanel = vscode.window.createWebviewPanel('p2pHub', 'P2P Engine', vscode.ViewColumn.Two, { 
@@ -42,13 +46,16 @@ export class HubManager {
             
             // HTML 템플릿 생성 및 로드
             const autoStart = !initiator; 
-            this._hubPanel.webview.html = getEngineTemplate(initiator, autoStart);
+            this._hubPanel.webview.html = getEngineTemplate(initiator, autoStart, roomName);
             
             // Webview로부터의 메시지 리스너 설정
             this._hubPanel.webview.onDidReceiveMessage(msg => {
                 const pid = msg.peerId || 'default';
                 if (msg.type === 'sendData') this.onDidReceiveData?.(msg.value, pid);
                 else if (msg.type === 'statusUpdate') this.onStatusUpdate?.(msg.value, pid);
+                else if (msg.type === 'requireInvite') this.onRequireInvite?.();
+                else if (msg.type === 'roomNameSuccess') this.onRoomNameSuccess?.();
+                else if (msg.type === 'roomNameError') this.onRoomNameError?.(msg.errorType);
                 else if (msg.type === 'sdpGenerated') {
                     // SDP 정보 업데이트
                     this.sdpMap.set(pid, msg.sdp);

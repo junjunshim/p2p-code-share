@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 사이드바로부터 피어 초기화 요청 처리
     sidebar.onInitPeer = (initiator, roomName) => {
-        hub.createHub(initiator);
+        hub.createHub(initiator, roomName);
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
@@ -82,6 +82,32 @@ export function activate(context: vscode.ExtensionContext) {
     // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });
+        engine.pushUIUpdate();
+    };
+
+    // 자동 시그널링 시 대기 중인 초대가 없을 경우 자동으로 초대 생성
+    hub.onRequireInvite = () => {
+        engine.inviteGuest(true);
+    };
+
+    // 방 이름 선점 성공 시 화면 전환
+    hub.onRoomNameSuccess = () => {
+        engine.isConnected = true;
+        engine.pushUIUpdate();
+    };
+
+    // 방 이름 중복 또는 서버 에러 처리
+    hub.onRoomNameError = (errorType: string) => {
+        let msg = "";
+        if (errorType === 'duplicate') {
+            msg = "이미 사용 중인 방 이름입니다. 자동 연결 기능이 비활성화됩니다.";
+        } else {
+            msg = "PeerJS 서버 연결에 실패했습니다. 자동 연결 기능이 비활성화됩니다.";
+        }
+        vscode.window.showWarningMessage(`${msg} 수동 SDP 복사 방식을 이용해주세요.`);
+        
+        // 에러가 발생하더라도 수동 연결을 위해 방 화면으로 이동 허용
+        engine.isConnected = true;
         engine.pushUIUpdate();
     };
 

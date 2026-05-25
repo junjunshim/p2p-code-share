@@ -232,31 +232,41 @@ export class SyncEngine {
         this.initialName = this.myName;
 
         if (this.isHost) { 
-            // 호스트일 경우 연결 상태 설정 및 허브 생성
-            this.isConnected = true; this.isSetupMode = false;
+            // 호스트일 경우 저장소 초기화 및 참가자 등록 (연결 상태는 HubManager 콜백에서 설정)
+            this.isSetupMode = false;
             this.initializeStorage(); 
             this.participants['host'] = this.myName; 
-            this.hub.createHub(true, 'none'); 
+            this.hub.createHub(true, this.roomName, 'none'); 
+            
+            // [고도화] 이름이 있는 방일 경우, 자동으로 첫 번째 게스트를 위한 연결 준비(초대) 시작
+            if (this.roomName && this.roomName !== 'Untitled Room') {
+                this.inviteGuest(true);
+            }
         } else { 
-            // 게스트일 경우 설정 모드 시작 및 허브 생성
-            this.isSetupMode = true; 
+            // 게스트일 경우 방 이름이 있으면 자동 연결이므로 설정 모드(SDP 화면)로 바로 가지 않음
+            // 방 이름이 없으면 수동 연결이므로 즉시 설정 모드로 진입
+            this.isSetupMode = (this.roomName && this.roomName !== 'Untitled Room') ? false : true; 
             this.startPolling(); 
-            this.hub.createHub(false, 'default'); 
+            this.hub.createHub(false, this.roomName, 'default'); 
         }
         this.pushUIUpdate();
     }
 
     /**
      * 게스트를 초대합니다.
+     * @param isSilent true일 경우 UI를 초대 화면으로 전환하지 않고 배경에서 생성합니다.
      */
-    public inviteGuest() {
+    public inviteGuest(isSilent: boolean = false) {
         if (!this.isHost) return;
         // 새로운 피어 ID 생성
         const newPeerId = 'guest_' + Date.now();
         this.pendingInvites.add(newPeerId);
-        this.isSetupMode = true; 
-        // 허브에 새로운 피어 추가
-        this.hub.createHub(true, newPeerId); 
+        
+        // 수동 연결(+ 버튼 클릭) 시에만 설정 모드로 전환
+        if (!isSilent) this.isSetupMode = true; 
+        
+        // 허브에 새로운 피어 추가 (방 이름과 새 피어 ID 전달)
+        this.hub.createHub(true, this.roomName, newPeerId); 
         this.pushUIUpdate();
     }
 
