@@ -339,7 +339,14 @@ export class SyncEngine {
         if (this.isHost) { 
             this.participants[peerId] = msg.name; 
             this.broadcastUserList(); 
-            this.broadcastAll(); 
+            
+            // [추가] 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 전송
+            this.sharedFiles.forEach(f => {
+                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === f.path);
+                const content = doc ? doc.getText() : fs.readFileSync(f.path, 'utf8');
+                // 해당 피어에게만 초기 스냅샷 전송 (파일 목록 생성 및 에디터 열기 유도)
+                this.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { fileName: f.name, content });
+            });
         }
     }
 
