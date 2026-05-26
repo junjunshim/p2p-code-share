@@ -339,28 +339,29 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
 
                     conn.on('data', (data) => {
                         if (data.type === 'REQ_OFFER') {
-                            // 호스트: 대기 중인 (연결되지 않은) Simple-Peer의 신호를 찾아서 보냄
+                            // 호스트: 대기 중인 피어 찾기 (연결 안 됨 + 시작자)
                             const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
-                            if (targetId && pendingSdpMap[targetId]) {
-                                log('Auto-sending Offer for ' + targetId);
-                                conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
+                            
+                            if (targetId) {
+                                if (pendingSdpMap[targetId]) {
+                                    // 이미 SDP가 생성 완료된 경우 즉시 전송
+                                    log('Auto-sending ready Offer for ' + targetId);
+                                    conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
+                                } else {
+                                    // 아직 STUN 탐색 중인 경우: 생성될 때까지 대기 알림 (새로 만들지 않음)
+                                    log('Offer is being generated for ' + targetId + '. Please wait...');
+                                }
                             } else {
-                                log('No pending invitations. Requesting auto-invite from host...');
+                                // 아예 대기 중인 피어가 없는 경우에만 새로 생성 요청
+                                log('No pending invitations. Requesting new auto-invite...');
                                 vscode.postMessage({ type: 'requireInvite' });
                             }
                         } else if (data.type === 'SDP') {
                             const targetId = ${initiator} ? data.peerId : 'default';
-                            
-                            // [방어 로직] 이미 연결된 피어에게 새로운 신호를 적용하지 않음
-                            if (peers[targetId] && peers[targetId].connected) {
-                                log('Signal ignored: Peer ' + targetId + ' is already connected.');
-                                return;
-                            }
+                            if (peers[targetId] && peers[targetId].connected) return;
 
                             log('Received SDP via Auto-Signaling for: ' + data.peerId);
-                            if (!${initiator}) {
-                                remotePeerIdMap['default'] = data.peerId;
-                            }
+                            if (!${initiator}) remotePeerIdMap['default'] = data.peerId;
                             
                             const m = { type: 'signal', sdp: data.sdp, peerId: targetId };
                             window.dispatchEvent(new MessageEvent('message', { data: m }));
