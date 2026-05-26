@@ -375,7 +375,17 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                 function addPeer(peerId, isInitiator) {
                     if (peers[peerId]) return;
                     try {
-                        const p = new SimplePeer({ initiator: isInitiator, trickle: false, config: { iceServers: [] } });
+                        const p = new SimplePeer({ 
+                            initiator: isInitiator, 
+                            trickle: false, 
+                            config: { 
+                                iceServers: [
+                                    { urls: 'stun:stun.l.google.com:19302' },
+                                    { urls: 'stun:stun1.l.google.com:19302' },
+                                    { urls: 'stun:stun2.l.google.com:19302' }
+                                ] 
+                            } 
+                        });
                         
                         p.on('signal', data => { 
                             const sdpStr = JSON.stringify(data);
