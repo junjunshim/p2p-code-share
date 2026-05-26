@@ -38,7 +38,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 사이드바로부터 피어 초기화 요청 처리
     sidebar.onInitPeer = (initiator, roomName) => {
-        hub.createHub(initiator, roomName);
+        // 기존 연결이 있다면 정리
+        hub.dispose();
+        engine.reset();
+
+        // 방 이름이 있는 경우에만 Hub 생성 (수동 연결 방식을 위해 roomName이 빈 문자열일 수 있음)
+        if (roomName) {
+            hub.createHub(initiator, roomName);
+        }
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
