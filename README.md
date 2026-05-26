@@ -39,7 +39,9 @@ src/
 *   **메시지 라우팅 (`HubManager`)**: 메인 스레드(Extension Host)와 Webview(Engine) 사이의 통신 브릿지 역할을 수행합니다. `targetPeerId`를 활용하여 브로드캐스트가 아닌 특정 피어를 대상으로 하는 라우팅을 지원합니다.
 
 ### 3. 실시간 코드 동기화 (`SyncEngine`)
-*   **스냅샷 기반 전송**: 현재는 파일 전체의 텍스트를 `SYNC_FULL` 및 `GUEST_EDIT` 메시지로 전송하여 동기화하는 방식(Snapshot-based Sync)을 사용하고 있습니다. 
+*   **스냅샷 및 해시 기반 복구**: `SYNC_FULL`을 통한 전체 동기화 방식에, 1초마다 파일의 MD5 해시를 교환하는 **파일 무결성 검사(Integrity Check)**를 도입했습니다. 이를 통해 일시적인 네트워크 불일치를 실시간으로 감지하고 자동으로 전체 동기화를 요청하여 데이터의 정합성을 완벽하게 보장합니다.
+*   **적응형 디바운싱 (Adaptive Debouncing)**: 타이핑 속도에 따라 동기화 메시지 전송 간격을 동적으로 조절합니다. 빠른 타이핑 시에는 50ms로 반응성을 극대화하고, 느린 타이핑 시에는 200ms로 조절하여 네트워크 트래픽을 최적화합니다. 이는 실시간 편집 시 발생할 수 있는 데이터 증식 루프를 원천 차단합니다.
+*   **보안 전송 (Participant-only Broadcast)**: 호스트는 현재 방에 승인되어 `participants` 목록에 포함된 피어에게만 데이터를 전송합니다. 대기 중인 피어는 파일 내용 및 커서 정보를 수신할 수 없도록 격리되어 있습니다.
 *   **루프 방지 알고리즘**: `onDidChangeTextDocument`를 통한 로컬 입력 감지와 `WorkspaceEdit`를 통한 원격 동기화가 무한 루프를 형성하지 않도록 `isApplyingRemoteChange` 플래그와 `contentChanges`를 이용한 2단계 가드 시스템을 운영합니다.
 *   **데코레이션 기반 커서 렌더링**: `createTextEditorDecorationType`을 사용하여 각 게스트의 커서와 선택 영역을 실시간으로 시각화합니다. 실시간 전송된 `cursorPos`와 `selectionRange`를 기반으로, 메시지에 포함된 고유 `userId`를 통해 각 사용자의 색상을 구분하여 매 프레임 업데이트합니다.
 
