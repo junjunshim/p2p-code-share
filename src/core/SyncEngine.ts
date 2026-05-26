@@ -189,36 +189,92 @@ export class SyncEngine {
         // 내 자신의 커서 업데이트라면 렌더링하지 않음
         if (actualPeerId === this.myId) return;
 
-        // [수정] 파일이 다르거나 없더라도 이전 데코레이션은 무조건 정리 (고스트 커서 방지)
-        const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
-        if (prevCursor) prevCursor.dispose();
-        const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
-        if (prevSelection) prevSelection.dispose();
-
         // 마지막 커서 상태 저장 (에디터 재개방 시 복구용)
         this.remoteCursorStates.set(actualPeerId, msg);
         
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
-        if (!file) return;
-        
-        const color = this.getUserColor(actualPeerId); 
+        if (!file) {
+            // 파일이 다르거나 없더라도 이전 데코레이션은 무조건 정리 (고스트 커서 방지)
+            const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
+            if (prevCursor) prevCursor.dispose();
+            const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
+            if (prevSelection) prevSelection.dispose();
+            return;
+        }
+
+        // 해당 파일의 모든 원격 커서 다시 그리기 (겹침 방지 및 수직 스택 계산)
+        this.renderCursorsForFile(file);
+    }
+
+    /**
+     * 특정 파일의 모든 원격 커서를 다시 그립니다. (동일 위치 겹침 방지)
+     * @param file 렌더링할 공유 파일.
+     */
+    private renderCursorsForFile(file: SharedFile) {
+        // 해당 파일에 있는 모든 원격 피어 필터링
+        const peersInFile = Array.from(this.remoteCursorStates.entries())
+            .filter(([id, state]) => state.fileName === file.name && id !== this.myId);
+
+        // 위치별 피어 그룹화 (line,char -> [peerId1, peerId2, ...])
+        const posGroups = new Map<string, string[]>();
+        peersInFile.forEach(([id, state]) => {
+            const key = `${state.cursorPos[0]},${state.cursorPos[1]}`;
+            if (!posGroups.has(key)) posGroups.set(key, []);
+            posGroups.get(key)!.push(id);
+        });
+
+        // 각 위치 그룹 내에서 피어 ID 순으로 정렬 (안정적인 랭킹 부여)
+        posGroups.forEach(ids => ids.sort());
+
+        // 각 피어별로 랭킹에 따른 데코레이션 적용
+        peersInFile.forEach(([peerId, state]) => {
+            const key = `${state.cursorPos[0]},${state.cursorPos[1]}`;
+            const group = posGroups.get(key)!;
+            const rank = group.indexOf(peerId);
+            
+            this.applyPeerDecoration(peerId, state, file, rank);
+        });
+    }
+
+    /**
+     * 개별 피어의 데코레이션을 생성하고 적용합니다.
+     * @param peerId 피어 ID.
+     * @param state 커서 상태.
+     * @param file 대상 파일.
+     * @param rank 해당 위치에서의 랭킹 (0부터 시작, 수직 오프셋 결정).
+     */
+    private applyPeerDecoration(peerId: string, state: any, file: SharedFile, rank: number) {
+        // 이전 데코레이션 정리
+        const prevCursor = this.remoteCursorDecorations.get(peerId);
+        if (prevCursor) prevCursor.dispose();
+        const prevSelection = this.remoteSelectionDecorations.get(peerId);
+        if (prevSelection) prevSelection.dispose();
+
+        const color = this.getUserColor(peerId); 
+        // 랭킹에 따라 수직 오프셋 계산 (기본 1.4em 아래부터 시작하여 랭크당 약 1.5em씩 추가)
+        const verticalOffset = 1.4 + (rank * 1.5);
+
         // 새 커서 데코레이션 생성
         const cursorDeco = vscode.window.createTextEditorDecorationType({
             borderWidth: '0 0 0 2px', borderStyle: 'solid', borderColor: color,
             after: {
-                contentText: msg.userName, backgroundColor: color, color: 'white', margin: '1.4em 0 0 0', fontWeight: 'bold',
-                textDecoration: `none; font-size: 12px; padding: 2px 6px; border-radius: 4px; position: absolute; z-index: 100; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3);`
+                contentText: state.userName || 'Anonymous', 
+                backgroundColor: color, color: 'white', 
+                margin: `${verticalOffset}em 0 0 0`, 
+                fontWeight: 'bold',
+                textDecoration: `none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; z-index: ${1000 - rank}; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3);`
             }
         });
         // 새 선택 영역 데코레이션 생성
         const selectionDeco = vscode.window.createTextEditorDecorationType({ backgroundColor: color + '4D' });
-        this.remoteCursorDecorations.set(actualPeerId, cursorDeco);
-        this.remoteSelectionDecorations.set(actualPeerId, selectionDeco);
         
-        const cursorRange = [new vscode.Range(new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]), new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]))];
-        const selectionRange = [new vscode.Range(new vscode.Position(msg.selectionRange[0], msg.selectionRange[1]), new vscode.Position(msg.selectionRange[2], msg.selectionRange[3]))];
+        this.remoteCursorDecorations.set(peerId, cursorDeco);
+        this.remoteSelectionDecorations.set(peerId, selectionDeco);
+        
+        const cursorRange = [new vscode.Range(new vscode.Position(state.cursorPos[0], state.cursorPos[1]), new vscode.Position(state.cursorPos[0], state.cursorPos[1]))];
+        const selectionRange = [new vscode.Range(new vscode.Position(state.selectionRange[0], state.selectionRange[1]), new vscode.Position(state.selectionRange[2], state.selectionRange[3]))];
 
-        // 가시적인 모든 에디터 중 해당 파일에 대해 데코레이션 적용 (분할 뷰 대응)
+        // 가시적인 모든 에디터 중 해당 파일에 대해 데코레이션 적용
         const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.fsPath === file.path);
         editors.forEach(editor => {
             editor.setDecorations(cursorDeco, cursorRange);
@@ -230,22 +286,14 @@ export class SyncEngine {
      * 모든 에디터의 데코레이션을 현재 상태를 기반으로 새로고침합니다.
      */
     private refreshAllDecorations() {
+        // 중복 렌더링을 방지하기 위해 파일 단위로 처리
+        const processedFiles = new Set<string>();
         vscode.window.visibleTextEditors.forEach(editor => {
             const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
-            if (!file) return;
-
-            this.remoteCursorStates.forEach((state, peerId) => {
-                if (state.fileName === file.name) {
-                    const cursorDeco = this.remoteCursorDecorations.get(peerId);
-                    const selectionDeco = this.remoteSelectionDecorations.get(peerId);
-                    if (cursorDeco && selectionDeco) {
-                        const cursorRange = [new vscode.Range(new vscode.Position(state.cursorPos[0], state.cursorPos[1]), new vscode.Position(state.cursorPos[0], state.cursorPos[1]))];
-                        const selectionRange = [new vscode.Range(new vscode.Position(state.selectionRange[0], state.selectionRange[1]), new vscode.Position(state.selectionRange[2], state.selectionRange[3]))];
-                        editor.setDecorations(cursorDeco, cursorRange);
-                        editor.setDecorations(selectionDeco, selectionRange);
-                    }
-                }
-            });
+            if (file && !processedFiles.has(file.path)) {
+                this.renderCursorsForFile(file);
+                processedFiles.add(file.path);
+            }
         });
     }
 
@@ -541,15 +589,27 @@ export class SyncEngine {
      * @param newName 새로운 사용자 이름.
      */
     public changeMyName(newName: string) {
+        // [추가] 중복 이름 검사 (공백 제외 및 대소문자 무시 비교 권장되나 현재는 단순 비교)
+        const trimmedNewName = newName.trim();
+        if (!trimmedNewName) return;
+
+        const isDuplicate = Object.entries(this.participants).some(([id, name]) => id !== this.myId && name === trimmedNewName);
+        
+        if (isDuplicate) {
+            vscode.window.showWarningMessage(`"${trimmedNewName}" 이름은 이미 사용 중입니다. 다른 이름을 선택해주세요.`);
+            this.pushUIUpdate(); // UI 입력을 원래 이름으로 복구하기 위해 강제 업데이트
+            return;
+        }
+
         if (this.isHost) { 
             // 호스트 이름 변경 및 명단 브로드캐스트
-            this.myName = newName; 
-            this.participants['host'] = newName; 
+            this.myName = trimmedNewName; 
+            this.participants['host'] = trimmedNewName; 
             this.broadcastUserList(); 
         } else { 
             // 게스트 이름 변경 및 서버에 알림
-            this.myName = newName;
-            this.sendMessage('GUEST_RENAME', { newName }); 
+            this.myName = trimmedNewName;
+            this.sendMessage('GUEST_RENAME', { newName: trimmedNewName }); 
         }
 
         // 이름 변경 즉시 커서 정보도 최신 이름으로 브로드캐스트
