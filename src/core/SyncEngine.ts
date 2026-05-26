@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 // Node.js 파일 시스템 및 경로 유틸리티
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 // P2P 네트워킹을 위한 허브 매니저
 import { HubManager } from './HubManager';
 // 프로젝트 고유 타입
@@ -31,6 +32,9 @@ export class SyncEngine {
     private participants: { [key: string]: string } = {};
     private lastRemoteContentMap = new Map<string, string>();
     private pollingTimer?: NodeJS.Timeout;
+    private syncDebounceTimer?: NodeJS.Timeout;
+    // [추가] 타이핑 속도 적응형 디바운싱을 위한 상태
+    private lastKeystrokeTime = 0;
     public roomName = ''; 
     private isStorageInitialized = false;
     public isSetupMode = false; 
@@ -140,6 +144,18 @@ export class SyncEngine {
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'GUEST_EDIT': if (this.isHost) { await this.handleGuestEdit(msg); } break;
                     case 'REQUEST_FULL_SYNC': if (this.isHost) this.broadcastAll(); break;
+                    case 'FILE_HASH':
+                        if (!this.isHost) {
+                            const file = this.sharedFiles.find(f => f.name === msg.fileName);
+                            if (file) {
+                                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
+                                const content = doc ? doc.getText() : fs.readFileSync(file.path, 'utf8');
+                                if (this.calculateHash(content) !== msg.hash) {
+                                    this.sendMessage('REQUEST_FULL_SYNC', { fileName: msg.fileName });
+                                }
+                            }
+                        }
+                        break;
                     case 'STOP_SHARING': await this.handleRemoteStop(msg.fileName); break;
                     case 'CURSOR_UPDATE': 
                         // 커서 및 선택 영역 업데이트 처리
@@ -550,12 +566,23 @@ export class SyncEngine {
             const isManualChange = e.contentChanges.length > 0;
             if (!isManualChange) return;
 
-            const text = e.document.getText();
-            if (text === this.lastRemoteContentMap.get(file.name)) return;
+            // [추가] 타이핑 속도에 따른 적응형 디바운싱
+            const now = Date.now();
+            const timeSinceLastKeystroke = now - this.lastKeystrokeTime;
+            this.lastKeystrokeTime = now;
 
-            this.lastRemoteContentMap.set(file.name, text);
-            // 호스트 여부에 따라 동기화 메시지 전송
-            this.sendMessage(this.isHost ? 'SYNC_FULL' : 'GUEST_EDIT', { fileName: file.name, content: text });
+            // 타이핑이 빠를수록(예: < 300ms) 디바운스 시간을 줄이고(예: 50ms), 느리면 늘림(예: 200ms)
+            const dynamicDelay = timeSinceLastKeystroke < 300 ? 50 : 200;
+
+            if (this.syncDebounceTimer) clearTimeout(this.syncDebounceTimer);
+            this.syncDebounceTimer = setTimeout(() => {
+                const text = e.document.getText();
+                if (text === this.lastRemoteContentMap.get(file.name)) return;
+
+                this.lastRemoteContentMap.set(file.name, text);
+                // 호스트 여부에 따라 동기화 메시지 전송
+                this.sendMessage(this.isHost ? 'SYNC_FULL' : 'GUEST_EDIT', { fileName: file.name, content: text });
+            }, dynamicDelay);
         });
 
         vscode.workspace.onWillSaveTextDocument(e => {
@@ -772,6 +799,15 @@ export class SyncEngine {
     }
 
     /**
+     * 텍스트 내용의 MD5 해시를 계산합니다.
+     * @param text 해시를 계산할 텍스트.
+     * @returns 16진수 해시 문자열.
+     */
+    private calculateHash(text: string): string {
+        return crypto.createHash('md5').update(text).digest('hex');
+    }
+
+    /**
      * 엔진을 통해 메시지를 전송합니다.
      * @param type 메시지 유형.
      * @param data 메시지 데이터.
@@ -963,10 +999,21 @@ export class SyncEngine {
         // 기존 폴링 타이머 중지
         if (this.pollingTimer) clearInterval(this.pollingTimer);
         
-        // 5초 간격으로 전체 동기화 요청 전송
-        this.pollingTimer = setInterval(() => { 
-            if (!this.isHost && this.sharedFiles.length > 0) this.sendMessage('REQUEST_FULL_SYNC', {}); 
-        }, 5000);
+        if (this.isHost) {
+            // 호스트: 1초마다 공유 파일 해시 브로드캐스트
+            this.pollingTimer = setInterval(() => {
+                this.sharedFiles.forEach(f => {
+                    const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === f.path);
+                    const content = doc ? doc.getText() : fs.readFileSync(f.path, 'utf8');
+                    this.sendMessage('FILE_HASH', { fileName: f.name, hash: this.calculateHash(content) });
+                });
+            }, 1000);
+        } else {
+            // 게스트: 5초마다 전체 동기화 요청 (기존 방식 유지 - 백업용)
+            this.pollingTimer = setInterval(() => { 
+                if (this.sharedFiles.length > 0) this.sendMessage('REQUEST_FULL_SYNC', {}); 
+            }, 5000);
+        }
     }
 
     /**
