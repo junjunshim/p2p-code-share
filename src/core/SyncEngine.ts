@@ -39,6 +39,7 @@ export class SyncEngine {
 
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
+    private remoteCursorStates = new Map<string, any>();
     private userColorMap = new Map<string, string>();
     private colorPalette = ['#4ec9b0', '#ffeb3b', '#2196f3', '#9c27b0', '#ff9800', '#00bcd4', '#8bc34a'];
 
@@ -187,13 +188,14 @@ export class SyncEngine {
         
         // 내 자신의 커서 업데이트라면 렌더링하지 않음
         if (actualPeerId === this.myId) return;
+
+        // 마지막 커서 상태 저장 (에디터 재개방 시 복구용)
+        this.remoteCursorStates.set(actualPeerId, msg);
         
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
         if (!file) return;
-        const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
-        if (!editor) return;
         
-        // 기존 커서/선택 영역 데코레이션 제거
+        // 기존 커서/선택 영역 데코레이션 제거 (다른 파일로 이동했을 수도 있으므로 항상 정리)
         const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
         if (prevCursor) prevCursor.dispose();
         const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
@@ -215,9 +217,36 @@ export class SyncEngine {
         
         const cursorRange = [new vscode.Range(new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]), new vscode.Position(msg.cursorPos[0], msg.cursorPos[1]))];
         const selectionRange = [new vscode.Range(new vscode.Position(msg.selectionRange[0], msg.selectionRange[1]), new vscode.Position(msg.selectionRange[2], msg.selectionRange[3]))];
-        // 에디터에 데코레이션 적용
-        editor.setDecorations(cursorDeco, cursorRange);
-        editor.setDecorations(selectionDeco, selectionRange);
+
+        // 가시적인 모든 에디터 중 해당 파일에 대해 데코레이션 적용 (분할 뷰 대응)
+        const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.fsPath === file.path);
+        editors.forEach(editor => {
+            editor.setDecorations(cursorDeco, cursorRange);
+            editor.setDecorations(selectionDeco, selectionRange);
+        });
+    }
+
+    /**
+     * 모든 에디터의 데코레이션을 현재 상태를 기반으로 새로고침합니다.
+     */
+    private refreshAllDecorations() {
+        vscode.window.visibleTextEditors.forEach(editor => {
+            const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            if (!file) return;
+
+            this.remoteCursorStates.forEach((state, peerId) => {
+                if (state.fileName === file.name) {
+                    const cursorDeco = this.remoteCursorDecorations.get(peerId);
+                    const selectionDeco = this.remoteSelectionDecorations.get(peerId);
+                    if (cursorDeco && selectionDeco) {
+                        const cursorRange = [new vscode.Range(new vscode.Position(state.cursorPos[0], state.cursorPos[1]), new vscode.Position(state.cursorPos[0], state.cursorPos[1]))];
+                        const selectionRange = [new vscode.Range(new vscode.Position(state.selectionRange[0], state.selectionRange[1]), new vscode.Position(state.selectionRange[2], state.selectionRange[3]))];
+                        editor.setDecorations(cursorDeco, cursorRange);
+                        editor.setDecorations(selectionDeco, selectionRange);
+                    }
+                }
+            });
+        });
     }
 
     /**
@@ -376,6 +405,11 @@ export class SyncEngine {
             if (!this.isHost && this.sharedFiles.some(f => f.path === e.document.uri.fsPath)) {
                 vscode.window.setStatusBarMessage("P2P: Changes synced to Host.", 3000);
             }
+        });
+
+        // 에디터 가시성 변경 시 데코레이션 다시 그리기 (파일 재개방 대응)
+        vscode.window.onDidChangeVisibleTextEditors(() => {
+            this.refreshAllDecorations();
         });
     }
     
@@ -643,6 +677,7 @@ export class SyncEngine {
         this.remoteCursorDecorations.clear();
         this.remoteSelectionDecorations.forEach(d => d.dispose());
         this.remoteSelectionDecorations.clear();
+        this.remoteCursorStates.clear();
         // 사용자 색상 맵 초기화
         this.userColorMap.clear();
     }
@@ -668,6 +703,7 @@ export class SyncEngine {
             const deco = this.remoteCursorDecorations.get(peerId); 
             if (deco) deco.dispose(); 
             this.remoteCursorDecorations.delete(peerId);
+            this.remoteCursorStates.delete(peerId);
             
             const selDeco = this.remoteSelectionDecorations.get(peerId); 
             if (selDeco) selDeco.dispose(); 
