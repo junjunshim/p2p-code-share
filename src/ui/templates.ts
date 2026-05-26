@@ -297,6 +297,7 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                     
                     // PeerJS 자체도 방화벽을 뚫기 위해 STUN 서버 설정이 필요함
                     peerServer = new Peer(pjsId, {
+                        debug: 3, // 상세 로그 활성화
                         config: { 
                             iceServers: [
                                 { urls: 'stun:stun.l.google.com:19302' },
@@ -309,12 +310,11 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                     peerServer.on('open', (id) => {
                         log('Auto-Signaling Server Ready. ID: ' + id);
                         if (${initiator}) {
-                            // 호스트: 방 이름 선점 성공 알림
                             vscode.postMessage({ type: 'roomNameSuccess' });
                         }
                         if (!${initiator}) {
                             log('Attempting auto-connect to Host Room...');
-                            const conn = peerServer.connect(toSafeId(rName), { reliable: true });
+                            const conn = peerServer.connect(toSafeId(rName));
                             handleSignalingConn(conn);
                         }
                     });
@@ -325,13 +325,11 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                     });
 
                     peerServer.on('error', (err) => {
-                        log('Auto-Signaling Error: ' + err.type);
+                        log('PeerJS Error: ' + err.type);
                         if (${initiator}) {
-                            // 호스트: 방 이름 중복 또는 서버 연결 실패 알림
                             let errorType = 'unknown';
                             if (err.type === 'unavailable-id') errorType = 'duplicate';
                             else if (err.type === 'server-error' || err.type === 'network') errorType = 'server';
-                            
                             vscode.postMessage({ type: 'roomNameError', errorType: errorType });
                         }
                     });
@@ -339,12 +337,17 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
 
                 function handleSignalingConn(conn) {
                     activeSignalingConn = conn;
+                    
                     conn.on('open', () => {
-                        log('Signaling channel opened with peer.');
+                        log('Signaling bridge opened successfully!');
                         if (!${initiator}) {
-                            // 게스트: 호스트에게 대기 중인 초대(Offer)가 있는지 물어봄
+                            log('Requesting Offer from Host...');
                             conn.send({ type: 'REQ_OFFER' });
                         }
+                    });
+
+                    conn.on('error', (err) => {
+                        log('Bridge Error: ' + err.message);
                     });
 
                     conn.on('data', (data) => {
