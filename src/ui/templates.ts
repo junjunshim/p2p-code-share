@@ -294,7 +294,17 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                     // 한글 등 비 ASCII 문자를 지원하기 위해 ID를 Hex로 안전하게 변환
                     const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
                     const pjsId = ${initiator} ? toSafeId(rName) : null;
-                    peerServer = new Peer(pjsId);
+                    
+                    // PeerJS 자체도 방화벽을 뚫기 위해 STUN 서버 설정이 필요함
+                    peerServer = new Peer(pjsId, {
+                        config: { 
+                            iceServers: [
+                                { urls: 'stun:stun.l.google.com:19302' },
+                                { urls: 'stun:stun1.l.google.com:19302' },
+                                { urls: 'stun:stun2.l.google.com:19302' }
+                            ] 
+                        }
+                    });
                     
                     peerServer.on('open', (id) => {
                         log('Auto-Signaling Server Ready. ID: ' + id);
@@ -303,14 +313,14 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                             vscode.postMessage({ type: 'roomNameSuccess' });
                         }
                         if (!${initiator}) {
-                            log('Attempting auto-connect to: ' + rName);
-                            const conn = peerServer.connect(toSafeId(rName));
+                            log('Attempting auto-connect to Host Room...');
+                            const conn = peerServer.connect(toSafeId(rName), { reliable: true });
                             handleSignalingConn(conn);
                         }
                     });
 
                     peerServer.on('connection', (conn) => {
-                        log('A guest contacted via Auto-Signaling.');
+                        log('A guest contacted via Auto-Signaling. Opening bridge...');
                         handleSignalingConn(conn);
                     });
 
