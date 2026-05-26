@@ -189,17 +189,17 @@ export class SyncEngine {
         // 내 자신의 커서 업데이트라면 렌더링하지 않음
         if (actualPeerId === this.myId) return;
 
+        // [수정] 파일이 다르거나 없더라도 이전 데코레이션은 무조건 정리 (고스트 커서 방지)
+        const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
+        if (prevCursor) prevCursor.dispose();
+        const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
+        if (prevSelection) prevSelection.dispose();
+
         // 마지막 커서 상태 저장 (에디터 재개방 시 복구용)
         this.remoteCursorStates.set(actualPeerId, msg);
         
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
         if (!file) return;
-        
-        // 기존 커서/선택 영역 데코레이션 제거 (다른 파일로 이동했을 수도 있으므로 항상 정리)
-        const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
-        if (prevCursor) prevCursor.dispose();
-        const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
-        if (prevSelection) prevSelection.dispose();
         
         const color = this.getUserColor(actualPeerId); 
         // 새 커서 데코레이션 생성
@@ -379,17 +379,20 @@ export class SyncEngine {
         }
     }
 
+    private closingDocuments = new Set<string>();
+
     /**
      * 텍스트 문서 변경 이벤트 리스너를 설정합니다.
      */
     private setupTextListeners() {
         vscode.workspace.onDidChangeTextDocument(e => {
-            if (this.isApplyingRemoteChange) return;
+            // [수정] 원격 변경 적용 중이거나, 문서가 닫히는 중이면 동기화 무시
+            if (this.isApplyingRemoteChange || this.closingDocuments.has(e.document.uri.fsPath)) return;
+            
             const file = this.sharedFiles.find(f => f.path === e.document.uri.fsPath);
             if (!file) return;
 
-            // [핵심] 실제 사용자의 타이핑인지 확인: 변경사항의 reason이 정의되지 않았거나(수동 입력) 
-            // 프로그램에 의한 변경이 아님을 확인
+            // [핵심] 실제 사용자의 타이핑인지 확인
             const isManualChange = e.contentChanges.length > 0;
             if (!isManualChange) return;
 
@@ -400,11 +403,21 @@ export class SyncEngine {
             // 호스트 여부에 따라 동기화 메시지 전송
             this.sendMessage(this.isHost ? 'SYNC_FULL' : 'GUEST_EDIT', { fileName: file.name, content: text });
         });
+
         vscode.workspace.onWillSaveTextDocument(e => {
             // 호스트가 아니며 공유 파일 저장 시 상태 메시지 표시
             if (!this.isHost && this.sharedFiles.some(f => f.path === e.document.uri.fsPath)) {
                 vscode.window.setStatusBarMessage("P2P: Changes synced to Host.", 3000);
             }
+        });
+
+        // [추가] 에디터가 닫힐 때 발생하는 '의도치 않은 변경 이벤트' 차단을 위한 리스너
+        vscode.workspace.onDidCloseTextDocument(doc => {
+            this.closingDocuments.add(doc.uri.fsPath);
+            // 잠시 후 목록에서 제거 (이벤트 루프가 소진될 때까지 보호)
+            setTimeout(() => {
+                this.closingDocuments.delete(doc.uri.fsPath);
+            }, 500);
         });
 
         // 에디터 가시성 변경 시 데코레이션 다시 그리기 (파일 재개방 대응)
@@ -442,16 +455,45 @@ export class SyncEngine {
         
         // 문서 상태 확인 및 내용 업데이트
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-        if (!doc) { fs.writeFileSync(filePath, content); return; }
-        if (doc.getText() === content) return;
+        if (!doc) { 
+            fs.writeFileSync(filePath, content); 
+            return; 
+        }
+        
+        const oldText = doc.getText();
+        
+        // [수정] 내용이 이미 같더라도 디스크 파일은 최신 상태로 업데이트
+        // (게스트가 'Don't Save'로 닫을 때 최신 상태로 복구되도록 보장)
+        if (oldText === content) {
+            try { fs.writeFileSync(filePath, content); } catch(e) {}
+            return;
+        }
 
         // 원격 변경 사항 적용 플래그 설정
         this.lastRemoteContentMap.set(fileName, content);
         this.isApplyingRemoteChange = true;
+
         try {
+            // [수정] 전체 교체가 아닌 최소 범위 교체 (Surgical Update)
+            let start = 0;
+            while (start < oldText.length && start < content.length && oldText[start] === content[start]) {
+                start++;
+            }
+            let oldEnd = oldText.length;
+            let newEnd = content.length;
+            while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === content[newEnd - 1]) {
+                oldEnd--;
+                newEnd--;
+            }
+
             const edit = new vscode.WorkspaceEdit();
-            edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), content);
+            edit.replace(doc.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(oldEnd)), content.slice(start, newEnd));
             await vscode.workspace.applyEdit(edit);
+            
+            // [추가] 에디터 적용 직후 디스크 파일도 즉시 동기화
+            // 이렇게 하면 'Don't Save' 클릭 시 에디터가 이 최신 내용(v3)으로 돌아가게 되며,
+            // 이미 lastRemoteContentMap과 일치하므로 호스트로 과거 내용(v1)이 전송되지 않습니다.
+            try { fs.writeFileSync(filePath, content); } catch(e) {}
         } finally {
             // 변경 사항 적용 후 플래그 해제
             setTimeout(() => { this.isApplyingRemoteChange = false; }, 100);
