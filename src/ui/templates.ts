@@ -239,6 +239,7 @@ export function getSidebarTemplate() {
                     vscode.postMessage({ type: 'cancel', isInviting: isInv }); 
                 }
                 function rename() { vscode.postMessage({ type: 'rename' }); }
+                function kick(peerId) { vscode.postMessage({ type: 'kick', peerId }); }
 
                 window.addEventListener('message', e => {
                     try {
@@ -324,7 +325,8 @@ export function getSidebarTemplate() {
                                         const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
                                         const nHTML = isMe ? '<b>' + name + '</b>' : name;
                                         const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                                        udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + '</div></div>';
+                                        const kHTML = (m.participants.myId === 'host' && !isMe) ? '<button class="stop-btn" onclick="kick(\\'' + id + '\\')">Kick</button>' : '';
+                                        udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + kHTML + '</div></div>';
                                     });
                                 }
                             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {

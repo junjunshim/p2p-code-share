@@ -189,6 +189,13 @@ export class SyncEngine {
                             }
                         }
                         break;
+                    case 'KICKED':
+                        // [추가] 강제 퇴장 처리 (게스트 전용)
+                        if (!this.isHost) {
+                            vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
+                            this.reset();
+                        }
+                        break;
                 }
             } catch (e) {}
         };
@@ -933,6 +940,20 @@ export class SyncEngine {
         this.remoteCursorStates.clear();
         // 사용자 색상 맵 초기화
         this.userColorMap.clear();
+    }
+
+    /**
+     * 특정 피어를 강제로 퇴장시킵니다. (호스트 전용)
+     * @param peerId 퇴장시킬 피어 ID.
+     */
+    public kickPeer(peerId: string) {
+        if (!this.isHost) return;
+
+        // 퇴장 메시지 전송
+        this.sendMessageToPeer(peerId, 'KICKED', { reason: '호스트에 의해 방에서 퇴장되었습니다.' });
+
+        // 로컬에서 즉시 연결 해제 처리
+        this.handlePeerDisconnect(peerId);
     }
 
     /**

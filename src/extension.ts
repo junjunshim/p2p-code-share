@@ -94,6 +94,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (n) engine.changeMyName(n);
     };
 
+    // [추가] 강퇴 처리
+    sidebar.onKick = (peerId) => {
+        engine.kickPeer(peerId);
+    };
+
     // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });

@@ -23,6 +23,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onCancel?: (data?: any) => void;
     public onRename?: () => void;
     public onStopFileSharing?: (fileName: string) => void;
+    public onKick?: (peerId: string) => void; // [추가]
     public onApproveRequest?: (peerId: string) => void; // [추가]
     public onRejectRequest?: (peerId: string) => void; // [추가]
 
@@ -61,6 +62,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'cancel': this.onCancel?.(); break;
                 // 이름 변경 요청
                 case 'rename': this.onRename?.(); break;
+                // 강퇴 요청
+                case 'kick': this.onKick?.(msg.peerId); break;
                 // 파일 스냅샷 열기 명령어
                 case 'openFile': vscode.commands.executeCommand('p2p-code-share.openSnapshot', msg.path); break;
                 // 파일 공유 중지 동작
