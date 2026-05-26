@@ -1,3 +1,11 @@
+/**
+ * @file templates.ts
+ * @description 사이드바 UI 및 P2P 엔진을 위한 HTML/JS 템플릿을 제공합니다.
+ */
+
+/**
+ * 사이드바 웹뷰를 위한 HTML 템플릿을 반환합니다.
+ */
 export function getSidebarTemplate() {
     return `<!DOCTYPE html><html><head>
             <style>
@@ -31,6 +39,16 @@ export function getSidebarTemplate() {
                 .invite-btn { color: var(--vscode-charts-blue); cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 5px; }
                 .invite-btn:hover { opacity: 0.7; }
                 #hostForm { background: var(--vscode-sideBar-background); padding: 15px; border-radius: 6px; border: 1px solid var(--vscode-divider); margin-top: 10px; }
+                
+                /* 승인 시스템 스타일 */
+                .request-item { padding: 12px; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-focusBorder); margin-bottom: 10px; font-size: 12px; }
+                .request-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+                .request-name { font-weight: bold; color: var(--vscode-charts-blue); }
+                .request-desc { font-size: 11px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); padding: 6px; border-radius: 4px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; }
+                .request-actions { display: flex; gap: 8px; }
+                .approve-btn { flex: 1; background: #28a745; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+                .reject-btn { flex: 1; background: #d73a49; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+                .request-count { background: #d73a49; color: white; font-size: 9px; padding: 1px 5px; border-radius: 10px; margin-left: 4px; vertical-align: middle; }
             </style>
         </head>
         <body>
@@ -59,9 +77,11 @@ export function getSidebarTemplate() {
                         <div id="guestForm" class="hidden">
                             <p class="room-label">Enter Room Name (to join automatically)</p>
                             <input type="text" id="joinRoomName" placeholder="Enter Host's Room Name">
+                            <p class="room-label">Purpose of Join (Description for Host)</p>
+                            <textarea id="joinDescription" placeholder="Hi! I want to help with the UI debugging..."></textarea>
                             <button id="btnJoinAuto" onclick="init(false)" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">JOIN AUTOMATICALLY</button>
                             <div id="guestLoading" class="hidden" style="text-align: center; font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 10px;">
-                                <span style="display: inline-block; animation: blink 1s infinite;">📡 Joining the </span> <span id="joiningRoomText"></span>
+                                <span style="display: inline-block; animation: blink 1s infinite;">📡 Waiting for Approval </span> <span id="joiningRoomText"></span>
                             </div>
                             <button id="btnJoinManual" onclick="initManualGuest()" class="secondary-button">Manual Connection (SDP)</button>
                             <button id="btnCancelGuest" onclick="goBack()" class="secondary-button">Cancel</button>
@@ -77,79 +97,135 @@ export function getSidebarTemplate() {
                     <button id="btnCancelInvite" onclick="goBack()" class="secondary-button">← Back</button>
                 </div>
                 <div id="active" class="hidden">
-                    <div class="room-info"><div class="room-label">Room Name</div><div id="dispRoomName" class="room-value"></div></div>
-                    <h4><span>Connected Users</span><span id="btnAddUser" class="invite-btn" onclick="invite()">+</span></h4>
-                    <div id="users"></div>
-                    <h4>Active Snapshots</h4><div id="files"></div>
+                    <div id="roomInfoArea">
+                        <div class="room-info"><div class="room-label">Room Name</div><div id="dispRoomName" class="room-value"></div></div>
+                        <h4>
+                            <span>Connected Users</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span id="btnShowRequests" class="invite-btn hidden" onclick="toggleRequests()" title="Join Requests">📋<span id="reqCount" class="request-count">0</span></span>
+                                <span id="btnAddUser" class="invite-btn" onclick="invite()">+</span>
+                            </div>
+                        </h4>
+                        <div id="users"></div>
+                        <h4>Active Snapshots</h4><div id="files"></div>
+                    </div>
+                    <div id="requestsArea" class="hidden">
+                        <h4><span>Join Requests</span><span class="edit-name" onclick="toggleRequests()">Back</span></h4>
+                        <div id="requestsList"></div>
+                    </div>
                 </div>
             </div>
             <script>
                 const vscode = acquireVsCodeApi();
+                let showingRequests = false;
+
+                function toggleRequests() {
+                    showingRequests = !showingRequests;
+                    const ria = document.getElementById('roomInfoArea');
+                    const ra = document.getElementById('requestsArea');
+                    if (ria) ria.classList.toggle('hidden', showingRequests);
+                    if (ra) ra.classList.toggle('hidden', !showingRequests);
+                }
+
+                function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
+                function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
 
                 function showHostForm() { 
-                    document.getElementById('hostForm').classList.remove('hidden'); 
-                    document.getElementById('startButtons').classList.add('hidden'); 
+                    const hf = document.getElementById('hostForm');
+                    const sb = document.getElementById('startButtons');
+                    if (hf) hf.classList.remove('hidden'); 
+                    if (sb) sb.classList.add('hidden'); 
                 }
                 function showGuestForm() { 
-                    document.getElementById('guestForm').classList.remove('hidden'); 
-                    document.getElementById('startButtons').classList.add('hidden'); 
+                    const gf = document.getElementById('guestForm');
+                    const sb = document.getElementById('startButtons');
+                    if (gf) gf.classList.remove('hidden'); 
+                    if (sb) sb.classList.add('hidden'); 
                 }
                 function resetForms() {
-                    document.getElementById('hostForm').classList.add('hidden'); 
-                    document.getElementById('guestForm').classList.add('hidden'); 
-                    document.getElementById('startButtons').classList.remove('hidden'); 
+                    const hf = document.getElementById('hostForm');
+                    const gf = document.getElementById('guestForm');
+                    const sb = document.getElementById('startButtons');
+                    if (hf) hf.classList.add('hidden'); 
+                    if (gf) gf.classList.add('hidden'); 
+                    if (sb) sb.classList.remove('hidden'); 
                     
-                    // 로딩 및 버튼 상태 초기화
-                    if (document.getElementById('btnStartHost')) document.getElementById('btnStartHost').disabled = false;
-                    if (document.getElementById('btnJoinAuto')) document.getElementById('btnJoinAuto').disabled = false;
-                    if (document.getElementById('btnJoinManual')) document.getElementById('btnJoinManual').disabled = false;
-                    if (document.getElementById('btnCancelHost')) document.getElementById('btnCancelHost').disabled = false;
-                    if (document.getElementById('btnCancelGuest')) document.getElementById('btnCancelGuest').disabled = false;
-                    if (document.getElementById('hostLoading')) document.getElementById('hostLoading').classList.add('hidden');
-                    if (document.getElementById('guestLoading')) document.getElementById('guestLoading').classList.add('hidden');
+                    const ids = ['btnStartHost', 'btnJoinAuto', 'btnJoinManual', 'btnCancelHost', 'btnCancelGuest'];
+                    ids.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.disabled = false;
+                    });
+                    const lds = ['hostLoading', 'guestLoading'];
+                    lds.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.classList.add('hidden');
+                    });
                 }
 
                 function init(i) { 
-                    let rn = '';
-                    if(i) {
-                        rn = document.getElementById('setupRoomName').value.trim();
-                        if (!rn) { alert('Please enter a room name first!'); return; }
-                        // 호스트: 버튼 비활성화 및 로딩 표시
-                        document.getElementById('btnStartHost').disabled = true;
-                        document.getElementById('btnCancelHost').disabled = true;
-                        document.getElementById('hostLoading').classList.remove('hidden');
-                    } else {
-                        rn = document.getElementById('joinRoomName').value.trim();
-                        if (!rn) { alert('Please enter the host room name!'); return; }
-                        // 게스트: 버튼 비활성화 및 참여 중 메시지 표시 (Cancel 버튼은 활성 유지)
-                        document.getElementById('btnJoinAuto').disabled = true;
-                        document.getElementById('btnJoinManual').disabled = true;
-                        document.getElementById('joiningRoomText').innerText = '"' + rn + '"';
-                        document.getElementById('guestLoading').classList.remove('hidden');
-                    }
-                    document.getElementById('activePeerId').value = i ? 'none' : 'default';
-                    document.getElementById('lsdp').value = ''; 
-                    document.getElementById('rsdp').value = '';
-                    vscode.postMessage({ type: 'initPeer', initiator: i, roomName: rn }); 
+                    try {
+                        let rn = '';
+                        let desc = '';
+                        if(i) {
+                            const rnEl = document.getElementById('setupRoomName');
+                            rn = rnEl ? rnEl.value.trim() : '';
+                            if (!rn) { alert('Please enter a room name first!'); return; }
+                            const bsh = document.getElementById('btnStartHost');
+                            const bch = document.getElementById('btnCancelHost');
+                            const hl = document.getElementById('hostLoading');
+                            if (bsh) bsh.disabled = true;
+                            if (bch) bch.disabled = true;
+                            if (hl) hl.classList.remove('hidden');
+                        } else {
+                            const rnEl = document.getElementById('joinRoomName');
+                            const descEl = document.getElementById('joinDescription');
+                            rn = rnEl ? rnEl.value.trim() : '';
+                            desc = descEl ? descEl.value.trim() : '';
+                            if (!rn) { alert('Please enter the host room name!'); return; }
+                            const bja = document.getElementById('btnJoinAuto');
+                            const bjm = document.getElementById('btnJoinManual');
+                            const jrt = document.getElementById('joiningRoomText');
+                            const gl = document.getElementById('guestLoading');
+                            if (bja) bja.disabled = true;
+                            if (bjm) bjm.disabled = true;
+                            if (jrt) jrt.innerText = '"' + rn + '"';
+                            if (gl) gl.classList.remove('hidden');
+                            vscode.postMessage({ type: 'joinRoom', roomName: rn, description: desc });
+                            return; 
+                        }
+                        const apid = document.getElementById('activePeerId');
+                        const lsdp = document.getElementById('lsdp');
+                        const rsdp = document.getElementById('rsdp');
+                        if (apid) apid.value = i ? 'none' : 'default';
+                        if (lsdp) lsdp.value = ''; 
+                        if (rsdp) rsdp.value = '';
+                        vscode.postMessage({ type: 'initPeer', initiator: i, roomName: rn }); 
+                    } catch (e) { console.error(e); }
                 }
 
                 function initManualGuest() {
-                    document.getElementById('activePeerId').value = 'default';
-                    document.getElementById('lsdp').value = ''; 
-                    document.getElementById('rsdp').value = '';
+                    const apid = document.getElementById('activePeerId');
+                    const lsdp = document.getElementById('lsdp');
+                    const rsdp = document.getElementById('rsdp');
+                    if (apid) apid.value = 'default';
+                    if (lsdp) lsdp.value = ''; 
+                    if (rsdp) rsdp.value = '';
                     vscode.postMessage({ type: 'initPeer', initiator: false, roomName: '' }); 
                 }
 
                 function invite() { 
-                    document.getElementById('lsdp').value = 'Generating...'; 
-                    document.getElementById('rsdp').value = '';
-                    // invite 시에는 activePeerId를 SyncEngine이 업데이트해줄 때까지 기다림
+                    const lsdp = document.getElementById('lsdp');
+                    const rsdp = document.getElementById('rsdp');
+                    if (lsdp) lsdp.value = 'Generating...'; 
+                    if (rsdp) rsdp.value = '';
                     vscode.postMessage({ type: 'inviteGuest' }); 
                 }
 
                 function conn() { 
-                    const sdpText = document.getElementById('rsdp').value;
-                    const peerId = document.getElementById('activePeerId').value;
+                    const rsdp = document.getElementById('rsdp');
+                    const apid = document.getElementById('activePeerId');
+                    const sdpText = rsdp ? rsdp.value : '';
+                    const peerId = apid ? apid.value : '';
                     if (!peerId || peerId === 'none') { alert('Error: Target Peer ID not identified.'); return; }
                     try {
                         const sdp = JSON.parse(sdpText);
@@ -157,114 +233,172 @@ export function getSidebarTemplate() {
                     } catch(e) { alert('Invalid Connection ID format!'); }
                 }
 
-                function goBack() { vscode.postMessage({ type: 'cancel', isInviting: document.getElementById('badge').innerText === 'CONNECTED' }); }
+                function goBack() { 
+                    const b = document.getElementById('badge');
+                    const isInv = b && b.innerText === 'CONNECTED';
+                    vscode.postMessage({ type: 'cancel', isInviting: isInv }); 
+                }
                 function rename() { vscode.postMessage({ type: 'rename' }); }
 
                 window.addEventListener('message', e => {
-                    const m = e.data;
-                    if (m.type === 'sdpGenerated') { 
-                        document.getElementById('lsdp').value = m.sdp; 
-                        document.getElementById('activePeerId').value = m.peerId || 'default';
-                    }
-                    if (m.type === 'renderState' || m.type === 'refresh') {
-                        // 로딩 및 버튼 상태 초기화
-                        if (document.getElementById('btnStartHost')) document.getElementById('btnStartHost').disabled = false;
-                        if (document.getElementById('btnCancelHost')) document.getElementById('btnCancelHost').disabled = false;
-                        if (document.getElementById('btnJoinAuto')) document.getElementById('btnJoinAuto').disabled = false;
-                        if (document.getElementById('btnJoinManual')) document.getElementById('btnJoinManual').disabled = false;
-                        if (document.getElementById('btnCancelGuest')) document.getElementById('btnCancelGuest').disabled = false;
-                        if (document.getElementById('hostLoading')) document.getElementById('hostLoading').classList.add('hidden');
-                        if (document.getElementById('guestLoading')) document.getElementById('guestLoading').classList.add('hidden');
+                    try {
+                        const m = e.data;
                         
-                        document.getElementById('loading').classList.add('hidden');
-                        document.getElementById('mainContent').classList.remove('hidden');
-                        if (m.type === 'refresh') return;
-                        
-                        // [핵심 로직 교정]
-                        if (m.participants.invitingPeerId) {
-                            document.getElementById('activePeerId').value = m.participants.invitingPeerId;
-                        } else if (!m.isConnected) {
-                            // 아직 아무것도 연결 안 된 게스트만 default
-                            if (m.participants.myId !== 'host') document.getElementById('activePeerId').value = 'default';
+                        if (m.type === 'sdpGenerated') { 
+                            const lsdp = document.getElementById('lsdp');
+                            const apid = document.getElementById('activePeerId');
+                            if (lsdp) lsdp.value = m.sdp; 
+                            if (apid) apid.value = m.peerId || 'default';
                         }
-                        
-                        const b = document.getElementById('badge');
-                        const roleSel = document.getElementById('roleSelection');
-                        const connArea = document.getElementById('connArea');
-                        const active = document.getElementById('active');
-                        const roleDisp = document.getElementById('roleTextDisp');
-                        const dispRoom = document.getElementById('dispRoomName');
-                        const lsdp = document.getElementById('lsdp');
-                        const btnAddUser = document.getElementById('btnAddUser');
-                        
-                        b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
-                        b.className = 'badge ' + (m.isConnected ? 'online' : '');
-                        
-                        if (m.isSetupMode) {
-                            roleSel.classList.add('hidden'); connArea.classList.remove('hidden'); active.classList.add('hidden');
-                            if (m.invitingSdp) { lsdp.value = m.invitingSdp; }
-                            const isOffer = lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
-                            roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
-                        } else if (m.isConnected) {
-                            roleSel.classList.add('hidden'); connArea.classList.add('hidden'); active.classList.remove('hidden');
-                            dispRoom.innerText = m.roomName || 'Untitled Room';
-                            btnAddUser.classList.toggle('hidden', m.participants.myId !== 'host');
-                            const udiv = document.getElementById('users'); udiv.innerHTML = '';
-                            const myId = m.participants.myId;
-                            Object.entries(m.participants.others).forEach(([id, name]) => {
-                                const isMe = (id === myId || (id === 'default' && myId !== 'host'));
-                                const isHost = (id === 'host');
-                                const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
-                                const nHTML = isMe ? '<b>' + name + '</b>' : name;
-                                const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                                udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + '</div></div>';
-                            });
-                        } else if (m.participants.myId === 'host') {
-                            roleSel.classList.remove('hidden'); connArea.classList.add('hidden'); active.classList.add('hidden');
-                            document.getElementById('startButtons').classList.add('hidden');
-                            document.getElementById('hostForm').classList.remove('hidden');
-                            document.getElementById('btnStartHost').disabled = true;
-                            document.getElementById('btnCancelHost').disabled = true;
-                            document.getElementById('hostLoading').classList.remove('hidden');
-                        } else if (!m.isConnected && !m.isSetupMode && m.roomName && m.participants.myId !== 'host') {
-                            // [핵심 추가] 게스트가 자동 참여 중인 경우 (방 이름이 있고 아직 연결/설정 모드가 아님)
-                            roleSel.classList.remove('hidden'); connArea.classList.add('hidden'); active.classList.add('hidden');
-                            document.getElementById('startButtons').classList.add('hidden');
-                            document.getElementById('guestForm').classList.remove('hidden');
-                            document.getElementById('btnJoinAuto').disabled = true;
-                            document.getElementById('btnJoinManual').disabled = true;
-                            // 게스트는 연결 시도 중에도 취소할 수 있도록 유지
-                            document.getElementById('btnCancelGuest').disabled = false;
-                            document.getElementById('joiningRoomText').innerText = '"' + m.roomName + '"';
-                            document.getElementById('guestLoading').classList.remove('hidden');
-                        } else {
-                            roleSel.classList.remove('hidden'); connArea.classList.add('hidden'); active.classList.add('hidden');
-                            document.getElementById('setupRoomName').value = ''; 
-                            document.getElementById('joinRoomName').value = ''; 
-                            lsdp.value = ''; document.getElementById('rsdp').value = '';
-                            resetForms();
-                        }
-                        const fdiv = document.getElementById('files'); fdiv.innerHTML = '';
-                        const isUserHost = m.participants.myId === 'host';
-                        m.files.forEach(f => {
-                            const item = document.createElement('div'); item.className = 'file-item';
-                            const nameSpan = document.createElement('span');
-                            nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
-                            nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
-                            item.appendChild(nameSpan);
-                            if (isUserHost) {
-                                const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
-                                stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
-                                item.appendChild(stopBtn);
+
+                        if (m.type === 'renderState' || m.type === 'refresh') {
+                            // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
+                            const ld = document.getElementById('loading');
+                            const mc = document.getElementById('mainContent');
+                            if (ld) ld.classList.add('hidden');
+                            if (mc) mc.classList.remove('hidden');
+
+                            if (m.type === 'refresh' || !m.participants) return;
+
+                            const b = document.getElementById('badge');
+                            const roleSel = document.getElementById('roleSelection');
+                            const connArea = document.getElementById('connArea');
+                            const active = document.getElementById('active');
+                            const roleDisp = document.getElementById('roleTextDisp');
+                            const dispRoom = document.getElementById('dispRoomName');
+                            const lsdp = document.getElementById('lsdp');
+                            const btnAddUser = document.getElementById('btnAddUser');
+                            const btnShowRequests = document.getElementById('btnShowRequests');
+                            const reqCountDisp = document.getElementById('reqCount');
+
+                            if (b) {
+                                b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
+                                b.className = 'badge ' + (m.isConnected ? 'online' : '');
                             }
-                            fdiv.appendChild(item);
-                        });
-                    }
+
+                            if (m.isSetupMode) {
+                                // 1. 설정 모드 (SDP 교환 중)
+                                if (roleSel) roleSel.classList.add('hidden');
+                                if (connArea) connArea.classList.remove('hidden');
+                                if (active) active.classList.add('hidden');
+                                if (lsdp && m.invitingSdp) lsdp.value = m.invitingSdp;
+                                const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
+                                if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
+                            } else if (m.isConnected) {
+                                // 2. 연결 완료 모드 (참가자 및 파일 목록)
+                                if (roleSel) roleSel.classList.add('hidden');
+                                if (connArea) connArea.classList.add('hidden');
+                                if (active) active.classList.remove('hidden');
+                                if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
+
+                                const isMeHost = m.participants.myId === 'host';
+                                if (btnAddUser) btnAddUser.classList.toggle('hidden', !isMeHost);
+
+                                if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
+                                    if (btnShowRequests) btnShowRequests.classList.remove('hidden');
+                                    if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
+                                    const rl = document.getElementById('requestsList');
+                                    if (rl) {
+                                        rl.innerHTML = '';
+                                        m.participants.joinRequests.forEach(req => {
+                                            const item = document.createElement('div');
+                                            item.className = 'request-item';
+                                            item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
+                                                            '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
+                                                            '<div class="request-actions"><button class="approve-btn" onclick="approve(\\'' + req.peerId + '\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\'' + req.peerId + '\\')" title="Reject">✖</button></div>';
+                                            rl.appendChild(item);
+                                        });
+                                    }
+                                } else {
+                                    if (btnShowRequests) btnShowRequests.classList.add('hidden');
+                                    if (showingRequests) toggleRequests();
+                                }
+
+                                const udiv = document.getElementById('users');
+                                if (udiv) {
+                                    udiv.innerHTML = '';
+                                    const myId = m.participants.myId;
+                                    Object.entries(m.participants.others).forEach(([id, name]) => {
+                                        const isMe = (id === myId || (id === 'default' && myId !== 'host'));
+                                        const isHost = (id === 'host');
+                                        const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
+                                        const nHTML = isMe ? '<b>' + name + '</b>' : name;
+                                        const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
+                                        udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + '</div></div>';
+                                    });
+                                }
+                            } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
+                                // 3. 호스트 생성/연결 중 모드
+                                if (roleSel) roleSel.classList.remove('hidden');
+                                if (connArea) connArea.classList.add('hidden');
+                                if (active) active.classList.add('hidden');
+                                
+                                const sb = document.getElementById('startButtons');
+                                const hf = document.getElementById('hostForm');
+                                const hl = document.getElementById('hostLoading');
+                                const bsh = document.getElementById('btnStartHost');
+                                const bch = document.getElementById('btnCancelHost');
+                                
+                                if (sb) sb.classList.add('hidden');
+                                if (hf) hf.classList.remove('hidden');
+                                if (hl) hl.classList.remove('hidden');
+                                if (bsh) bsh.disabled = true;
+                                if (bch) bch.disabled = true;
+                            } else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
+                                // 4. 게스트 승인 대기 모드
+                                if (roleSel) roleSel.classList.remove('hidden');
+                                if (connArea) connArea.classList.add('hidden');
+                                if (active) active.classList.add('hidden');
+                                
+                                const sb = document.getElementById('startButtons');
+                                const gf = document.getElementById('guestForm');
+                                const gl = document.getElementById('guestLoading');
+                                const bja = document.getElementById('btnJoinAuto');
+                                const bjm = document.getElementById('btnJoinManual');
+                                const jrt = document.getElementById('joiningRoomText');
+                                
+                                if (sb) sb.classList.add('hidden');
+                                if (gf) gf.classList.remove('hidden');
+                                if (gl) gl.classList.remove('hidden');
+                                if (bja) bja.disabled = true;
+                                if (bjm) bjm.disabled = true;
+                                if (jrt) jrt.innerText = '"' + m.roomName + '"';
+                            } else {
+                                // 5. 초기 모드 (방 생성/참여 선택)
+                                if (roleSel) roleSel.classList.remove('hidden');
+                                if (connArea) connArea.classList.add('hidden');
+                                if (active) active.classList.add('hidden');
+                                resetForms();
+                            }
+
+                            const fdiv = document.getElementById('files');
+                            if (fdiv) {
+                                fdiv.innerHTML = '';
+                                const isFinalHost = m.participants.myId === 'host';
+                                m.files.forEach(f => {
+                                    const item = document.createElement('div'); item.className = 'file-item';
+                                    const nameSpan = document.createElement('span');
+                                    nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
+                                    nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+                                    item.appendChild(nameSpan);
+                                    if (isFinalHost) {
+                                        const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
+                                        stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
+                                        item.appendChild(stopBtn);
+                                    }
+                                    fdiv.appendChild(item);
+                                });
+                            }
+                        }
+                    } catch (err) { console.error("Webview Error:", err); }
                 });
                 vscode.postMessage({ type: 'ready' });
             </script></body></html>`;
 }
 
+/**
+ * P2P 엔진 웹뷰를 위한 HTML 템플릿을 반환합니다.
+ */
 export function getEngineTemplate(initiator: boolean, autoStart: boolean = true, roomName: string = '') {
     return `<!DOCTYPE html><html><body style="font-family:sans-serif; padding:20px; background: #1e1e1e; color: #ccc; line-height: 1.5;">
             <h2 style="color: #569cd6; margin-top: 0;">📡 P2P Engine</h2>
@@ -277,8 +411,8 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                 const st = document.getElementById('st');
                 const logDiv = document.getElementById('log');
                 const peers = {};
-                const pendingSdpMap = {}; // peerId -> sdp (신호 자동 전달용)
-                const remotePeerIdMap = {}; // 로컬ID -> 원격ID 매핑
+                const pendingSdpMap = {}; 
+                const remotePeerIdMap = {};
                 let peerServer = null;
                 let activeSignalingConn = null;
 
@@ -288,16 +422,12 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                     logDiv.prepend(entry);
                 }
 
-                // --- PeerJS Signaling Server (복사/붙여넣기 자동화 도우미) ---
                 if ("${roomName}") {
                     const rName = "${roomName}";
-                    // 한글 등 비 ASCII 문자를 지원하기 위해 ID를 Hex로 안전하게 변환
                     const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
                     const pjsId = ${initiator} ? toSafeId(rName) : null;
-                    
-                    // PeerJS 자체도 방화벽을 뚫기 위해 STUN 서버 설정이 필요함
                     peerServer = new Peer(pjsId, {
-                        debug: 3, // 상세 로그 활성화
+                        debug: 3,
                         config: { 
                             iceServers: [
                                 { urls: 'stun:stun.l.google.com:19302' },
@@ -306,24 +436,15 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                             ] 
                         }
                     });
-                    
                     peerServer.on('open', (id) => {
-                        log('Auto-Signaling Server Ready. ID: ' + id);
-                        if (${initiator}) {
-                            vscode.postMessage({ type: 'roomNameSuccess' });
-                        }
+                        log('Auto-Signaling Server Ready.');
+                        if (${initiator}) vscode.postMessage({ type: 'roomNameSuccess' });
                         if (!${initiator}) {
-                            log('Attempting auto-connect to Host Room...');
                             const conn = peerServer.connect(toSafeId(rName));
                             handleSignalingConn(conn);
                         }
                     });
-
-                    peerServer.on('connection', (conn) => {
-                        log('A guest contacted via Auto-Signaling. Opening bridge...');
-                        handleSignalingConn(conn);
-                    });
-
+                    peerServer.on('connection', (conn) => { handleSignalingConn(conn); });
                     peerServer.on('error', (err) => {
                         log('PeerJS Error: ' + err.type);
                         if (${initiator}) {
@@ -337,158 +458,81 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
 
                 function handleSignalingConn(conn) {
                     activeSignalingConn = conn;
-                    
-                    conn.on('open', () => {
-                        log('Signaling bridge opened successfully!');
-                        if (!${initiator}) {
-                            log('Requesting Offer from Host...');
-                            conn.send({ type: 'REQ_OFFER' });
-                        }
-                    });
-
-                    conn.on('error', (err) => {
-                        log('Bridge Error: ' + err.message);
-                    });
-
+                    conn.on('open', () => { if (!${initiator}) conn.send({ type: 'REQ_OFFER' }); });
                     conn.on('data', (data) => {
                         if (data.type === 'REQ_OFFER') {
-                            // 호스트: 대기 중인 피어 찾기 (연결 안 됨 + 시작자)
                             const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
-                            
-                            if (targetId) {
-                                if (pendingSdpMap[targetId]) {
-                                    // 이미 SDP가 생성 완료된 경우 즉시 전송
-                                    log('Auto-sending ready Offer for ' + targetId);
-                                    conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
-                                } else {
-                                    // 아직 STUN 탐색 중인 경우: 생성될 때까지 대기 알림 (새로 만들지 않음)
-                                    log('Offer is being generated for ' + targetId + '. Please wait...');
-                                }
+                            if (targetId && pendingSdpMap[targetId]) {
+                                conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
                             } else {
-                                // 아예 대기 중인 피어가 없는 경우에만 새로 생성 요청
-                                log('No pending invitations. Requesting new auto-invite...');
                                 vscode.postMessage({ type: 'requireInvite' });
                             }
                         } else if (data.type === 'SDP') {
                             const targetId = ${initiator} ? data.peerId : 'default';
                             if (peers[targetId] && peers[targetId].connected) return;
-
-                            log('Received SDP via Auto-Signaling for: ' + data.peerId);
                             if (!${initiator}) remotePeerIdMap['default'] = data.peerId;
-                            
-                            const m = { type: 'signal', sdp: data.sdp, peerId: targetId };
-                            window.dispatchEvent(new MessageEvent('message', { data: m }));
+                            window.dispatchEvent(new MessageEvent('message', { data: { type: 'signal', sdp: data.sdp, peerId: targetId } }));
                         }
                     });
-
-                    conn.on('close', () => {
-                        if (activeSignalingConn === conn) activeSignalingConn = null;
-                    });
+                    conn.on('close', () => { if (activeSignalingConn === conn) activeSignalingConn = null; });
                 }
 
                 function addPeer(peerId, isInitiator) {
                     if (peers[peerId]) return;
                     try {
                         const p = new SimplePeer({ 
-                            initiator: isInitiator, 
-                            trickle: false, 
-                            config: { 
-                                iceServers: [
-                                    { urls: 'stun:stun.l.google.com:19302' },
-                                    { urls: 'stun:stun1.l.google.com:19302' },
-                                    { urls: 'stun:stun2.l.google.com:19302' }
-                                ] 
-                            } 
+                            initiator: isInitiator, trickle: false, 
+                            config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] } 
                         });
-                        
                         p.on('signal', data => { 
                             const sdpStr = JSON.stringify(data);
                             pendingSdpMap[peerId] = sdpStr;
-                            log('Signal generated for: ' + peerId); 
-                            
                             vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId }); 
-                            
                             if (activeSignalingConn && activeSignalingConn.open) {
-                                log('Auto-forwarding signal via PeerJS...');
-                                const outgoingPeerId = remotePeerIdMap[peerId] || peerId;
-                                activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: outgoingPeerId });
+                                activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
                             }
                         });
-
                         p.on('connect', () => { 
                             st.innerText = 'CONNECTED!'; st.style.color = '#4ec9b0';
-                            log('SUCCESS: Connection established with ' + peerId);
                             vscode.postMessage({ type: 'statusUpdate', value: 'Connected', peerId }); 
-                            
-                            // [핵심 수정] 연결 성공 시 임시 신호 채널 종료 (다음 게스트 초대를 방해하지 않기 위함)
-                            if (activeSignalingConn) {
-                                log('Task complete. Closing signaling channel.');
-                                activeSignalingConn.close();
-                                activeSignalingConn = null;
-                            }
+                            if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
                         });
-
                         p.on('data', data => {
                             const raw = new Uint8Array(data);
                             if (raw.length !== 1 || raw[0] !== 255) {
                                 vscode.postMessage({ type: 'sendData', value: new TextDecoder().decode(raw), peerId });
                             }
                         });
-
                         p.on('error', err => { 
-                            log('ERROR (' + peerId + '): ' + err.message); 
-                            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
                             delete peers[peerId];
                             if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
+                            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
                         });
-
                         p.on('close', () => {
-                            log('CLOSED: ' + peerId);
-                            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
                             delete peers[peerId];
                             if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
+                            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
                         });
-
                         peers[peerId] = p;
-                        return p;
-                    } catch(e) { log('Fatal Peer Error: ' + e.message); }
+                    } catch(e) { log('Error: ' + e.message); }
                 }
 
-                if (${autoStart}) { 
-                    log('Auto-starting default peer...');
-                    addPeer('default', ${initiator}); 
-                }
+                if (${autoStart}) addPeer('default', ${initiator}); 
 
                 window.addEventListener('message', e => {
                     const m = e.data;
                     const targetId = m.peerId || 'default';
-                    if (m.type === 'updatePeerId') {
-                        if (peers[m.oldId]) {
-                            peers[m.newId] = peers[m.oldId];
-                            const sdp = pendingSdpMap[m.oldId];
-                            delete peers[m.oldId];
-                            delete pendingSdpMap[m.oldId];
-                            if (sdp) pendingSdpMap[m.newId] = sdp;
-                            log('Peer ID updated from ' + m.oldId + ' to ' + m.newId);
-                        }
+                    if (m.type === 'updatePeerId' && peers[m.oldId]) {
+                        peers[m.newId] = peers[m.oldId];
+                        pendingSdpMap[m.newId] = pendingSdpMap[m.oldId];
+                        delete peers[m.oldId]; delete pendingSdpMap[m.oldId];
                     }
-                    if (m.type === 'addNewPeer') { 
-                        log('Creating new peer: ' + m.peerId);
-                        addPeer(m.peerId, m.initiator); 
-                    }
-                    if (m.type === 'signal') { 
-                        if (peers[targetId]) {
-                            peers[targetId].signal(m.sdp); 
-                        } else {
-                            log('Error: Cannot apply signal. Peer ' + targetId + ' not found.');
-                        }
-                    }
+                    if (m.type === 'addNewPeer') addPeer(m.peerId, m.initiator); 
+                    if (m.type === 'signal' && peers[targetId]) peers[targetId].signal(m.sdp); 
                     if (m.type === 'peerData') {
                         const data = new TextEncoder().encode(JSON.stringify(m.value));
                         if (m.targetPeerId) {
-                            if (peers[m.targetPeerId] && peers[m.targetPeerId].connected) {
-                                peers[m.targetPeerId].send(data);
-                            }
+                            if (peers[m.targetPeerId] && peers[m.targetPeerId].connected) peers[m.targetPeerId].send(data);
                         } else {
                             Object.values(peers).forEach(p => { if (p.connected) p.send(data); });
                         }

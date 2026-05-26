@@ -16,12 +16,15 @@ import { getSidebarTemplate } from '../ui/templates';
 export class SidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     public onInitPeer?: (initiator: boolean, roomName: string) => void;
+    public onJoinRoom?: (roomName: string, description: string) => void; // [추가]
     public onInviteGuest?: () => void;
     public onReady?: () => void;
     public onSignal?: (sdp: any, peerId?: string) => void;
     public onCancel?: (data?: any) => void;
     public onRename?: () => void;
     public onStopFileSharing?: (fileName: string) => void;
+    public onApproveRequest?: (peerId: string) => void; // [추가]
+    public onRejectRequest?: (peerId: string) => void; // [추가]
 
     /**
      * SidebarProvider의 인스턴스를 생성합니다.
@@ -48,6 +51,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'ready': this.onReady?.(); break;
                 // 피어 초기화 요청
                 case 'initPeer': this.onInitPeer?.(msg.initiator, msg.roomName); break;
+                // [추가] 방 참여 요청
+                case 'joinRoom': this.onJoinRoom?.(msg.roomName, msg.description); break;
                 // 게스트 초대 동작
                 case 'inviteGuest': this.onInviteGuest?.(); break;
                 // 시그널링 데이터
@@ -60,6 +65,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'openFile': vscode.commands.executeCommand('p2p-code-share.openSnapshot', msg.path); break;
                 // 파일 공유 중지 동작
                 case 'stopFileSharing': this.onStopFileSharing?.(msg.fileName); break;
+                // [추가] 승인/거절
+                case 'approveRequest': this.onApproveRequest?.(msg.peerId); break;
+                case 'rejectRequest': this.onRejectRequest?.(msg.peerId); break;
             }
         });
     }

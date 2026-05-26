@@ -42,6 +42,11 @@ export function activate(context: vscode.ExtensionContext) {
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
+    // [추가] 방 참여 요청 처리
+    sidebar.onJoinRoom = (roomName, description) => {
+        engine.sendJoinRequest(roomName, description);
+    };
+
     // 사이드바가 준비되면 초기 UI 동기화 실행
     sidebar.onReady = () => { engine.pushUIUpdate(); };
 
@@ -53,6 +58,16 @@ export function activate(context: vscode.ExtensionContext) {
     // 특정 파일 공유 중지
     sidebar.onStopFileSharing = (fileName) => {
         engine.stopSharingByName(fileName);
+    };
+
+    // [추가] 승인 처리
+    sidebar.onApproveRequest = (peerId) => {
+        engine.approveRequest(peerId);
+    };
+
+    // [추가] 거절 처리
+    sidebar.onRejectRequest = (peerId) => {
+        engine.rejectRequest(peerId);
     };
 
     // P2P 연결을 위한 시그널링 데이터 적용

@@ -35,7 +35,9 @@ export class SyncEngine {
     private isStorageInitialized = false;
     public isSetupMode = false; 
     public isConnected = false; 
+    private isAutoJoin = false; // [추가] 자동 참여 여부 추적
     private pendingInvites = new Set<string>();
+    private joinRequests: any[] = []; // [추가] 방 참여 요청 목록
 
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
@@ -77,8 +79,12 @@ export class SyncEngine {
                                 this.pendingInvites.delete(peerId);
                             }
                         } else {
-                            this.isConnected = true;
-                            this.isSetupMode = false;
+                            // [수정] 수동 연결 모드라면 즉시 연결 완료로 처리하여 방 화면으로 이동하도록 함
+                            if (!this.isAutoJoin) {
+                                this.isConnected = true;
+                                this.isSetupMode = false;
+                                console.log("[P2P DEBUG] 수동 연결 완료: UI 전환 트리거");
+                            }
                         }
                         this.pushUIUpdate();
                         break;
@@ -96,6 +102,15 @@ export class SyncEngine {
                             // UI에 피어 ID 변경 알림
                             this.sendMessage('updatePeerId', { oldId, newId: this.myId });
                             
+                            // [추가] ASSIGN_PEER_ID를 받은 후 JOIN_REQUEST 전송
+                            if (this.isAutoJoin && this.pendingJoinRequest) {
+                                this.sendMessage('JOIN_REQUEST', { 
+                                    name: this.myId, 
+                                    description: this.pendingJoinRequest.description 
+                                });
+                                this.pendingJoinRequest = null;
+                            }
+                            
                             this.sendMessage('GUEST_JOIN', { name: this.myName }); 
                             this.pushUIUpdate();
                         }
@@ -109,7 +124,15 @@ export class SyncEngine {
                     case 'GUEST_JOIN': 
                         // 게스트 연결 처리
                         console.log(`[P2P DEBUG] 피어로부터 GUEST_JOIN: ${peerId}, 이름: ${msg.name}`);
-                        this.handleGuestJoin(msg, peerId); break;
+                        
+                        // [수정] 호스트일 경우, 자동 참여가 아닐 때만 즉시 추가 (자동 참여는 승인 후 처리)
+                        if (this.isHost) {
+                            const isAutoJoining = this.joinRequests.some(r => r.peerId === peerId);
+                            if (!isAutoJoining) {
+                                this.handleGuestJoin(msg, peerId);
+                            }
+                        }
+                        break;
                     case 'GUEST_RENAME':
                         // 참가자 이름 변경
                         if (this.isHost) { this.participants[peerId] = msg.newName; this.broadcastUserList(); }
@@ -124,9 +147,92 @@ export class SyncEngine {
                         this.updateRemoteCursor(msg, senderId); 
                         if (this.isHost) this.broadcastCursor(msg, senderId);
                         break;
+                    case 'JOIN_REQUEST':
+                        // [추가] 방 참여 요청 처리 (호스트 전용)
+                        if (this.isHost) {
+                            this.joinRequests.push({
+                                peerId,
+                                name: msg.name || peerId,
+                                description: msg.description || '',
+                                timestamp: Date.now()
+                            });
+                            vscode.window.showInformationMessage(`방 참여 요청: ${msg.name || peerId}`);
+                            this.pushUIUpdate();
+                        }
+                        break;
+                    case 'JOIN_RESPONSE':
+                        // [추가] 방 참여 응답 처리 (게스트 전용)
+                        if (!this.isHost) {
+                            if (msg.approved) {
+                                vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
+                                this.isConnected = true; // [추가] 승인 시 연결 완료 상태로 전환
+                                this.isAutoJoin = false; // [추가] 자동 참여 모드 해제
+                            } else {
+                                vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
+                                this.reset();
+                            }
+                        }
+                        break;
                 }
             } catch (e) {}
         };
+    }
+
+    private pendingJoinRequest: { roomName: string, description: string } | null = null; // [추가] 대기 중인 요청 저장
+
+    /**
+     * 방 참여 요청을 보냅니다. (게스트용)
+     * @param roomName 방 이름.
+     * @param description 참여 목적 설명.
+     */
+    public async sendJoinRequest(roomName: string, description: string) {
+        this.roomName = roomName;
+        this.isSetupMode = false;
+        this.isAutoJoin = true; // [추가] 자동 참여 모드 설정
+        this.pendingJoinRequest = { roomName, description }; // 요청 큐에 저장
+        this.pushUIUpdate();
+
+        // 허브 생성 (게스트 모드)
+        this.hub.createHub(false, roomName, 'default');
+    }
+
+    /**
+     * 방 참여 요청을 승인합니다. (호스트용)
+     * @param peerId 승인할 피어 ID.
+     */
+    public approveRequest(peerId: string) {
+        if (!this.isHost) return;
+        
+        // [수정] 승인 시 게스트를 참가자로 추가
+        const request = this.joinRequests.find(req => req.peerId === peerId);
+        if (request) {
+            this.handleGuestJoin({ name: request.name }, peerId);
+        }
+        
+        // 요청 목록에서 제거
+        this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
+        
+        // 승인 메시지 전송 및 피어 ID 할당
+        this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+        this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
+        
+        this.pushUIUpdate();
+    }
+
+    /**
+     * 방 참여 요청을 거절합니다. (호스트용)
+     * @param peerId 거절할 피어 ID.
+     */
+    public rejectRequest(peerId: string) {
+        if (!this.isHost) return;
+        
+        // 요청 목록에서 제거
+        this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
+        
+        // 거절 메시지 전송
+        this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: false, reason: '호스트가 요청을 거절했습니다.' });
+        
+        this.pushUIUpdate();
     }
 
     /**
@@ -868,8 +974,9 @@ export class SyncEngine {
             files: this.sharedFiles, 
             isSetupMode: this.isSetupMode, 
             isConnected: this.isConnected,
-            // [핵심] 현재 초대 중인 아이디 목록을 UI로 전달
-            pendingInvites: Array.from(this.pendingInvites)
+            // [핵심] 현재 초대 중인 아이디 목록 및 참여 요청 목록을 UI로 전달
+            pendingInvites: Array.from(this.pendingInvites),
+            joinRequests: this.joinRequests
         });
     }
 }
