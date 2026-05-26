@@ -777,8 +777,17 @@ export class SyncEngine {
      * @param data 메시지 데이터.
      */
     private sendMessage(type: string, data: any) { 
-        // PeerData 형식으로 메시지 전송
-        this.hub.sendToEngine({ type: 'peerData', value: { type, ...data } }); 
+        if (this.isHost) {
+            // 호스트일 경우 참가자들에게만 개별 전송
+            Object.keys(this.participants).forEach(peerId => {
+                if (peerId !== 'host') {
+                    this.sendMessageToPeer(peerId, type, data);
+                }
+            });
+        } else {
+            // 게스트일 경우 허브를 통해 전송
+            this.hub.sendToEngine({ type: 'peerData', value: { type, ...data } });
+        }
     }
 
     /**
