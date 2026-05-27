@@ -25,15 +25,20 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
         
         // 상태 업데이트를 사이드바에 알림
-        sidebar.postMessage({
-            type: 'renderState',
-            isConnected: state.isConnected,
-            isSetupMode: state.isSetupMode,
-            files: state.files,
-            participants: state,
-            roomName: state.roomName,
-            invitingSdp: state.invitingSdp
-        });
+        if (state.type === 'log') {
+            // [수정] 로그는 엔진 웹뷰(getEngineTemplate)로만 전송
+            hub.sendToEngine({ type: 'log', message: state.message });
+        } else {
+            sidebar.postMessage({
+                type: 'renderState',
+                isConnected: state.isConnected,
+                isSetupMode: state.isSetupMode,
+                files: state.files,
+                participants: state,
+                roomName: state.roomName,
+                invitingSdp: state.invitingSdp
+            });
+        }
     });
 
     // 사이드바로부터 피어 초기화 요청 처리
@@ -51,6 +56,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // [추가] 방 참여 요청 처리
     sidebar.onJoinRoom = (roomName, description) => {
+        hub.dispose();
+        engine.reset();
         engine.sendJoinRequest(roomName, description);
     };
 

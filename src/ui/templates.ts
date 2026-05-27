@@ -252,148 +252,152 @@ export function getSidebarTemplate() {
                             if (apid) apid.value = m.peerId || 'default';
                         }
 
-                        if (m.type === 'renderState' || m.type === 'refresh') {
-                            // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
-                            const ld = document.getElementById('loading');
-                            const mc = document.getElementById('mainContent');
-                            if (ld) ld.classList.add('hidden');
-                            if (mc) mc.classList.remove('hidden');
-
-                            if (m.type === 'refresh' || !m.participants) return;
-
-                            const b = document.getElementById('badge');
-                            const roleSel = document.getElementById('roleSelection');
-                            const connArea = document.getElementById('connArea');
-                            const active = document.getElementById('active');
-                            const roleDisp = document.getElementById('roleTextDisp');
-                            const dispRoom = document.getElementById('dispRoomName');
-                            const lsdp = document.getElementById('lsdp');
-                            const btnAddUser = document.getElementById('btnAddUser');
-                            const btnShowRequests = document.getElementById('btnShowRequests');
-                            const reqCountDisp = document.getElementById('reqCount');
-
-                            if (b) {
-                                b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
-                                b.className = 'badge ' + (m.isConnected ? 'online' : '');
-                            }
-
-                            if (m.isSetupMode) {
-                                // 1. 설정 모드 (SDP 교환 중)
-                                if (roleSel) roleSel.classList.add('hidden');
-                                if (connArea) connArea.classList.remove('hidden');
-                                if (active) active.classList.add('hidden');
-                                if (lsdp && m.invitingSdp) lsdp.value = m.invitingSdp;
-                                const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
-                                if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
-                            } else if (m.isConnected) {
-                                // 2. 연결 완료 모드 (참가자 및 파일 목록)
-                                if (roleSel) roleSel.classList.add('hidden');
-                                if (connArea) connArea.classList.add('hidden');
-                                if (active) active.classList.remove('hidden');
-                                if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
-
-                                const isMeHost = m.participants.myId === 'host';
-                                if (btnAddUser) btnAddUser.classList.toggle('hidden', !isMeHost);
-
-                                if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
-                                    if (btnShowRequests) btnShowRequests.classList.remove('hidden');
-                                    if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
-                                    const rl = document.getElementById('requestsList');
-                                    if (rl) {
-                                        rl.innerHTML = '';
-                                        m.participants.joinRequests.forEach(req => {
-                                            const item = document.createElement('div');
-                                            item.className = 'request-item';
-                                            item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
-                                                            '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
-                                                            '<div class="request-actions"><button class="approve-btn" onclick="approve(\\'' + req.peerId + '\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\'' + req.peerId + '\\')" title="Reject">✖</button></div>';
-                                            rl.appendChild(item);
-                                        });
-                                    }
-                                } else {
-                                    if (btnShowRequests) btnShowRequests.classList.add('hidden');
-                                    if (showingRequests) toggleRequests();
-                                }
-
-                                const udiv = document.getElementById('users');
-                                if (udiv) {
-                                    udiv.innerHTML = '';
-                                    const myId = m.participants.myId;
-                                    Object.entries(m.participants.others).forEach(([id, name]) => {
-                                        const isMe = (id === myId || (id === 'default' && myId !== 'host'));
-                                        const isHost = (id === 'host');
-                                        const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
-                                        const nHTML = isMe ? '<b>' + name + '</b>' : name;
-                                        const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                                        const kHTML = (m.participants.myId === 'host' && !isMe) ? '<button class="stop-btn" onclick="kick(\\'' + id + '\\')">Kick</button>' : '';
-                                        udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + kHTML + '</div></div>';
-                                    });
-                                }
-                            } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
-                                // 3. 호스트 생성/연결 중 모드
-                                if (roleSel) roleSel.classList.remove('hidden');
-                                if (connArea) connArea.classList.add('hidden');
-                                if (active) active.classList.add('hidden');
-                                
-                                const sb = document.getElementById('startButtons');
-                                const hf = document.getElementById('hostForm');
-                                const hl = document.getElementById('hostLoading');
-                                const bsh = document.getElementById('btnStartHost');
-                                const bch = document.getElementById('btnCancelHost');
-                                
-                                if (sb) sb.classList.add('hidden');
-                                if (hf) hf.classList.remove('hidden');
-                                if (hl) hl.classList.remove('hidden');
-                                if (bsh) bsh.disabled = true;
-                                if (bch) bch.disabled = true;
-                            } else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
-                                // 4. 게스트 승인 대기 모드
-                                if (roleSel) roleSel.classList.remove('hidden');
-                                if (connArea) connArea.classList.add('hidden');
-                                if (active) active.classList.add('hidden');
-                                
-                                const sb = document.getElementById('startButtons');
-                                const gf = document.getElementById('guestForm');
-                                const gl = document.getElementById('guestLoading');
-                                const bja = document.getElementById('btnJoinAuto');
-                                const bjm = document.getElementById('btnJoinManual');
-                                const jrt = document.getElementById('joiningRoomText');
-                                
-                                if (sb) sb.classList.add('hidden');
-                                if (gf) gf.classList.remove('hidden');
-                                if (gl) gl.classList.remove('hidden');
-                                if (bja) bja.disabled = true;
-                                if (bjm) bjm.disabled = true;
-                                if (jrt) jrt.innerText = '"' + m.roomName + '"';
-                            } else {
-                                // 5. 초기 모드 (방 생성/참여 선택)
-                                if (roleSel) roleSel.classList.remove('hidden');
-                                if (connArea) connArea.classList.add('hidden');
-                                if (active) active.classList.add('hidden');
-                                resetForms();
-                            }
-
-                            const fdiv = document.getElementById('files');
-                            if (fdiv) {
-                                fdiv.innerHTML = '';
-                                const isFinalHost = m.participants.myId === 'host';
-                                m.files.forEach(f => {
-                                    const item = document.createElement('div'); item.className = 'file-item';
-                                    const nameSpan = document.createElement('span');
-                                    nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
-                                    nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
-                                    item.appendChild(nameSpan);
-                                    if (isFinalHost) {
-                                        const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
-                                        stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
-                                        item.appendChild(stopBtn);
-                                    }
-                                    fdiv.appendChild(item);
-                                });
-                            }
+                        if (m.type === 'renderState' || m.type === 'renderParticipants') {
+                            renderUI(m);
                         }
                     } catch (err) { console.error("Webview Error:", err); }
                 });
+
+                function renderUI(m) {
+                    // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
+                    const ld = document.getElementById('loading');
+                    const mc = document.getElementById('mainContent');
+                    if (ld) ld.classList.add('hidden');
+                    if (mc) mc.classList.remove('hidden');
+
+                    if (m.type === 'refresh' || !m.participants) return;
+
+                    const b = document.getElementById('badge');
+                    const roleSel = document.getElementById('roleSelection');
+                    const connArea = document.getElementById('connArea');
+                    const active = document.getElementById('active');
+                    const roleDisp = document.getElementById('roleTextDisp');
+                    const dispRoom = document.getElementById('dispRoomName');
+                    const lsdp = document.getElementById('lsdp');
+                    const btnAddUser = document.getElementById('btnAddUser');
+                    const btnShowRequests = document.getElementById('btnShowRequests');
+                    const reqCountDisp = document.getElementById('reqCount');
+
+                    if (b) {
+                        b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
+                        b.className = 'badge ' + (m.isConnected ? 'online' : '');
+                    }
+
+                    if (m.isSetupMode) {
+                        // 1. 설정 모드 (SDP 교환 중)
+                        if (roleSel) roleSel.classList.add('hidden');
+                        if (connArea) connArea.classList.remove('hidden');
+                        if (active) active.classList.add('hidden');
+                        if (lsdp && m.invitingSdp) lsdp.value = m.invitingSdp;
+                        const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
+                        if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
+                    } else if (m.isConnected) {
+                        // 2. 연결 완료 모드 (참가자 및 파일 목록)
+                        if (roleSel) roleSel.classList.add('hidden');
+                        if (connArea) connArea.classList.add('hidden');
+                        if (active) active.classList.remove('hidden');
+                        if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
+
+                        const isMeHost = m.participants.myId === 'host';
+                        if (btnAddUser) btnAddUser.classList.toggle('hidden', !isMeHost);
+
+                        if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
+                            if (btnShowRequests) btnShowRequests.classList.remove('hidden');
+                            if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
+                            const rl = document.getElementById('requestsList');
+                            if (rl) {
+                                rl.innerHTML = '';
+                                m.participants.joinRequests.forEach(req => {
+                                    const item = document.createElement('div');
+                                    item.className = 'request-item';
+                                    item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
+                                                    '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
+                                                    '<div class="request-actions"><button class="approve-btn" onclick="approve(\\'' + req.peerId + '\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\'' + req.peerId + '\\')" title="Reject">✖</button></div>';
+                                    rl.appendChild(item);
+                                });
+                            }
+                        } else {
+                            if (btnShowRequests) btnShowRequests.classList.add('hidden');
+                            if (showingRequests) toggleRequests();
+                        }
+
+                        const udiv = document.getElementById('users');
+                        if (udiv) {
+                            udiv.innerHTML = '';
+                            const myId = m.participants.myId;
+                            Object.entries(m.participants.others).forEach(([id, name]) => {
+                                const isMe = (id === myId || (id === 'default' && myId !== 'host'));
+                                const isHost = (id === 'host');
+                                const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
+                                const nHTML = isMe ? '<b>' + name + '</b>' : name;
+                                const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
+                                const kHTML = (m.participants.myId === 'host' && !isMe) ? '<button class="stop-btn" onclick="kick(\\'' + id + '\\')">Kick</button>' : '';
+                                udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + kHTML + '</div></div>';
+                            });
+                        }
+                    } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
+                        // 3. 호스트 생성/연결 중 모드
+                        if (roleSel) roleSel.classList.remove('hidden');
+                        if (connArea) connArea.classList.add('hidden');
+                        if (active) active.classList.add('hidden');
+                        
+                        const sb = document.getElementById('startButtons');
+                        const hf = document.getElementById('hostForm');
+                        const hl = document.getElementById('hostLoading');
+                        const bsh = document.getElementById('btnStartHost');
+                        const bch = document.getElementById('btnCancelHost');
+                        
+                        if (sb) sb.classList.add('hidden');
+                        if (hf) hf.classList.remove('hidden');
+                        if (hl) hl.classList.remove('hidden');
+                        if (bsh) bsh.disabled = true;
+                        if (bch) bch.disabled = true;
+                    } else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
+                        // 4. 게스트 승인 대기 모드
+                        if (roleSel) roleSel.classList.remove('hidden');
+                        if (connArea) connArea.classList.add('hidden');
+                        if (active) active.classList.add('hidden');
+                        
+                        const sb = document.getElementById('startButtons');
+                        const gf = document.getElementById('guestForm');
+                        const gl = document.getElementById('guestLoading');
+                        const bja = document.getElementById('btnJoinAuto');
+                        const bjm = document.getElementById('btnJoinManual');
+                        const jrt = document.getElementById('joiningRoomText');
+                        
+                        if (sb) sb.classList.add('hidden');
+                        if (gf) gf.classList.remove('hidden');
+                        if (gl) gl.classList.remove('hidden');
+                        if (bja) bja.disabled = true;
+                        if (bjm) bjm.disabled = true;
+                        if (jrt) jrt.innerText = '"' + m.roomName + '"';
+                    } else {
+                        // 5. 초기 모드 (방 생성/참여 선택)
+                        if (roleSel) roleSel.classList.remove('hidden');
+                        if (connArea) connArea.classList.add('hidden');
+                        if (active) active.classList.add('hidden');
+                        resetForms();
+                    }
+
+                    const fdiv = document.getElementById('files');
+                    if (fdiv) {
+                        fdiv.innerHTML = '';
+                        const isFinalHost = m.participants.myId === 'host';
+                        m.files.forEach(f => {
+                            const item = document.createElement('div'); item.className = 'file-item';
+                            const nameSpan = document.createElement('span');
+                            nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
+                            nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+                            item.appendChild(nameSpan);
+                            if (isFinalHost) {
+                                const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
+                                stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
+                                item.appendChild(stopBtn);
+                            }
+                            fdiv.appendChild(item);
+                        });
+                    }
+                }
                 vscode.postMessage({ type: 'ready' });
             </script></body></html>`;
 }
@@ -495,7 +499,7 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
                             }
                         });
                         p.on('connect', () => { 
-                            st.innerText = 'CONNECTED!'; st.style.color = '#4ec9b0';
+                            st.innerText = 'Connected'; st.style.color = '#4ec9b0';
                             vscode.postMessage({ type: 'statusUpdate', value: 'Connected', peerId }); 
                             if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
                         });
@@ -523,6 +527,19 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
 
                 window.addEventListener('message', e => {
                     const m = e.data;
+                    
+                    // [추가] 상태 업데이트 처리
+                    if (m.type === 'status') {
+                        st.innerText = m.status;
+                        if (m.status === 'Connected') st.style.color = '#4ec9b0';
+                        else if (m.status === 'Unconnected!') st.style.color = '#f44336';
+                        else st.style.color = '#ce9178';
+                        return;
+                    }
+                    
+                    // [추가] 엔진 웹뷰에서 로그 처리
+                    if (m.type === 'log') { log(m.message); return; }
+                    
                     const targetId = m.peerId || 'default';
                     if (m.type === 'updatePeerId' && peers[m.oldId]) {
                         peers[m.newId] = peers[m.oldId];

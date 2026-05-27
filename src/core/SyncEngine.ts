@@ -67,7 +67,7 @@ export class SyncEngine {
      */
     public setupHandlers() {
         this.hub.onDidReceiveData = async (text, peerId) => {
-            console.log(`[P2P DEBUG] 피어로부터 데이터 수신: ${peerId}`);
+            this.logToUI(`Data received from peer: ${peerId}`);
             try {
                 // 수신된 P2P 메시지 파싱
                 const msg = JSON.parse(text) as P2PMessage;
@@ -75,7 +75,7 @@ export class SyncEngine {
                     case 'SET_ROLE': this.handleSetRole(msg); break;
                     case 'ON_CONNECTED': 
                         // 피어 연결 초기화 처리
-                        console.log(`[P2P DEBUG] 피어에 대해 ON_CONNECTED 수신: ${peerId}`);
+                        this.logToUI(`ON_CONNECTED received: ${peerId}`);
                         if (this.isHost) {
                             if (this.pendingInvites.has(peerId)) {
                                 this.isSetupMode = false;
@@ -83,11 +83,16 @@ export class SyncEngine {
                                 this.pendingInvites.delete(peerId);
                             }
                         } else {
-                            // [수정] 수동 연결 모드라면 즉시 연결 완료로 처리하여 방 화면으로 이동하도록 함
+                            // [수정] 수동 연결 모드라면 즉시 연결 완료로 처리
                             if (!this.isAutoJoin) {
                                 this.isConnected = true;
                                 this.isSetupMode = false;
-                                console.log("[P2P DEBUG] 수동 연결 완료: UI 전환 트리거");
+                                this.logToUI("Manual connection complete");
+                                this.updateStatus('Connected');
+                            } else {
+                                // 자동 참여 모드라면 연결만 된 상태, Waiting... 유지
+                                this.logToUI("Connected to host, waiting for join approval...");
+                                this.updateStatus('Waiting...');
                             }
                         }
                         this.pushUIUpdate();
@@ -95,7 +100,7 @@ export class SyncEngine {
                     case 'ASSIGN_PEER_ID':
                         // 게스트 노드에 대한 피어 ID 할당
                         if (!this.isHost) {
-                            console.log(`[P2P DEBUG] ASSIGN_PEER_ID 수신: ${msg.peerId}`);
+                            this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
                             const oldId = this.myId || 'default';
                             this.myId = msg.peerId;
                             this.myName = msg.peerId; 
@@ -127,13 +132,14 @@ export class SyncEngine {
                     case 'SYNC_FULL': await this.forceUpdateEditor(msg.fileName, msg.content); break;
                     case 'GUEST_JOIN': 
                         // 게스트 연결 처리
-                        console.log(`[P2P DEBUG] 피어로부터 GUEST_JOIN: ${peerId}, 이름: ${msg.name}`);
+                        this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
                         
                         // [수정] 호스트일 경우, 자동 참여가 아닐 때만 즉시 추가 (자동 참여는 승인 후 처리)
                         if (this.isHost) {
                             const isAutoJoining = this.joinRequests.some(r => r.peerId === peerId);
                             if (!isAutoJoining) {
                                 this.handleGuestJoin(msg, peerId);
+                                this.updateStatus('Connected');
                             }
                         }
                         break;
@@ -183,6 +189,7 @@ export class SyncEngine {
                                 vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
                                 this.isConnected = true; // [추가] 승인 시 연결 완료 상태로 전환
                                 this.isAutoJoin = false; // [추가] 자동 참여 모드 해제
+                                this.updateStatus('Connected');
                             } else {
                                 vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
                                 this.reset();
@@ -436,24 +443,23 @@ export class SyncEngine {
         this.roomName = msg.roomName || 'Untitled Room';
         this.myName = this.isHost ? 'Host' : '';
         this.initialName = this.myName;
+        this.logToUI(`Role set: ${this.isHost ? 'Host' : 'Guest'} for room "${this.roomName}"`);
+        this.updateStatus('Initializing...');
 
         if (this.isHost) { 
-            // 호스트일 경우 저장소 초기화 및 참가자 등록 (연결 상태는 HubManager 콜백에서 설정)
             this.isSetupMode = false;
             this.initializeStorage(); 
             this.participants['host'] = this.myName; 
             this.hub.createHub(true, this.roomName, 'none'); 
             
-            // [고도화] 이름이 있는 방일 경우, 자동으로 첫 번째 게스트를 위한 연결 준비(초대) 시작
             if (this.roomName && this.roomName !== 'Untitled Room') {
                 this.inviteGuest(true);
             }
         } else { 
-            // 게스트일 경우 방 이름이 있으면 자동 연결이므로 설정 모드(SDP 화면)로 바로 가지 않음
-            // 방 이름이 없으면 수동 연결이므로 즉시 설정 모드로 진입
             this.isSetupMode = (this.roomName && this.roomName !== 'Untitled Room') ? false : true; 
             this.startPolling(); 
             this.hub.createHub(false, this.roomName, 'default'); 
+            if (this.isSetupMode) this.updateStatus('Waiting...'); // [수정] 대기 모드 시 Waiting... 상태 표시
         }
         this.pushUIUpdate();
     }
@@ -722,6 +728,7 @@ export class SyncEngine {
         // 게스트에게 초기 스냅샷 전송
         this.sendMessage('INIT_SNAPSHOT', { fileName, content: document.getText() });
         this.addSharedFile(fileName, snapshotPath, sourcePath);
+        this.logToUI(`Started sharing: ${fileName}`);
     }
 
     /**
@@ -1035,6 +1042,30 @@ export class SyncEngine {
                 if (this.sharedFiles.length > 0) this.sendMessage('REQUEST_FULL_SYNC', {}); 
             }, 5000);
         }
+    }
+
+    /**
+     * 엔진 웹뷰에 상태를 업데이트합니다.
+     */
+    private updateStatus(status: 'Initializing...' | 'Waiting...' | 'Connected' | 'Unconnected!') {
+        this.logToUI(`Status: ${status}`);
+        this.hub.sendToEngine({ type: 'status', status });
+    }
+
+    /**
+     * UI 웹뷰에 로그를 출력합니다.
+     */
+    private logToUI(message: string) {
+        // UI 콜백을 활용하여 로그 메시지 전달
+        this.updateUI({ 
+            type: 'log', 
+            message,
+            // 로그와 함께 현재 상태도 전달하여 UI가 초기화되지 않도록 함
+            participants: this.participants,
+            roomName: this.roomName,
+            files: this.sharedFiles,
+            isConnected: this.isConnected
+        });
     }
 
     /**
