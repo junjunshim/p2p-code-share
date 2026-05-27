@@ -49,6 +49,14 @@ export function getSidebarTemplate() {
                 .approve-btn { flex: 1; background: #28a745; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
                 .reject-btn { flex: 1; background: #d73a49; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
                 .request-count { background: #d73a49; color: white; font-size: 9px; padding: 1px 5px; border-radius: 10px; margin-left: 4px; vertical-align: middle; }
+
+                /* 토글 스위치 스타일 */
+                .switch { position: relative; display: inline-block; width: 28px; height: 16px; margin-right: 4px; }
+                .switch input { opacity: 0; width: 0; height: 0; }
+                .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--vscode-settings-checkboxBackground); border: 1px solid var(--vscode-settings-checkboxBorder); transition: .2s; border-radius: 16px; }
+                .slider:before { position: absolute; content: ""; height: 10px; width: 10px; left: 2px; bottom: 2px; background-color: var(--vscode-settings-checkboxForeground); transition: .2s; border-radius: 50%; }
+                input:checked + .slider { background-color: #28a745; border-color: #28a745; }
+                input:checked + .slider:before { transform: translateX(12px); background-color: white; }
             </style>
         </head>
         <body>
@@ -241,6 +249,18 @@ export function getSidebarTemplate() {
                 function rename() { vscode.postMessage({ type: 'rename' }); }
                 function kick(peerId) { vscode.postMessage({ type: 'kick', peerId }); }
 
+                function togglePermission(peerId, name, canEdit) {
+                    vscode.postMessage({ 
+                        type: 'setPermission', 
+                        peerId: peerId, 
+                        permission: { 
+                            name: name, 
+                            globalCanEdit: canEdit, 
+                            filePermissions: {} 
+                        } 
+                    });
+                }
+
                 window.addEventListener('message', e => {
                     try {
                         const m = e.data;
@@ -325,14 +345,30 @@ export function getSidebarTemplate() {
                         if (udiv) {
                             udiv.innerHTML = '';
                             const myId = m.participants.myId;
-                            Object.entries(m.participants.others).forEach(([id, name]) => {
+                            Object.entries(m.participants.others).forEach(([id, data]) => {
                                 const isMe = (id === myId || (id === 'default' && myId !== 'host'));
                                 const isHost = (id === 'host');
+                                
+                                const name = data.name;
+                                const canEdit = data.globalCanEdit;
+
                                 const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
                                 const nHTML = isMe ? '<b>' + name + '</b>' : name;
                                 const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                                const kHTML = (m.participants.myId === 'host' && !isMe) ? '<button class="stop-btn" onclick="kick(\\'' + id + '\\')">Kick</button>' : '';
-                                udiv.innerHTML += '<div class="user-item"><div class="user-name">' + nHTML + '</div><div class="badge-area">' + bHTML + '</div><div class="action-area">' + eHTML + kHTML + '</div></div>';
+                                const kHTML = (isMeHost && !isMe) ? '<button class="stop-btn" onclick="kick(\\'' + id + '\\')">Kick</button>' : '';
+                                
+                                // 쓰기 권한 토글 (호스트인 경우에만 게스트들을 대상으로 표시)
+                                let pHTML = '';
+                                if (isMeHost && !isMe && !isHost) {
+                                    pHTML = '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\\'' + id + '\\', \\'' + name + '\\', this.checked)"><span class="slider"></span></label>';
+                                }
+
+                                udiv.innerHTML += '<div class="user-item">' + 
+                                                    '<div class="user-name">' + nHTML + '</div>' + 
+                                                    '<div>' + pHTML + '</div>' +
+                                                    '<div class="badge-area">' + bHTML + '</div>' + 
+                                                    '<div class="action-area">' + eHTML + kHTML + '</div>' + 
+                                                 '</div>';
                             });
                         }
                     } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {

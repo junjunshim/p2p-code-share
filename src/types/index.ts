@@ -16,13 +16,22 @@ export interface SharedFile {
 }
 
 /**
+ * [추가] 참가자의 권한 상태를 나타냅니다.
+ */
+export interface PeerPermission {
+    name: string;
+    globalCanEdit: boolean;
+    filePermissions: { [fileName: string]: boolean };
+}
+
+/**
  * P2P 세션에서 참가자의 상태를 나타냅니다.
  */
 export interface ParticipantState {
     // 현재 사용자 이름
     myName: string;
-    // 다른 참가자들의 ID와 이름 맵
-    others: { [key: string]: string };
+    // 참가자들의 권한 및 상태 정보
+    others: { [key: string]: PeerPermission };
     // 현재 세션 방 이름
     roomName: string;
 }

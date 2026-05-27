@@ -13,7 +13,7 @@ import * as crypto from 'crypto';
 // P2P 네트워킹을 위한 허브 매니저
 import { HubManager } from './HubManager';
 // 프로젝트 고유 타입
-import { SharedFile, P2PMessage } from '../types';
+import { SharedFile, P2PMessage, PeerPermission } from '../types';
 // 경로 정리 및 디렉토리 생성을 위한 유틸리티
 import { sanitizePath, ensureDirectory } from '../utils/helpers';
 
@@ -29,7 +29,7 @@ export class SyncEngine {
     private myName = '';
     private myId = ''; 
     private initialName = '';
-    private participants: { [key: string]: string } = {};
+    private participants: { [key: string]: PeerPermission } = {};
     private lastRemoteContentMap = new Map<string, string>();
     private pollingTimer?: NodeJS.Timeout;
     private syncDebounceTimer?: NodeJS.Timeout;
@@ -145,7 +145,13 @@ export class SyncEngine {
                         break;
                     case 'GUEST_RENAME':
                         // 참가자 이름 변경
-                        if (this.isHost) { this.participants[peerId] = msg.newName; this.broadcastUserList(); }
+                        if (this.isHost) { 
+                            this.participants[peerId] = { 
+                                ...(this.participants[peerId] || { globalCanEdit: false, filePermissions: {} }), 
+                                name: msg.newName 
+                            }; 
+                            this.broadcastUserList(); 
+                        }
                         break;
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'GUEST_EDIT': if (this.isHost) { await this.handleGuestEdit(msg); } break;
@@ -201,6 +207,20 @@ export class SyncEngine {
                         if (!this.isHost) {
                             vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
                             this.reset();
+                        }
+                        break;
+                    case 'SET_PERMISSION':
+                        // [추가] 호스트로부터 권한 변경 메시지 수신 (게스트 전용)
+                        if (!this.isHost) {
+                            const p = msg.permission as PeerPermission;
+                            this.participants[this.myId] = {
+                                name: this.myName,
+                                globalCanEdit: p.globalCanEdit,
+                                filePermissions: p.filePermissions
+                            };
+                            this.logToUI(`Permission updated: Global=${p.globalCanEdit}`);
+                            await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
+                            this.pushUIUpdate();
                         }
                         break;
                 }
@@ -263,6 +283,25 @@ export class SyncEngine {
         this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: false, reason: '호스트가 요청을 거절했습니다.' });
         
         this.pushUIUpdate();
+    }
+
+    /**
+     * 호스트가 특정 피어의 권한을 설정합니다.
+     * @param peerId 대상 피어 ID.
+     * @param permission 설정할 권한 객체.
+     */
+    public setPeerPermission(peerId: string, permission: PeerPermission) {
+        if (!this.isHost) return;
+
+        // participants 목록 업데이트
+        this.participants[peerId] = permission;
+        
+        // 해당 피어에게 SET_PERMISSION 메시지 전송
+        this.sendMessageToPeer(peerId, 'SET_PERMISSION', { permission });
+        
+        // 전체 사용자 목록 갱신 브로드캐스트
+        this.broadcastUserList();
+        this.logToUI(`Permission set for ${peerId}: Global=${permission.globalCanEdit}`);
     }
 
     /**
@@ -449,7 +488,7 @@ export class SyncEngine {
         if (this.isHost) { 
             this.isSetupMode = false;
             this.initializeStorage(); 
-            this.participants['host'] = this.myName; 
+            this.participants['host'] = { name: this.myName, globalCanEdit: true, filePermissions: {} }; 
             this.hub.createHub(true, this.roomName, 'none'); 
             
             if (this.roomName && this.roomName !== 'Untitled Room') {
@@ -488,22 +527,35 @@ export class SyncEngine {
      */
     private async handleGuestInit(msg: any) {
         this.isHost = false;
+        if (!this.isStorageInitialized) this.initializeStorage();
+        
+        if (!this.storagePath) {
+            this.logToUI(`Error: Storage not initialized before handleGuestInit. myId=${this.myId}`);
+            return;
+        }
+
         // 스냅샷 경로 생성 및 파일 쓰기
         const snapshotPath = path.join(this.storagePath, msg.fileName + '.shared');
+        this.logToUI(`Writing snapshot to: ${snapshotPath}`);
         fs.writeFileSync(snapshotPath, msg.content);
+        
+        // [수정] 파일 목록에 먼저 추가 (여기서 읽기 전용 상태가 설정됨)
+        this.addSharedFile(msg.fileName, snapshotPath);
+
         // 문서 열기 및 표시
         const doc = await vscode.workspace.openTextDocument(snapshotPath);
         await vscode.window.showTextDocument(doc);
-        this.addSharedFile(msg.fileName, snapshotPath);
     }
 
     /**
      * 사용자 명단 업데이트를 처리합니다.
      * @param msg 사용자 명단 업데이트 메시지 (사용자 목록, 방 이름 포함).
      */
-    private handleUserListUpdate(msg: any) {
+    private async handleUserListUpdate(msg: any) {
         // 참가자 목록 업데이트
         this.participants = msg.users;
+        this.logToUI(`User list updated. ${Object.keys(this.participants).length} users. myId=${this.myId}`);
+        
         // 방 이름이 제공되고 방 이름이 없을 경우 설정
         if (msg.roomName && (this.roomName === '' || this.roomName === 'Untitled Room')) {
             this.roomName = msg.roomName;
@@ -517,13 +569,13 @@ export class SyncEngine {
         
         // 내 이름을 덮어쓰지 않고 myId(peerId)가 있을 때만 명단에서 업데이트하도록 변경
         if (!this.isHost && this.myId) {
-            if (this.participants[this.myId]) {
-                this.myName = this.participants[this.myId];
-            } else if (this.participants['default']) {
-                this.myName = this.participants['default'];
+            const myData = this.participants[this.myId] || this.participants['default'];
+            if (myData) {
+                this.myName = myData.name;
             }
         }
         
+        await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
         this.pushUIUpdate();
     }
 
@@ -549,7 +601,7 @@ export class SyncEngine {
     private handleGuestJoin(msg: any, peerId: string) {
         // 호스트일 경우 참가자 목록에 추가 및 목록/전체 내용 브로드캐스트
         if (this.isHost) { 
-            this.participants[peerId] = msg.name; 
+            this.participants[peerId] = { name: msg.name, globalCanEdit: false, filePermissions: {} }; 
             this.broadcastUserList(); 
             
             // [추가] 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 전송
@@ -565,15 +617,110 @@ export class SyncEngine {
     private closingDocuments = new Set<string>();
 
     /**
+     * 현재 사용자가 특정 파일에 대한 편집 권한이 있는지 확인합니다.
+     * @param fileName 확인 대상 파일 이름.
+     */
+    private canIEdit(fileName: string): boolean {
+        // 호스트는 항상 가능
+        if (this.isHost) return true;
+        
+        // 내 ID 또는 기본 ID로 데이터 찾기
+        const myData = this.participants[this.myId] || this.participants['default'];
+        
+        if (!myData) return false; // 기본 권한 없음
+        
+        // 1. 전체 권한이 있으면 통과
+        if (myData.globalCanEdit) return true;
+        
+        // 2. 파일별 권한 확인
+        return myData.filePermissions[fileName] === true;
+    }
+
+    /**
+     * 모든 공유 파일의 읽기 전용 상태를 현재 권한에 맞게 업데이트합니다.
+     */
+    private async updateAllReadonlyStates() {
+        if (this.isHost) return;
+        for (const file of this.sharedFiles) {
+            await this.updateReadonlyState(file);
+        }
+    }
+
+    /**
+     * 특정 공유 파일의 읽기 전용 상태를 업데이트합니다.
+     * @param file 대상 공유 파일.
+     */
+    private async updateReadonlyState(file: SharedFile) {
+        if (this.isHost) return;
+        try {
+            const canEdit = this.canIEdit(file.name);
+            const targetMode = canEdit ? 0o666 : 0o444;
+            
+            // 1. 파일 시스템 속성 변경 (물리적 차단)
+            if (fs.existsSync(file.path)) {
+                fs.chmodSync(file.path, targetMode);
+            }
+            
+            // 2. 현재 열려있는 에디터들에 대해 세션 내 읽기 전용 상태 적용 (UI 차단)
+            const activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor && activeEditor.document.uri.fsPath === file.path) {
+                await this.applyEditorReadonlyState(activeEditor, !canEdit);
+            }
+        } catch (e) {
+            this.logToUI(`Failed to update readonly state for ${file.name}: ${e}`);
+        }
+    }
+
+    /**
+     * VS Code 에디터에 세션 읽기 전용 상태를 적용하거나 해제합니다.
+     * @param editor 대상 에디터.
+     * @param readonly 읽기 전용 여부.
+     */
+    private async applyEditorReadonlyState(editor: vscode.TextEditor, readonly: boolean) {
+        if (this.isHost) return;
+        
+        // 에디터가 활성화된 상태여야 명령이 해당 에디터에 적용됨
+        if (vscode.window.activeTextEditor !== editor) return;
+
+        try {
+            if (readonly) {
+                await vscode.commands.executeCommand('workbench.action.files.setActiveEditorReadonlyInSession');
+            } else {
+                // [수정] 세션 읽기 전용 상태를 초기화하여 디스크 상태를 따르거나 쓰기 가능하게 변경
+                await vscode.commands.executeCommand('workbench.action.files.resetActiveEditorReadonlyInSession');
+            }
+        } catch (e) {
+            this.logToUI(`Failed to execute session command: ${e}`);
+        }
+    }
+
+    /**
      * 텍스트 문서 변경 이벤트 리스너를 설정합니다.
      */
     private setupTextListeners() {
+        // 에디터 변경 감지 (새로 열거나 탭 전환 시 읽기 전용 상태 동기화)
+        vscode.window.onDidChangeActiveTextEditor(async editor => {
+            if (!editor || this.isHost) return;
+            const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            if (file) {
+                const canEdit = this.canIEdit(file.name);
+                await this.applyEditorReadonlyState(editor, !canEdit);
+            }
+        });
+
         vscode.workspace.onDidChangeTextDocument(e => {
             // [수정] 원격 변경 적용 중이거나, 문서가 닫히는 중이면 동기화 무시
             if (this.isApplyingRemoteChange || this.closingDocuments.has(e.document.uri.fsPath)) return;
             
             const file = this.sharedFiles.find(f => f.path === e.document.uri.fsPath);
             if (!file) return;
+
+            // [추가] 권한 체크
+            if (!this.canIEdit(file.name)) {
+                this.logToUI(`Blocked unauthorized edit on ${file.name}`);
+                // TODO: Undo 로직 추가 가능
+                return;
+            }
 
             // [핵심] 실제 사용자의 타이핑인지 확인
             const isManualChange = e.contentChanges.length > 0;
@@ -659,12 +806,24 @@ export class SyncEngine {
         // [수정] 내용이 이미 같더라도 디스크 파일은 최신 상태로 업데이트
         // (게스트가 'Don't Save'로 닫을 때 최신 상태로 복구되도록 보장)
         if (oldText === content) {
-            try { fs.writeFileSync(filePath, content); } catch(e) {}
+            try { 
+                const currentMode = fs.statSync(filePath).mode;
+                const wasReadonly = (currentMode & 0o200) === 0;
+                if (wasReadonly) fs.chmodSync(filePath, 0o666);
+                fs.writeFileSync(filePath, content); 
+                if (wasReadonly) fs.chmodSync(filePath, 0o444);
+            } catch(e) {}
             return;
         }
 
         // 원격 변경 사항 적용 플래그 설정
         this.lastRemoteContentMap.set(fileName, content);
+
+        // [추가] 쓰기 전 잠시 읽기 전용 속성 해제
+        const currentMode = fs.statSync(filePath).mode;
+        const wasReadonly = (currentMode & 0o200) === 0;
+        if (wasReadonly) fs.chmodSync(filePath, 0o666);
+
         this.isApplyingRemoteChange = true;
 
         try {
@@ -685,10 +844,10 @@ export class SyncEngine {
             await vscode.workspace.applyEdit(edit);
             
             // [추가] 에디터 적용 직후 디스크 파일도 즉시 동기화
-            // 이렇게 하면 'Don't Save' 클릭 시 에디터가 이 최신 내용(v3)으로 돌아가게 되며,
-            // 이미 lastRemoteContentMap과 일치하므로 호스트로 과거 내용(v1)이 전송되지 않습니다.
             try { fs.writeFileSync(filePath, content); } catch(e) {}
         } finally {
+            // [추가] 속성 복구
+            if (wasReadonly) fs.chmodSync(filePath, 0o444);
             // 변경 사항 적용 후 플래그 해제
             setTimeout(() => { this.isApplyingRemoteChange = false; }, 100);
         }
@@ -740,7 +899,7 @@ export class SyncEngine {
         const trimmedNewName = newName.trim();
         if (!trimmedNewName) return;
 
-        const isDuplicate = Object.entries(this.participants).some(([id, name]) => id !== this.myId && name === trimmedNewName);
+        const isDuplicate = Object.entries(this.participants).some(([id, data]) => id !== this.myId && data.name === trimmedNewName);
         
         if (isDuplicate) {
             vscode.window.showWarningMessage(`"${trimmedNewName}" 이름은 이미 사용 중입니다. 다른 이름을 선택해주세요.`);
@@ -751,7 +910,7 @@ export class SyncEngine {
         if (this.isHost) { 
             // 호스트 이름 변경 및 명단 브로드캐스트
             this.myName = trimmedNewName; 
-            this.participants['host'] = trimmedNewName; 
+            this.participants['host'] = { ...this.participants['host'], name: trimmedNewName }; 
             this.broadcastUserList(); 
         } else { 
             // 게스트 이름 변경 및 서버에 알림
@@ -859,9 +1018,15 @@ export class SyncEngine {
      */
     private addSharedFile(name: string, filePath: string, source?: string) {
         // 이미 목록에 없으면 파일 추가
-        if (!this.sharedFiles.find(f => f.path === filePath)) {
-            this.sharedFiles.push({ name, path: filePath, source });
+        let file = this.sharedFiles.find(f => f.path === filePath);
+        if (!file) {
+            file = { name, path: filePath, source };
+            this.sharedFiles.push(file);
         }
+        
+        // [추가] 파일 추가 시 읽기 전용 상태 설정
+        this.updateReadonlyState(file);
+        
         // UI 상태 업데이트 알림
         this.pushUIUpdate();
     }
@@ -917,13 +1082,38 @@ export class SyncEngine {
         
         // 문서 닫기 및 탭 그룹에서 제거
         if (doc) {
-            if (!this.isHost) await doc.save();
-            const targetTab = vscode.window.tabGroups.all.flatMap(g => g.tabs).find(t => (t.input as any).uri?.fsPath === file.path);
-            if (targetTab) await vscode.window.tabGroups.close(targetTab);
+            // [추가] 즉시 닫기 보호 목록에 추가 (이벤트 차단)
+            this.closingDocuments.add(doc.uri.fsPath);
+
+            // [추가] 에디터가 더티 상태라면 강제 저장하여 팝업 방지
+            if (doc.isDirty) {
+                try { await doc.save(); } catch(e) {}
+            }
+
+            // [수정] 해당 파일을 열고 있는 모든 탭을 찾아 확실하게 닫기
+            const tabsToClose = vscode.window.tabGroups.all
+                .flatMap(g => g.tabs)
+                .filter(t => (t.input as any)?.uri?.fsPath === file.path);
+
+            for (const tab of tabsToClose) {
+                try {
+                    // [핵심] 탭이 닫힐 때까지 확실히 대기
+                    await vscode.window.tabGroups.close(tab);
+                } catch (e) {}
+            }
         }
         
+        // [추가] 에디터가 완전히 정리되기를 잠시 기다림
+        await new Promise(resolve => setTimeout(resolve, 50));
+
         // 파일 삭제 시도
-        if (fs.existsSync(file.path)) try { fs.unlinkSync(file.path); } catch(e) {}
+        if (fs.existsSync(file.path)) {
+            try { 
+                // [추가] 읽기 전용 속성 해제 후 삭제
+                fs.chmodSync(file.path, 0o666);
+                fs.unlinkSync(file.path); 
+            } catch(e) {}
+        }
         
         // 목록에서 제거 및 동기화 맵 갱신
         this.sharedFiles.splice(index, 1);
@@ -934,11 +1124,16 @@ export class SyncEngine {
     /**
      * 모든 공유 및 리소스를 정리하고 중지합니다.
      */
-    public stopAll() {
+    public async stopAll() {
         // 폴링 타이머 중지
         if (this.pollingTimer) clearInterval(this.pollingTimer);
-        // 공유 중인 모든 파일 공유 중지
-        this.sharedFiles.forEach(f => this.handleRemoteStop(f.name));
+        
+        // [수정] 공유 중인 모든 파일 공유 중지 (비동기 순차 처리)
+        const fileNames = this.sharedFiles.map(f => f.name);
+        for (const name of fileNames) {
+            await this.handleRemoteStop(name);
+        }
+
         // 커서 및 선택 영역 데코레이션 해제
         this.remoteCursorDecorations.forEach(d => d.dispose());
         this.remoteCursorDecorations.clear();

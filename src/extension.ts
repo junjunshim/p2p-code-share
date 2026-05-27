@@ -113,6 +113,11 @@ export function activate(context: vscode.ExtensionContext) {
         engine.kickPeer(peerId);
     };
 
+    // [추가] 권한 제어 처리
+    sidebar.onSetPermission = (peerId, permission) => {
+        engine.setPeerPermission(peerId, permission);
+    };
+
     // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });
