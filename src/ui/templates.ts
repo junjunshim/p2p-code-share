@@ -23,13 +23,13 @@ export function getSidebarTemplate() {
 /**
  * P2P 엔진 웹뷰를 위한 HTML 템플릿을 반환합니다.
  */
-export function getEngineTemplate(initiator: boolean, autoStart: boolean = true, roomName: string = '') {
+export function getEngineTemplate(initiator: boolean, autoStart: boolean = true, roomName: string = '', turnConfig?: { url: string, username?: string, credential?: string }) {
     return `<!DOCTYPE html><html><body style="font-family:sans-serif; padding:20px; background: #1e1e1e; color: #ccc; line-height: 1.5;">
             ${getEngineBody()}
             <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js"></script>
             <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
             <script>
-                ${getEngineScript(initiator, autoStart, roomName)}
+                ${getEngineScript(initiator, autoStart, roomName, turnConfig)}
             </script></body></html>`;
 }
 
@@ -597,7 +597,13 @@ function getEngineBody(): string {
 /**
  * P2P 엔진에서 사용하는 JS 스크립트 코드를 반환합니다.
  */
-function getEngineScript(initiator: boolean, autoStart: boolean, roomName: string): string {
+function getEngineScript(initiator: boolean, autoStart: boolean, roomName: string, turnConfig?: { url: string, username?: string, credential?: string }): string {
+    const turnConfigSerialized = turnConfig && turnConfig.url ? JSON.stringify({
+        urls: turnConfig.url,
+        username: turnConfig.username,
+        credential: turnConfig.credential
+    }) : 'null';
+
     return `
         const vscode = acquireVsCodeApi();
         const st = document.getElementById('st');
@@ -614,6 +620,16 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             logDiv.prepend(entry);
         }
 
+        const iceServers = [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+        ];
+        const turnConfigVal = ${turnConfigSerialized};
+        if (turnConfigVal && turnConfigVal.urls) {
+            iceServers.push(turnConfigVal);
+        }
+
         if ("${roomName}") {
             const rName = "${roomName}";
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
@@ -621,11 +637,7 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             peerServer = new Peer(pjsId, {
                 debug: 3,
                 config: { 
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun2.l.google.com:19302' }
-                    ] 
+                    iceServers: iceServers 
                 }
             });
             peerServer.on('open', (id) => {
@@ -674,7 +686,7 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             try {
                 const p = new SimplePeer({ 
                     initiator: isInitiator, trickle: false, 
-                    config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] } 
+                    config: { iceServers: iceServers } 
                 });
                 p.on('signal', data => { 
                     const sdpStr = JSON.stringify(data);

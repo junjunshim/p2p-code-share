@@ -44,9 +44,15 @@ export class HubManager {
                 retainContextWhenHidden: true 
             });
             
+            const config = vscode.workspace.getConfiguration('p2pCodeShare');
+            const turnUrl = config.get<string>('turnUrl') || '';
+            const turnUsername = config.get<string>('turnUsername') || '';
+            const turnCredential = config.get<string>('turnCredential') || '';
+            const turnConfig = turnUrl ? { url: turnUrl, username: turnUsername, credential: turnCredential } : undefined;
+
             // HTML 템플릿 생성 및 로드
             const autoStart = !initiator; 
-            this._hubPanel.webview.html = getEngineTemplate(initiator, autoStart, roomName);
+            this._hubPanel.webview.html = getEngineTemplate(initiator, autoStart, roomName, turnConfig);
             
             // Webview로부터의 메시지 리스너 설정
             this._hubPanel.webview.onDidReceiveMessage(msg => {
