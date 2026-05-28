@@ -118,6 +118,11 @@ export function activate(context: vscode.ExtensionContext) {
         engine.setPeerPermission(peerId, permission);
     };
 
+    // [추가] 파일 담당자 지정 처리
+    sidebar.onAssignFileOwner = (fileName, assigneeId) => {
+        engine.setFileAssignee(fileName, assigneeId);
+    };
+
     // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });

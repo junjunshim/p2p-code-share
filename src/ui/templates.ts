@@ -507,9 +507,69 @@ function getSidebarScript(): string {
                     nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
                     item.appendChild(nameSpan);
                     if (isFinalHost) {
+                        // 담당자 지정을 위한 select 생성
+                        const select = document.createElement('select');
+                        select.style.marginLeft = '10px';
+                        select.style.marginRight = '10px';
+                        select.style.fontSize = '10px';
+                        select.style.background = 'var(--vscode-dropdown-background)';
+                        select.style.color = 'var(--vscode-dropdown-foreground)';
+                        select.style.border = '1px solid var(--vscode-dropdown-border)';
+                        select.style.borderRadius = '4px';
+                        select.style.padding = '2px';
+                        
+                        // 기본 옵션: 담당자 없음 (누구나 편집 가능)
+                        const optDefault = document.createElement('option');
+                        optDefault.value = '';
+                        optDefault.innerText = 'Anyone';
+                        select.appendChild(optDefault);
+                        
+                        // 참가자 명단 추가
+                        Object.entries(m.participants.others).forEach(([id, data]) => {
+                            const opt = document.createElement('option');
+                            opt.value = id;
+                            opt.innerText = id === 'host' ? data.name + ' (Host)' : data.name;
+                            if (f.assigneeId === id) {
+                                opt.selected = true;
+                            }
+                            select.appendChild(opt);
+                        });
+                        
+                        select.onchange = (e) => {
+                            vscode.postMessage({
+                                type: 'assignFileOwner',
+                                fileName: f.name,
+                                assigneeId: e.target.value
+                            });
+                        };
+                        select.onclick = (e) => { e.stopPropagation(); }; // 클릭 시 파일 열기 이벤트 전파 방지
+                        item.appendChild(select);
+
                         const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
                         stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
                         item.appendChild(stopBtn);
+                    } else {
+                        // 게스트를 위해 담당자 정보 배지 렌더링
+                        const assigneeSpan = document.createElement('span');
+                        assigneeSpan.style.fontSize = '10px';
+                        assigneeSpan.style.color = 'var(--vscode-descriptionForeground)';
+                        assigneeSpan.style.marginLeft = '10px';
+                        assigneeSpan.style.padding = '2px 6px';
+                        assigneeSpan.style.borderRadius = '4px';
+                        assigneeSpan.style.background = 'var(--vscode-badge-background)';
+                        
+                        if (f.assigneeId) {
+                            if (f.assigneeId === m.participants.myId) {
+                                assigneeSpan.innerText = 'Me (Owner)';
+                                assigneeSpan.style.background = 'var(--vscode-button-background)';
+                                assigneeSpan.style.color = 'var(--vscode-button-foreground)';
+                            } else {
+                                assigneeSpan.innerText = f.assigneeName || f.assigneeId;
+                            }
+                        } else {
+                            assigneeSpan.innerText = 'Anyone';
+                        }
+                        item.appendChild(assigneeSpan);
                     }
                     fdiv.appendChild(item);
                 });

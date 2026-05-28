@@ -13,6 +13,10 @@ export interface SharedFile {
     path: string;
     // 호스트에서의 원본 파일 경로
     source?: string;
+    // [추가] 담당자 피어 ID
+    assigneeId?: string;
+    // [추가] 담당자 이름
+    assigneeName?: string;
 }
 
 /**

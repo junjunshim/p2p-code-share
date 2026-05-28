@@ -168,6 +168,17 @@ export class SyncEngine {
                             }
                         }
                         break;
+                    case 'FILE_ASSIGNEE_UPDATE':
+                        if (!this.isHost) {
+                            const file = this.sharedFiles.find(f => f.name === msg.fileName);
+                            if (file) {
+                                file.assigneeId = msg.assigneeId;
+                                file.assigneeName = msg.assigneeName;
+                                await this.updateReadonlyState(file);
+                                this.pushUIUpdate();
+                            }
+                        }
+                        break;
                     case 'STOP_SHARING': await this.handleRemoteStop(msg.fileName); break;
                     case 'CURSOR_UPDATE': 
                         // 커서 및 선택 영역 업데이트 처리
@@ -302,6 +313,39 @@ export class SyncEngine {
         // 전체 사용자 목록 갱신 브로드캐스트
         this.broadcastUserList();
         this.logToUI(`Permission set for ${peerId}: Global=${permission.globalCanEdit}`);
+    }
+
+    /**
+     * 특정 파일의 담당자를 지정하고 브로드캐스트합니다.
+     * @param fileName 대상 파일 이름.
+     * @param assigneeId 담당자 피어 ID.
+     */
+    public setFileAssignee(fileName: string, assigneeId: string) {
+        if (!this.isHost) return;
+
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (!file) return;
+
+        file.assigneeId = assigneeId || undefined;
+        if (assigneeId === 'host') {
+            file.assigneeName = this.myName;
+        } else if (assigneeId && this.participants[assigneeId]) {
+            file.assigneeName = this.participants[assigneeId].name;
+        } else {
+            file.assigneeName = undefined;
+        }
+
+        // 전체 게스트들에게 파일 담당자 변경 브로드캐스트
+        this.sendMessage('FILE_ASSIGNEE_UPDATE', { 
+            fileName, 
+            assigneeId: file.assigneeId, 
+            assigneeName: file.assigneeName 
+        });
+
+        this.logToUI(`File owner for ${fileName} updated: ${file.assigneeName || 'Unassigned'}`);
+        
+        // 내 에디터 및 UI 업데이트
+        this.pushUIUpdate();
     }
 
     /**
@@ -540,7 +584,7 @@ export class SyncEngine {
         fs.writeFileSync(snapshotPath, msg.content);
         
         // [수정] 파일 목록에 먼저 추가 (여기서 읽기 전용 상태가 설정됨)
-        this.addSharedFile(msg.fileName, snapshotPath);
+        this.addSharedFile(msg.fileName, snapshotPath, undefined, msg.assigneeId, msg.assigneeName);
 
         // 문서 열기 및 표시
         const doc = await vscode.workspace.openTextDocument(snapshotPath);
@@ -609,7 +653,12 @@ export class SyncEngine {
                 const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === f.path);
                 const content = doc ? doc.getText() : fs.readFileSync(f.path, 'utf8');
                 // 해당 피어에게만 초기 스냅샷 전송 (파일 목록 생성 및 에디터 열기 유도)
-                this.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { fileName: f.name, content });
+                this.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { 
+                    fileName: f.name, 
+                    content,
+                    assigneeId: f.assigneeId,
+                    assigneeName: f.assigneeName
+                });
             });
         }
     }
@@ -628,6 +677,13 @@ export class SyncEngine {
         const myData = this.participants[this.myId] || this.participants['default'];
         
         if (!myData) return false; // 기본 권한 없음
+        
+        // 파일 담당자 지정 체크
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (file && file.assigneeId) {
+            // 담당자가 지정되어 있으면, 내 ID가 담당자 ID여야만 편집 가능
+            return file.assigneeId === this.myId;
+        }
         
         // 1. 전체 권한이 있으면 통과
         if (myData.globalCanEdit) return true;
@@ -885,7 +941,12 @@ export class SyncEngine {
         await vscode.window.showTextDocument(doc);
         
         // 게스트에게 초기 스냅샷 전송
-        this.sendMessage('INIT_SNAPSHOT', { fileName, content: document.getText() });
+        this.sendMessage('INIT_SNAPSHOT', { 
+            fileName, 
+            content: document.getText(),
+            assigneeId: undefined,
+            assigneeName: undefined
+        });
         this.addSharedFile(fileName, snapshotPath, sourcePath);
         this.logToUI(`Started sharing: ${fileName}`);
     }
@@ -1015,13 +1076,19 @@ export class SyncEngine {
      * @param name 파일 이름.
      * @param filePath 파일 경로.
      * @param source 원본 파일 경로 (선택 사항).
+     * @param assigneeId 담당자 피어 ID (선택 사항).
+     * @param assigneeName 담당자 이름 (선택 사항).
      */
-    private addSharedFile(name: string, filePath: string, source?: string) {
+    private addSharedFile(name: string, filePath: string, source?: string, assigneeId?: string, assigneeName?: string) {
         // 이미 목록에 없으면 파일 추가
         let file = this.sharedFiles.find(f => f.path === filePath);
         if (!file) {
-            file = { name, path: filePath, source };
+            file = { name, path: filePath, source, assigneeId, assigneeName };
             this.sharedFiles.push(file);
+        } else {
+            // 이미 있으면 정보 업데이트
+            file.assigneeId = assigneeId;
+            file.assigneeName = assigneeName;
         }
         
         // [추가] 파일 추가 시 읽기 전용 상태 설정

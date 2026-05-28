@@ -27,6 +27,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onSetPermission?: (peerId: string, permission: any) => void; // [추가]
     public onApproveRequest?: (peerId: string) => void; // [추가]
     public onRejectRequest?: (peerId: string) => void; // [추가]
+    public onAssignFileOwner?: (fileName: string, assigneeId: string) => void; // [추가]
 
     /**
      * SidebarProvider의 인스턴스를 생성합니다.
@@ -74,6 +75,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // [추가] 승인/거절
                 case 'approveRequest': this.onApproveRequest?.(msg.peerId); break;
                 case 'rejectRequest': this.onRejectRequest?.(msg.peerId); break;
+                // [추가] 파일 담당자 지정
+                case 'assignFileOwner': this.onAssignFileOwner?.(msg.fileName, msg.assigneeId); break;
             }
         });
     }
