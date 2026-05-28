@@ -381,7 +381,8 @@ function getSidebarScript(): string {
 
             if (b) {
                 if (m.isConnected) {
-                    b.innerText = m.connectionType === 'TURN' ? 'CONNECTED (TURN)' : 'CONNECTED';
+                    const isMeHost = m.participants && m.participants.myId === 'host';
+                    b.innerText = (!isMeHost && m.connectionType === 'TURN') ? 'CONNECTED (TURN)' : 'CONNECTED';
                 } else {
                     b.innerText = 'OFFLINE';
                 }
