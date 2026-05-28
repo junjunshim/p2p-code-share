@@ -719,14 +719,38 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                                         }
                                     });
                                     if (activePair) {
-                                        const remoteCandId = activePair.remoteCandidateId;
-                                        stats.forEach(report => {
-                                            if (report.id === remoteCandId && report.type === 'remote-candidate') {
-                                                if (report.candidateType === 'relay') {
-                                                    connType = 'TURN';
-                                                }
+                                        // 1단계: candidate-pair에 직접 기록된 타입 검증
+                                        if (activePair.remoteCandidateType === 'relay' || activePair.localCandidateType === 'relay') {
+                                            connType = 'TURN';
+                                        } else {
+                                            const remoteCandId = activePair.remoteCandidateId;
+                                            const localCandId = activePair.localCandidateId;
+                                            
+                                            // 2단계: 표준 Map.get() 검증
+                                            const remoteCand = (stats.get && remoteCandId) ? stats.get(remoteCandId) : null;
+                                            const localCand = (stats.get && localCandId) ? stats.get(localCandId) : null;
+                                            
+                                            if ((remoteCand && remoteCand.candidateType === 'relay') || 
+                                                (localCand && localCand.candidateType === 'relay')) {
+                                                connType = 'TURN';
+                                            } else {
+                                                // 3단계: 브라우저 파편화로 인한 ID 부분 일치 검증 (하드 폴백)
+                                                stats.forEach(report => {
+                                                    if (report.id && (
+                                                        report.id === remoteCandId || 
+                                                        report.id === localCandId ||
+                                                        (remoteCandId && report.id.includes(remoteCandId)) ||
+                                                        (localCandId && report.id.includes(localCandId)) ||
+                                                        (remoteCandId && remoteCandId.includes(report.id)) ||
+                                                        (localCandId && localCandId.includes(report.id))
+                                                    )) {
+                                                        if (report.candidateType === 'relay') {
+                                                            connType = 'TURN';
+                                                        }
+                                                    }
+                                                });
                                             }
-                                        });
+                                        }
                                     }
                                 }
                                 updateStatus();
