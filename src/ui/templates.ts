@@ -380,7 +380,11 @@ function getSidebarScript(): string {
             const reqCountDisp = document.getElementById('reqCount');
 
             if (b) {
-                b.innerText = m.isConnected ? 'CONNECTED' : 'OFFLINE';
+                if (m.isConnected) {
+                    b.innerText = m.connectionType === 'TURN' ? 'CONNECTED (TURN)' : 'CONNECTED';
+                } else {
+                    b.innerText = 'OFFLINE';
+                }
                 b.className = 'badge ' + (m.isConnected ? 'online' : '');
             }
 
@@ -697,8 +701,40 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                     }
                 });
                 p.on('connect', () => { 
-                    st.innerText = 'Connected'; st.style.color = '#4ec9b0';
-                    vscode.postMessage({ type: 'statusUpdate', value: 'Connected', peerId }); 
+                    let connType = 'Direct';
+                    const updateStatus = () => {
+                        const statusStr = connType === 'TURN' ? 'Connected (via TURN)' : 'Connected';
+                        st.innerText = statusStr; st.style.color = '#4ec9b0';
+                        vscode.postMessage({ type: 'statusUpdate', value: statusStr, peerId }); 
+                    };
+
+                    if (p.getStats) {
+                        setTimeout(() => {
+                            p.getStats((err, stats) => {
+                                if (!err && stats) {
+                                    let activePair = null;
+                                    stats.forEach(report => {
+                                        if (report.type === 'candidate-pair' && (report.selected || report.nominated || report.state === 'succeeded')) {
+                                            activePair = report;
+                                        }
+                                    });
+                                    if (activePair) {
+                                        const remoteCandId = activePair.remoteCandidateId;
+                                        stats.forEach(report => {
+                                            if (report.id === remoteCandId && report.type === 'remote-candidate') {
+                                                if (report.candidateType === 'relay') {
+                                                    connType = 'TURN';
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                updateStatus();
+                            });
+                        }, 500);
+                    } else {
+                        updateStatus();
+                    }
                     if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
                 });
                 p.on('data', data => {

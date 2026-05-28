@@ -39,6 +39,7 @@ export class SyncEngine {
     private isStorageInitialized = false;
     public isSetupMode = false; 
     public isConnected = false; 
+    public connectionType = 'Direct';
     private isAutoJoin = false; // [추가] 자동 참여 여부 추적
     private pendingInvites = new Set<string>();
     private joinRequests: any[] = []; // [추가] 방 참여 요청 목록
@@ -1269,6 +1270,7 @@ export class SyncEngine {
         // 모든 상태 변수 초기화
         this.isHost = false; 
         this.isConnected = false; 
+        this.connectionType = 'Direct';
         this.roomName = ''; 
         this.myName = ''; 
         this.myId = ''; 
@@ -1309,9 +1311,13 @@ export class SyncEngine {
     /**
      * 엔진 웹뷰에 상태를 업데이트합니다.
      */
-    private updateStatus(status: 'Initializing...' | 'Waiting...' | 'Connected' | 'Unconnected!') {
-        this.logToUI(`Status: ${status}`);
-        this.hub.sendToEngine({ type: 'status', status });
+    private updateStatus(status: string) {
+        let finalStatus = status;
+        if (status === 'Connected' && this.connectionType === 'TURN') {
+            finalStatus = 'Connected (via TURN)';
+        }
+        this.logToUI(`Status: ${finalStatus}`);
+        this.hub.sendToEngine({ type: 'status', status: finalStatus });
     }
 
     /**
@@ -1344,6 +1350,7 @@ export class SyncEngine {
             files: this.sharedFiles, 
             isSetupMode: this.isSetupMode, 
             isConnected: this.isConnected,
+            connectionType: this.connectionType,
             // [핵심] 현재 초대 중인 아이디 목록 및 참여 요청 목록을 UI로 전달
             pendingInvites: Array.from(this.pendingInvites),
             joinRequests: this.joinRequests

@@ -36,7 +36,8 @@ export function activate(context: vscode.ExtensionContext) {
                 files: state.files,
                 participants: state,
                 roomName: state.roomName,
-                invitingSdp: state.invitingSdp
+                invitingSdp: state.invitingSdp,
+                connectionType: state.connectionType
             });
         }
     });
@@ -157,7 +158,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     // P2P 상태 업데이트 관리
     hub.onStatusUpdate = (status, peerId) => {
-        if (status === 'Connected') {
+        if (status.startsWith('Connected')) {
+            if (status.includes('TURN')) {
+                engine.connectionType = 'TURN';
+            } else {
+                engine.connectionType = 'Direct';
+            }
             // 연결 상태 알림
             hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }), peerId);
         } else if (status === 'Disconnected') {
