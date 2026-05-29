@@ -639,6 +639,8 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             const rName = "${roomName}";
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
             const pjsId = ${initiator} ? toSafeId(rName) : null;
+            
+            log('Connecting to PeerJS signaling server...');
             peerServer = new Peer(pjsId, {
                 debug: 3,
                 config: { 
@@ -646,16 +648,29 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                 }
             });
             peerServer.on('open', (id) => {
-                log('Auto-Signaling Server Ready.');
-                if (${initiator}) vscode.postMessage({ type: 'roomNameSuccess' });
+                log('Successfully connected to PeerJS signaling server.');
+                if (${initiator}) {
+                    log('Created room: "' + rName + '". Waiting for guest connection...');
+                    vscode.postMessage({ type: 'roomNameSuccess' });
+                }
                 if (!${initiator}) {
+                    log('Connecting to room host for room: "' + rName + '"...');
                     const conn = peerServer.connect(toSafeId(rName));
                     handleSignalingConn(conn);
                 }
             });
-            peerServer.on('connection', (conn) => { handleSignalingConn(conn); });
+            peerServer.on('connection', (conn) => { 
+                log('Received connection request from guest signaling client.');
+                handleSignalingConn(conn); 
+            });
             peerServer.on('error', (err) => {
-                log('PeerJS Error: ' + err.type);
+                log('PeerJS Connection Error: ' + err.type);
+                if (!${initiator} && err.type === 'peer-unavailable') {
+                    log('Error: Room "' + rName + '" does not exist or the host is offline.');
+                }
+                if (err.type === 'server-error' || err.type === 'network') {
+                    log('Error: Failed to connect to PeerJS signaling server (network/server issue).');
+                }
                 if (${initiator}) {
                     let errorType = 'unknown';
                     if (err.type === 'unavailable-id') errorType = 'duplicate';
@@ -667,11 +682,18 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
 
         function handleSignalingConn(conn) {
             activeSignalingConn = conn;
-            conn.on('open', () => { if (!${initiator}) conn.send({ type: 'REQ_OFFER' }); });
+            conn.on('open', () => { 
+                log('Signaling channel established.');
+                if (!${initiator}) {
+                    log('Requesting SDP offer from host...');
+                    conn.send({ type: 'REQ_OFFER' }); 
+                }
+            });
             conn.on('data', (data) => {
                 if (data.type === 'REQ_OFFER') {
                     const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
                     if (targetId && pendingSdpMap[targetId]) {
+                        log('Sending SDP offer to guest...');
                         conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
                     } else {
                         vscode.postMessage({ type: 'requireInvite' });
@@ -680,31 +702,56 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                     const targetId = ${initiator} ? data.peerId : 'default';
                     if (peers[targetId] && peers[targetId].connected) return;
                     if (!${initiator}) remotePeerIdMap['default'] = data.peerId;
+                    log('Received SDP exchange signal from ' + (${initiator} ? 'guest' : 'host') + '. Applying signal...');
                     window.dispatchEvent(new MessageEvent('message', { data: { type: 'signal', sdp: data.sdp, peerId: targetId } }));
                 }
             });
-            conn.on('close', () => { if (activeSignalingConn === conn) activeSignalingConn = null; });
+            conn.on('close', () => { 
+                log('Signaling channel connection closed.');
+                if (activeSignalingConn === conn) activeSignalingConn = null; 
+            });
+            conn.on('error', (err) => {
+                log('Signaling channel error: ' + err.message);
+            });
         }
 
         function addPeer(peerId, isInitiator) {
             if (peers[peerId]) return;
             try {
+                log('Initializing WebRTC peer connection (isInitiator: ' + isInitiator + ')...');
                 const p = new SimplePeer({ 
                     initiator: isInitiator, trickle: false, 
                     config: { iceServers: iceServers } 
                 });
+                
+                const rawPc = p._pc;
+                if (rawPc) {
+                    rawPc.addEventListener('icegatheringstatechange', () => {
+                        log('ICE Gathering State: ' + rawPc.iceGatheringState);
+                    });
+                    rawPc.addEventListener('iceconnectionstatechange', () => {
+                        log('ICE Connection State: ' + rawPc.iceConnectionState);
+                        if (rawPc.iceConnectionState === 'failed') {
+                            log('Direct connection failed or timed out. Checking TURN relay backup...');
+                        }
+                    });
+                }
+
                 p.on('signal', data => { 
                     const sdpStr = JSON.stringify(data);
                     pendingSdpMap[peerId] = sdpStr;
                     vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId }); 
                     if (activeSignalingConn && activeSignalingConn.open) {
+                        log('SDP generated. Sending SDP message to ' + (${initiator} ? 'guest' : 'host') + ' via signaling channel.');
                         activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
                     }
                 });
                 p.on('connect', () => { 
+                    log('SDP exchange success. WebRTC P2P channel connected.');
                     let connType = 'Direct';
                     const updateStatus = () => {
                         const statusStr = connType === 'TURN' ? 'Connected (via TURN)' : 'Connected';
+                        log('Successfully connected to peer (' + connType + ' connection established).');
                         st.innerText = statusStr; st.style.color = '#4ec9b0';
                         vscode.postMessage({ type: 'statusUpdate', value: statusStr, peerId }); 
                     };
@@ -720,14 +767,11 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                                         }
                                     });
                                     if (activePair) {
-                                        // 1단계: candidate-pair에 직접 기록된 타입 검증
                                         if (activePair.remoteCandidateType === 'relay' || activePair.localCandidateType === 'relay') {
                                             connType = 'TURN';
                                         } else {
                                             const remoteCandId = activePair.remoteCandidateId;
                                             const localCandId = activePair.localCandidateId;
-                                            
-                                            // 2단계: 표준 Map.get() 검증
                                             const remoteCand = (stats.get && remoteCandId) ? stats.get(remoteCandId) : null;
                                             const localCand = (stats.get && localCandId) ? stats.get(localCandId) : null;
                                             
@@ -735,7 +779,6 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                                                 (localCand && localCand.candidateType === 'relay')) {
                                                 connType = 'TURN';
                                             } else {
-                                                // 3단계: 브라우저 파편화로 인한 ID 부분 일치 검증 (하드 폴백)
                                                 stats.forEach(report => {
                                                     if (report.id && (
                                                         report.id === remoteCandId || 
@@ -769,11 +812,13 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                     }
                 });
                 p.on('error', err => { 
+                    log('P2P connection error: ' + err.message);
                     delete peers[peerId];
                     if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
                     vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
                 });
                 p.on('close', () => {
+                    log('P2P connection closed.');
                     delete peers[peerId];
                     if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
                     vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
@@ -787,7 +832,6 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
         window.addEventListener('message', e => {
             const m = e.data;
             
-            // [추가] 상태 업데이트 처리
             if (m.type === 'status') {
                 st.innerText = m.status;
                 if (m.status === 'Connected') st.style.color = '#4ec9b0';
@@ -796,7 +840,6 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                 return;
             }
             
-            // [추가] 엔진 웹뷰에서 로그 처리
             if (m.type === 'log') { log(m.message); return; }
             
             const targetId = m.peerId || 'default';
