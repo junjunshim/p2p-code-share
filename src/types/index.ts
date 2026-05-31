@@ -17,6 +17,9 @@ export interface SharedFile {
     assigneeId?: string;
     // [추가] 담당자 이름
     assigneeName?: string;
+    // [추가] 선택 영역 공유를 위한 호스트 원본 기준 범위
+    startLine?: number;
+    endLine?: number;
 }
 
 /**

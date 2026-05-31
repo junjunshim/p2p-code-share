@@ -41,6 +41,10 @@
         "title": "P2P: Share File to Room"
       },
       {
+        "command": "p2p-code-share.shareSelectedRange",
+        "title": "P2P: Share Selected Range"
+      },
+      {
         "command": "p2p-code-share.stopSharing",
         "title": "P2P: Stop Sharing"
       }
@@ -58,6 +62,11 @@
           "command": "p2p-code-share.shareActiveFile",
           "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost",
           "group": "4_p2p_sharing@1"
+        },
+        {
+          "command": "p2p-code-share.shareSelectedRange",
+          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && editorHasSelection",
+          "group": "4_p2p_sharing@2"
         }
       ]
     },
