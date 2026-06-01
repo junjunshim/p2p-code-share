@@ -1445,7 +1445,7 @@ export class SyncEngine {
     /**
      * 엔진의 모든 상태를 초기화합니다.
      */
-    public reset() {
+    public reset(skipUIUpdate = false) {
         // 타이머 중지 및 리소스 정리
         if (this.pollingTimer) clearInterval(this.pollingTimer);
         this.stopAll();
@@ -1464,7 +1464,9 @@ export class SyncEngine {
         this.lastRemoteContentMap.clear();
         
         // UI 상태 갱신
-        this.pushUIUpdate();
+        if (!skipUIUpdate) {
+            this.pushUIUpdate();
+        }
     }
 
     /**

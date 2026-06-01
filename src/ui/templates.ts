@@ -43,7 +43,7 @@ export function getEngineTemplate(initiator: boolean, autoStart: boolean = true,
 function getSidebarStyles(): string {
     return `
         * { box-sizing: border-box; }
-        body { font-family: sans-serif; padding: 15px; color: var(--vscode-foreground); line-height: 1.4; }
+        body { background-color: transparent; font-family: sans-serif; padding: 15px; color: var(--vscode-foreground); line-height: 1.4; }
         .hidden { display: none !important; }
         button { width: 100%; margin-bottom: 10px; padding: 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; font-weight: 600; font-size: 13px; transition: background 0.2s; }
         button:hover { background: var(--vscode-button-hoverBackground); }
@@ -127,7 +127,7 @@ function getLoadingView(): string {
 function getSetupView(): string {
     return `
         <div id="setup">
-            <div id="roleSelection">
+            <div id="roleSelection" class="hidden">
                 <div id="startButtons">
                     <button id="btnHost" onclick="showHostForm()">Create Sharing Room</button>
                     <button id="btnGuest" onclick="showGuestForm()">Join Sharing Room</button>
@@ -238,35 +238,63 @@ function getSidebarScript(): string {
             if (sb) sb.classList.add('hidden'); 
         }
         /**
+         * DOM 요소의 표시/숨김 상태를 토글하는 헬퍼 함수입니다.
+         */
+        function setVisible(id, visible) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('hidden', !visible);
+        }
+
+        /**
+         * 버튼 요소의 활성/비활성 상태를 제어하는 헬퍼 함수입니다.
+         */
+        function setDisabled(id, disabled) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = disabled;
+        }
+
+        /**
+         * 요청 창의 표시 상태를 토글합니다.
+         */
+        function toggleRequests() {
+            showingRequests = !showingRequests;
+            setVisible('roomInfoArea', !showingRequests);
+            setVisible('requestsArea', showingRequests);
+        }
+
+        /**
+         * 게스트의 참가 요청을 승인합니다.
+         */
+        function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
+        /**
+         * 게스트의 참가 요청을 거절합니다.
+         */
+        function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
+
+        /**
+         * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
+         */
+        function showHostForm() { 
+            setVisible('hostForm', true);
+            setVisible('startButtons', false);
+        }
+        /**
          * 방 참가 폼을 보여주고 시작 버튼을 숨깁니다.
          */
         function showGuestForm() { 
-            const gf = document.getElementById('guestForm');
-            const sb = document.getElementById('startButtons');
-            if (gf) gf.classList.remove('hidden'); 
-            if (sb) sb.classList.add('hidden'); 
+            setVisible('guestForm', true);
+            setVisible('startButtons', false);
         }
         /**
          * 입력 폼들과 진행 상태를 기본 상태로 되돌립니다.
          */
         function resetForms() {
-            const hf = document.getElementById('hostForm');
-            const gf = document.getElementById('guestForm');
-            const sb = document.getElementById('startButtons');
-            if (hf) hf.classList.add('hidden'); 
-            if (gf) gf.classList.add('hidden'); 
-            if (sb) sb.classList.remove('hidden'); 
+            setVisible('hostForm', false);
+            setVisible('guestForm', false);
+            setVisible('startButtons', true);
             
-            const ids = ['btnStartHost', 'btnJoinAuto', 'btnJoinManual', 'btnCancelHost', 'btnCancelGuest'];
-            ids.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.disabled = false;
-            });
-            const lds = ['hostLoading', 'guestLoading'];
-            lds.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.classList.add('hidden');
-            });
+            ['btnStartHost', 'btnJoinAuto', 'btnJoinManual', 'btnCancelHost', 'btnCancelGuest'].forEach(id => setDisabled(id, false));
+            ['hostLoading', 'guestLoading'].forEach(id => setVisible(id, false));
         }
 
         /**
@@ -280,26 +308,20 @@ function getSidebarScript(): string {
                     const rnEl = document.getElementById('setupRoomName');
                     rn = rnEl ? rnEl.value.trim() : '';
                     if (!rn) { alert('Please enter a room name first!'); return; }
-                    const bsh = document.getElementById('btnStartHost');
-                    const bch = document.getElementById('btnCancelHost');
-                    const hl = document.getElementById('hostLoading');
-                    if (bsh) bsh.disabled = true;
-                    if (bch) bch.disabled = true;
-                    if (hl) hl.classList.remove('hidden');
+                    setDisabled('btnStartHost', true);
+                    setDisabled('btnCancelHost', true);
+                    setVisible('hostLoading', true);
                 } else {
                     const rnEl = document.getElementById('joinRoomName');
                     const descEl = document.getElementById('joinDescription');
                     rn = rnEl ? rnEl.value.trim() : '';
                     desc = descEl ? descEl.value.trim() : '';
                     if (!rn) { alert('Please enter the host room name!'); return; }
-                    const bja = document.getElementById('btnJoinAuto');
-                    const bjm = document.getElementById('btnJoinManual');
+                    setDisabled('btnJoinAuto', true);
+                    setDisabled('btnJoinManual', true);
                     const jrt = document.getElementById('joiningRoomText');
-                    const gl = document.getElementById('guestLoading');
-                    if (bja) bja.disabled = true;
-                    if (bjm) bjm.disabled = true;
                     if (jrt) jrt.innerText = '"' + rn + '"';
-                    if (gl) gl.classList.remove('hidden');
+                    setVisible('guestLoading', true);
                     vscode.postMessage({ type: 'joinRoom', roomName: rn, description: desc });
                     return; 
                 }
@@ -425,7 +447,7 @@ function getSidebarScript(): string {
             const reqCountDisp = document.getElementById('reqCount');
             const isMeHost = m.participants.myId === 'host';
             if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
-                if (btnShowRequests) btnShowRequests.classList.remove('hidden');
+                setVisible('btnShowRequests', true);
                 if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
                 const rl = document.getElementById('requestsList');
                 if (rl) {
@@ -440,7 +462,7 @@ function getSidebarScript(): string {
                     });
                 }
             } else {
-                if (btnShowRequests) btnShowRequests.classList.add('hidden');
+                setVisible('btnShowRequests', false);
                 if (showingRequests) toggleRequests();
             }
         }
@@ -485,75 +507,57 @@ function getSidebarScript(): string {
          * 현재 상태에 맞춰 화면 레이아웃을 업데이트합니다.
          */
         function updateModeLayout(m) {
-            const roleSel = document.getElementById('roleSelection');
-            const connArea = document.getElementById('connArea');
-            const active = document.getElementById('active');
-            const roleDisp = document.getElementById('roleTextDisp');
-            const dispRoom = document.getElementById('dispRoomName');
             const lsdp = document.getElementById('lsdp');
-            const btnAddUser = document.getElementById('btnAddUser');
+            const dispRoom = document.getElementById('dispRoomName');
 
             if (m.isSetupMode) {
                 // 1. 설정 모드 (SDP 교환 중)
-                if (roleSel) roleSel.classList.add('hidden');
-                if (connArea) connArea.classList.remove('hidden');
-                if (active) active.classList.add('hidden');
+                setVisible('roleSelection', false);
+                setVisible('connArea', true);
+                setVisible('active', false);
                 if (lsdp && m.invitingSdp) lsdp.value = m.invitingSdp;
                 const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
+                const roleDisp = document.getElementById('roleTextDisp');
                 if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
             } else if (m.isConnected) {
                 // 2. 연결 완료 모드 (참가자 및 파일 목록)
-                if (roleSel) roleSel.classList.add('hidden');
-                if (connArea) connArea.classList.add('hidden');
-                if (active) active.classList.remove('hidden');
+                setVisible('roleSelection', false);
+                setVisible('connArea', false);
+                setVisible('active', true);
                 if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
 
                 const isMeHost = m.participants.myId === 'host';
-                if (btnAddUser) btnAddUser.classList.toggle('hidden', !isMeHost);
+                setVisible('btnAddUser', isMeHost);
 
                 renderRequests(m);
                 renderUsers(m);
             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
                 // 3. 호스트 생성/연결 중 모드
-                if (roleSel) roleSel.classList.remove('hidden');
-                if (connArea) connArea.classList.add('hidden');
-                if (active) active.classList.add('hidden');
-                
-                const sb = document.getElementById('startButtons');
-                const hf = document.getElementById('hostForm');
-                const hl = document.getElementById('hostLoading');
-                const bsh = document.getElementById('btnStartHost');
-                const bch = document.getElementById('btnCancelHost');
-                
-                if (sb) sb.classList.add('hidden');
-                if (hf) hf.classList.remove('hidden');
-                if (hl) hl.classList.remove('hidden');
-                if (bsh) bsh.disabled = true;
-                if (bch) bch.disabled = true;
+                setVisible('roleSelection', true);
+                setVisible('connArea', false);
+                setVisible('active', false);
+                setVisible('startButtons', false);
+                setVisible('hostForm', true);
+                setVisible('hostLoading', true);
+                setDisabled('btnStartHost', true);
+                setDisabled('btnCancelHost', true);
             } else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
                 // 4. 게스트 승인 대기 모드
-                if (roleSel) roleSel.classList.remove('hidden');
-                if (connArea) connArea.classList.add('hidden');
-                if (active) active.classList.add('hidden');
-                
-                const sb = document.getElementById('startButtons');
-                const gf = document.getElementById('guestForm');
-                const gl = document.getElementById('guestLoading');
-                const bja = document.getElementById('btnJoinAuto');
-                const bjm = document.getElementById('btnJoinManual');
+                setVisible('roleSelection', true);
+                setVisible('connArea', false);
+                setVisible('active', false);
+                setVisible('startButtons', false);
+                setVisible('guestForm', true);
+                setVisible('guestLoading', true);
+                setDisabled('btnJoinAuto', true);
+                setDisabled('btnJoinManual', true);
                 const jrt = document.getElementById('joiningRoomText');
-                
-                if (sb) sb.classList.add('hidden');
-                if (gf) gf.classList.remove('hidden');
-                if (gl) gl.classList.remove('hidden');
-                if (bja) bja.disabled = true;
-                if (bjm) bjm.disabled = true;
                 if (jrt) jrt.innerText = '"' + m.roomName + '"';
             } else {
                 // 5. 초기 모드 (방 생성/참여 선택)
-                if (roleSel) roleSel.classList.remove('hidden');
-                if (connArea) connArea.classList.add('hidden');
-                if (active) active.classList.add('hidden');
+                setVisible('roleSelection', true);
+                setVisible('connArea', false);
+                setVisible('active', false);
                 resetForms();
             }
         }
@@ -646,17 +650,17 @@ function getSidebarScript(): string {
          * UI의 상태 업데이트에 따른 렌더링을 일괄 수행합니다.
          */
         function renderUI(m) {
-            // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
-            const ld = document.getElementById('loading');
-            const mc = document.getElementById('mainContent');
-            if (ld) ld.classList.add('hidden');
-            if (mc) mc.classList.remove('hidden');
-
             if (m.type === 'refresh' || !m.participants) return;
 
+            // 1. 레이아웃 상태 및 데이터를 먼저 다 채워 놓습니다.
             updateBadge(m);
             updateModeLayout(m);
             renderFiles(m);
+
+            // 2. 렌더링 준비가 완료된 후, 로딩 창을 끄고 메인 컨텐츠를 보여줍니다.
+            // (동일한 렌더 프레임 내에서 한 번에 그려지므로 초기 화면 깜빡임이 사라집니다)
+            setVisible('loading', false);
+            setVisible('mainContent', true);
         }
         vscode.postMessage({ type: 'ready' });
     `;

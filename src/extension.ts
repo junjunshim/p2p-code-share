@@ -46,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
     sidebar.onInitPeer = (initiator, roomName) => {
         // 기존 연결이 있다면 정리
         hub.dispose();
-        engine.reset();
+        engine.reset(true);
 
         // 방 이름이 있는 경우에만 Hub 생성 (수동 연결 방식을 위해 roomName이 빈 문자열일 수 있음)
         if (roomName) {
@@ -58,7 +58,7 @@ export function activate(context: vscode.ExtensionContext) {
     // [추가] 방 참여 요청 처리
     sidebar.onJoinRoom = (roomName, description) => {
         hub.dispose();
-        engine.reset();
+        engine.reset(true);
         engine.sendJoinRequest(roomName, description);
     };
 
@@ -180,7 +180,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 확장 프로그램 명령어 및 제공자 등록
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebar),
+        vscode.window.registerWebviewViewProvider('p2p-code-share-sidebar', sidebar, {
+            webviewOptions: { retainContextWhenHidden: true }
+        }),
         vscode.commands.registerCommand('p2p-code-share.shareActiveFile', (uri?: vscode.Uri) => {
             engine.shareActiveFile(uri);
         }),
