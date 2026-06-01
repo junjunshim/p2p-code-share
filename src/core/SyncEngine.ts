@@ -74,57 +74,8 @@ export class SyncEngine {
                 const msg = JSON.parse(text) as P2PMessage;
                 switch (msg.type) {
                     case 'SET_ROLE': this.handleSetRole(msg); break;
-                    case 'ON_CONNECTED': 
-                        // 피어 연결 초기화 처리
-                        this.logToUI(`ON_CONNECTED received: ${peerId}`);
-                        if (this.isHost) {
-                            if (this.pendingInvites.has(peerId)) {
-                                this.isSetupMode = false;
-                                this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
-                                this.pendingInvites.delete(peerId);
-                            }
-                        } else {
-                            // [수정] 수동 연결 모드라면 즉시 연결 완료로 처리
-                            if (!this.isAutoJoin) {
-                                this.isConnected = true;
-                                this.isSetupMode = false;
-                                this.logToUI("Manual connection complete");
-                                this.updateStatus('Connected');
-                            } else {
-                                // 자동 참여 모드라면 연결만 된 상태, Waiting... 유지
-                                this.logToUI("Connected to host, waiting for join approval...");
-                                this.updateStatus('Waiting...');
-                            }
-                        }
-                        this.pushUIUpdate();
-                        break;
-                    case 'ASSIGN_PEER_ID':
-                        // 게스트 노드에 대한 피어 ID 할당
-                        if (!this.isHost) {
-                            this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
-                            const oldId = this.myId || 'default';
-                            this.myId = msg.peerId;
-                            this.myName = msg.peerId; 
-                            this.initialName = this.myId; 
-                            this.isStorageInitialized = false; 
-                            this.initializeStorage(); 
-                            
-                            // UI에 피어 ID 변경 알림
-                            this.sendMessage('updatePeerId', { oldId, newId: this.myId });
-                            
-                            // [추가] ASSIGN_PEER_ID를 받은 후 JOIN_REQUEST 전송
-                            if (this.isAutoJoin && this.pendingJoinRequest) {
-                                this.sendMessage('JOIN_REQUEST', { 
-                                    name: this.myId, 
-                                    description: this.pendingJoinRequest.description 
-                                });
-                                this.pendingJoinRequest = null;
-                            }
-                            
-                            this.sendMessage('GUEST_JOIN', { name: this.myName }); 
-                            this.pushUIUpdate();
-                        }
-                        break;
+                    case 'ON_CONNECTED': this.handleOnConnected(peerId); break;
+                    case 'ASSIGN_PEER_ID': this.handleAssignPeerId(msg); break;
                     case 'INIT_SNAPSHOT': 
                         // 로컬 저장소 및 게스트 스냅샷 초기화
                         if (!this.isStorageInitialized) this.initializeStorage();
@@ -157,29 +108,8 @@ export class SyncEngine {
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'GUEST_EDIT': if (this.isHost) { await this.handleGuestEdit(msg); } break;
                     case 'REQUEST_FULL_SYNC': if (this.isHost) this.broadcastAll(); break;
-                    case 'FILE_HASH':
-                        if (!this.isHost) {
-                            const file = this.sharedFiles.find(f => f.name === msg.fileName);
-                            if (file) {
-                                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
-                                const content = doc ? doc.getText() : fs.readFileSync(file.path, 'utf8');
-                                if (this.calculateHash(content) !== msg.hash) {
-                                    this.sendMessage('REQUEST_FULL_SYNC', { fileName: msg.fileName });
-                                }
-                            }
-                        }
-                        break;
-                    case 'FILE_ASSIGNEE_UPDATE':
-                        if (!this.isHost) {
-                            const file = this.sharedFiles.find(f => f.name === msg.fileName);
-                            if (file) {
-                                file.assigneeId = msg.assigneeId;
-                                file.assigneeName = msg.assigneeName;
-                                await this.updateReadonlyState(file);
-                                this.pushUIUpdate();
-                            }
-                        }
-                        break;
+                    case 'FILE_HASH': this.handleFileHash(msg); break;
+                    case 'FILE_ASSIGNEE_UPDATE': await this.handleFileAssigneeUpdate(msg); break;
                     case 'STOP_SHARING': await this.handleRemoteStop(msg.fileName); break;
                     case 'CURSOR_UPDATE': 
                         // 커서 및 선택 영역 업데이트 처리
@@ -187,57 +117,143 @@ export class SyncEngine {
                         this.updateRemoteCursor(msg, senderId); 
                         if (this.isHost) this.broadcastCursor(msg, senderId);
                         break;
-                    case 'JOIN_REQUEST':
-                        // [추가] 방 참여 요청 처리 (호스트 전용)
-                        if (this.isHost) {
-                            this.joinRequests.push({
-                                peerId,
-                                name: msg.name || peerId,
-                                description: msg.description || '',
-                                timestamp: Date.now()
-                            });
-                            vscode.window.showInformationMessage(`방 참여 요청: ${msg.name || peerId}`);
-                            this.pushUIUpdate();
-                        }
-                        break;
-                    case 'JOIN_RESPONSE':
-                        // [추가] 방 참여 응답 처리 (게스트 전용)
-                        if (!this.isHost) {
-                            if (msg.approved) {
-                                vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
-                                this.isConnected = true; // [추가] 승인 시 연결 완료 상태로 전환
-                                this.isAutoJoin = false; // [추가] 자동 참여 모드 해제
-                                this.updateStatus('Connected');
-                            } else {
-                                vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
-                                this.reset();
-                            }
-                        }
-                        break;
-                    case 'KICKED':
-                        // [추가] 강제 퇴장 처리 (게스트 전용)
-                        if (!this.isHost) {
-                            vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
-                            this.reset();
-                        }
-                        break;
-                    case 'SET_PERMISSION':
-                        // [추가] 호스트로부터 권한 변경 메시지 수신 (게스트 전용)
-                        if (!this.isHost) {
-                            const p = msg.permission as PeerPermission;
-                            this.participants[this.myId] = {
-                                name: this.myName,
-                                globalCanEdit: p.globalCanEdit,
-                                filePermissions: p.filePermissions
-                            };
-                            this.logToUI(`Permission updated: Global=${p.globalCanEdit}`);
-                            await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
-                            this.pushUIUpdate();
-                        }
-                        break;
+                    case 'JOIN_REQUEST': this.handleJoinRequest(msg, peerId); break;
+                    case 'JOIN_RESPONSE': this.handleJoinResponse(msg); break;
+                    case 'KICKED': this.handleKicked(msg); break;
+                    case 'SET_PERMISSION': await this.handleSetPermission(msg); break;
                 }
             } catch (e) {}
         };
+    }
+
+    private handleOnConnected(peerId: string) {
+        // 피어 연결 초기화 처리
+        this.logToUI(`ON_CONNECTED received: ${peerId}`);
+        if (this.isHost) {
+            if (this.pendingInvites.has(peerId)) {
+                this.isSetupMode = false;
+                this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
+                this.pendingInvites.delete(peerId);
+            }
+        } else {
+            // [수정] 수동 연결 모드라면 즉시 연결 완료로 처리
+            if (!this.isAutoJoin) {
+                this.isConnected = true;
+                this.isSetupMode = false;
+                this.logToUI("Manual connection complete");
+                this.updateStatus('Connected');
+            } else {
+                // 자동 참여 모드라면 연결만 된 상태, Waiting... 유지
+                this.logToUI("Connected to host, waiting for join approval...");
+                this.updateStatus('Waiting...');
+            }
+        }
+        this.pushUIUpdate();
+    }
+
+    private handleAssignPeerId(msg: any) {
+        // 게스트 노드에 대한 피어 ID 할당
+        if (!this.isHost) {
+            this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
+            const oldId = this.myId || 'default';
+            this.myId = msg.peerId;
+            this.myName = msg.peerId; 
+            this.initialName = this.myId; 
+            this.isStorageInitialized = false; 
+            this.initializeStorage(); 
+            
+            // UI에 피어 ID 변경 알림
+            this.sendMessage('updatePeerId', { oldId, newId: this.myId });
+            
+            // [추가] ASSIGN_PEER_ID를 받은 후 JOIN_REQUEST 전송
+            if (this.isAutoJoin && this.pendingJoinRequest) {
+                this.sendMessage('JOIN_REQUEST', { 
+                    name: this.myId, 
+                    description: this.pendingJoinRequest.description 
+                });
+                this.pendingJoinRequest = null;
+            }
+            
+            this.sendMessage('GUEST_JOIN', { name: this.myName }); 
+            this.pushUIUpdate();
+        }
+    }
+
+    private handleFileHash(msg: any) {
+        if (!this.isHost) {
+            const file = this.sharedFiles.find(f => f.name === msg.fileName);
+            if (file) {
+                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
+                const content = doc ? doc.getText() : fs.readFileSync(file.path, 'utf8');
+                if (this.calculateHash(content) !== msg.hash) {
+                    this.sendMessage('REQUEST_FULL_SYNC', { fileName: msg.fileName });
+                }
+            }
+        }
+    }
+
+    private async handleFileAssigneeUpdate(msg: any) {
+        if (!this.isHost) {
+            const file = this.sharedFiles.find(f => f.name === msg.fileName);
+            if (file) {
+                file.assigneeId = msg.assigneeId;
+                file.assigneeName = msg.assigneeName;
+                await this.updateReadonlyState(file);
+                this.pushUIUpdate();
+            }
+        }
+    }
+
+    private handleJoinRequest(msg: any, peerId: string) {
+        // [추가] 방 참여 요청 처리 (호스트 전용)
+        if (this.isHost) {
+            this.joinRequests.push({
+                peerId,
+                name: msg.name || peerId,
+                description: msg.description || '',
+                timestamp: Date.now()
+            });
+            vscode.window.showInformationMessage(`방 참여 요청: ${msg.name || peerId}`);
+            this.pushUIUpdate();
+        }
+    }
+
+    private handleJoinResponse(msg: any) {
+        // [추가] 방 참여 응답 처리 (게스트 전용)
+        if (!this.isHost) {
+            if (msg.approved) {
+                vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
+                this.isConnected = true; // [추가] 승인 시 연결 완료 상태로 전환
+                this.isAutoJoin = false; // [추가] 자동 참여 모드 해제
+                this.updateStatus('Connected');
+            } else {
+                vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
+                this.reset();
+            }
+        }
+    }
+
+    private handleKicked(msg: any) {
+        // [추가] 강제 퇴장 처리 (게스트 전용)
+        if (!this.isHost) {
+            vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
+            this.reset();
+        }
+    }
+
+    private async handleSetPermission(msg: any) {
+        // [추가] 호스트로부터 권한 변경 메시지 수신 (게스트 전용)
+        if (!this.isHost) {
+            const p = msg.permission as PeerPermission;
+            this.participants[this.myId] = {
+                name: this.myName,
+                globalCanEdit: p.globalCanEdit,
+                filePermissions: p.filePermissions
+            };
+            this.logToUI(`Permission updated: Global=${p.globalCanEdit}`);
+            await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
+            this.pushUIUpdate();
+        }
     }
 
     private pendingJoinRequest: { roomName: string, description: string } | null = null; // [추가] 대기 중인 요청 저장

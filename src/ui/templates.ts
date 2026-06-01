@@ -208,6 +208,9 @@ function getSidebarScript(): string {
         const vscode = acquireVsCodeApi();
         let showingRequests = false;
 
+        /**
+         * 요청 창의 표시 상태를 토글합니다.
+         */
         function toggleRequests() {
             showingRequests = !showingRequests;
             const ria = document.getElementById('roomInfoArea');
@@ -216,21 +219,36 @@ function getSidebarScript(): string {
             if (ra) ra.classList.toggle('hidden', !showingRequests);
         }
 
+        /**
+         * 게스트의 참가 요청을 승인합니다.
+         */
         function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
+        /**
+         * 게스트의 참가 요청을 거절합니다.
+         */
         function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
 
+        /**
+         * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
+         */
         function showHostForm() { 
             const hf = document.getElementById('hostForm');
             const sb = document.getElementById('startButtons');
             if (hf) hf.classList.remove('hidden'); 
             if (sb) sb.classList.add('hidden'); 
         }
+        /**
+         * 방 참가 폼을 보여주고 시작 버튼을 숨깁니다.
+         */
         function showGuestForm() { 
             const gf = document.getElementById('guestForm');
             const sb = document.getElementById('startButtons');
             if (gf) gf.classList.remove('hidden'); 
             if (sb) sb.classList.add('hidden'); 
         }
+        /**
+         * 입력 폼들과 진행 상태를 기본 상태로 되돌립니다.
+         */
         function resetForms() {
             const hf = document.getElementById('hostForm');
             const gf = document.getElementById('guestForm');
@@ -251,6 +269,9 @@ function getSidebarScript(): string {
             });
         }
 
+        /**
+         * 호스트 또는 게스트로서 초기 연결을 초기화합니다.
+         */
         function init(i) { 
             try {
                 let rn = '';
@@ -292,6 +313,9 @@ function getSidebarScript(): string {
             } catch (e) { console.error(e); }
         }
 
+        /**
+         * 수동으로 게스트 연결을 위한 준비를 설정합니다.
+         */
         function initManualGuest() {
             const apid = document.getElementById('activePeerId');
             const lsdp = document.getElementById('lsdp');
@@ -302,6 +326,9 @@ function getSidebarScript(): string {
             vscode.postMessage({ type: 'initPeer', initiator: false, roomName: '' }); 
         }
 
+        /**
+         * 게스트를 초대하기 위해 초대 연결 정보 생성을 시작합니다.
+         */
         function invite() { 
             const lsdp = document.getElementById('lsdp');
             const rsdp = document.getElementById('rsdp');
@@ -310,6 +337,9 @@ function getSidebarScript(): string {
             vscode.postMessage({ type: 'inviteGuest' }); 
         }
 
+        /**
+         * 제공된 SDP 값을 사용하여 상대방과 연결을 설정합니다.
+         */
         function conn() { 
             const rsdp = document.getElementById('rsdp');
             const apid = document.getElementById('activePeerId');
@@ -322,14 +352,26 @@ function getSidebarScript(): string {
             } catch(e) { alert('Invalid Connection ID format!'); }
         }
 
+        /**
+         * 연결 설정 상태나 로딩 상태에서 뒤로 가기를 처리합니다.
+         */
         function goBack() { 
             const b = document.getElementById('badge');
             const isInv = b && b.innerText === 'CONNECTED';
             vscode.postMessage({ type: 'cancel', isInviting: isInv }); 
         }
+        /**
+         * 자신의 이름을 변경 요청을 보냅니다.
+         */
         function rename() { vscode.postMessage({ type: 'rename' }); }
+        /**
+         * 특정 피어를 세션에서 강퇴합니다.
+         */
         function kick(peerId) { vscode.postMessage({ type: 'kick', peerId }); }
 
+        /**
+         * 특정 피어에 대해 파일 편집 권한을 지정합니다.
+         */
         function togglePermission(peerId, name, canEdit) {
             vscode.postMessage({ 
                 type: 'setPermission', 
@@ -359,26 +401,11 @@ function getSidebarScript(): string {
             } catch (err) { console.error("Webview Error:", err); }
         });
 
-        function renderUI(m) {
-            // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
-            const ld = document.getElementById('loading');
-            const mc = document.getElementById('mainContent');
-            if (ld) ld.classList.add('hidden');
-            if (mc) mc.classList.remove('hidden');
-
-            if (m.type === 'refresh' || !m.participants) return;
-
+        /**
+         * 연결 상태 배지를 업데이트합니다.
+         */
+        function updateBadge(m) {
             const b = document.getElementById('badge');
-            const roleSel = document.getElementById('roleSelection');
-            const connArea = document.getElementById('connArea');
-            const active = document.getElementById('active');
-            const roleDisp = document.getElementById('roleTextDisp');
-            const dispRoom = document.getElementById('dispRoomName');
-            const lsdp = document.getElementById('lsdp');
-            const btnAddUser = document.getElementById('btnAddUser');
-            const btnShowRequests = document.getElementById('btnShowRequests');
-            const reqCountDisp = document.getElementById('reqCount');
-
             if (b) {
                 if (m.isConnected) {
                     const isMeHost = m.participants && m.participants.myId === 'host';
@@ -388,6 +415,83 @@ function getSidebarScript(): string {
                 }
                 b.className = 'badge ' + (m.isConnected ? 'online' : '');
             }
+        }
+
+        /**
+         * 대기 중인 참여 요청 목록을 화면에 렌더링합니다.
+         */
+        function renderRequests(m) {
+            const btnShowRequests = document.getElementById('btnShowRequests');
+            const reqCountDisp = document.getElementById('reqCount');
+            const isMeHost = m.participants.myId === 'host';
+            if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
+                if (btnShowRequests) btnShowRequests.classList.remove('hidden');
+                if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
+                const rl = document.getElementById('requestsList');
+                if (rl) {
+                    rl.innerHTML = '';
+                    m.participants.joinRequests.forEach(req => {
+                        const item = document.createElement('div');
+                        item.className = 'request-item';
+                        item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
+                                        '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
+                                        '<div class="request-actions"><button class="approve-btn" onclick="approve(\\\'' + req.peerId + '\\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\\'' + req.peerId + '\\\')" title="Reject">✖</button></div>';
+                        rl.appendChild(item);
+                    });
+                }
+            } else {
+                if (btnShowRequests) btnShowRequests.classList.add('hidden');
+                if (showingRequests) toggleRequests();
+            }
+        }
+
+        /**
+         * 접속해 있는 참여자 목록을 화면에 렌더링합니다.
+         */
+        function renderUsers(m) {
+            const udiv = document.getElementById('users');
+            if (!udiv) return;
+            udiv.innerHTML = '';
+            const myId = m.participants.myId;
+            const isMeHost = myId === 'host';
+            Object.entries(m.participants.others).forEach(([id, data]) => {
+                const isMe = (id === myId || (id === 'default' && myId !== 'host'));
+                const isHost = (id === 'host');
+                
+                const name = data.name;
+                const canEdit = data.globalCanEdit;
+
+                const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
+                const nHTML = isMe ? '<b>' + name + '</b>' : name;
+                const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
+                const kHTML = (isMeHost && !isMe) ? '<button class="stop-btn" onclick="kick(\\\'' + id + '\\\')">Kick</button>' : '';
+                
+                // 쓰기 권한 토글 (호스트인 경우에만 게스트들을 대상으로 표시)
+                let pHTML = '';
+                if (isMeHost && !isMe && !isHost) {
+                    pHTML = '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\\\'' + id + '\\\', \\\'' + name + '\\\', this.checked)"><span class="slider"></span></label>';
+                }
+
+                udiv.innerHTML += '<div class="user-item">' + 
+                                    '<div class="user-name">' + nHTML + '</div>' + 
+                                    '<div>' + pHTML + '</div>' +
+                                    '<div class="badge-area">' + bHTML + '</div>' + 
+                                    '<div class="action-area">' + eHTML + kHTML + '</div>' + 
+                                 '</div>';
+            });
+        }
+
+        /**
+         * 현재 상태에 맞춰 화면 레이아웃을 업데이트합니다.
+         */
+        function updateModeLayout(m) {
+            const roleSel = document.getElementById('roleSelection');
+            const connArea = document.getElementById('connArea');
+            const active = document.getElementById('active');
+            const roleDisp = document.getElementById('roleTextDisp');
+            const dispRoom = document.getElementById('dispRoomName');
+            const lsdp = document.getElementById('lsdp');
+            const btnAddUser = document.getElementById('btnAddUser');
 
             if (m.isSetupMode) {
                 // 1. 설정 모드 (SDP 교환 중)
@@ -407,56 +511,8 @@ function getSidebarScript(): string {
                 const isMeHost = m.participants.myId === 'host';
                 if (btnAddUser) btnAddUser.classList.toggle('hidden', !isMeHost);
 
-                if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
-                    if (btnShowRequests) btnShowRequests.classList.remove('hidden');
-                    if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
-                    const rl = document.getElementById('requestsList');
-                    if (rl) {
-                        rl.innerHTML = '';
-                        m.participants.joinRequests.forEach(req => {
-                            const item = document.createElement('div');
-                            item.className = 'request-item';
-                            item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
-                                            '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
-                                            '<div class="request-actions"><button class="approve-btn" onclick="approve(\\\'' + req.peerId + '\\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\\'' + req.peerId + '\\\')" title="Reject">✖</button></div>';
-                            rl.appendChild(item);
-                        });
-                    }
-                } else {
-                    if (btnShowRequests) btnShowRequests.classList.add('hidden');
-                    if (showingRequests) toggleRequests();
-                }
-
-                const udiv = document.getElementById('users');
-                if (udiv) {
-                    udiv.innerHTML = '';
-                    const myId = m.participants.myId;
-                    Object.entries(m.participants.others).forEach(([id, data]) => {
-                        const isMe = (id === myId || (id === 'default' && myId !== 'host'));
-                        const isHost = (id === 'host');
-                        
-                        const name = data.name;
-                        const canEdit = data.globalCanEdit;
-
-                        const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
-                        const nHTML = isMe ? '<b>' + name + '</b>' : name;
-                        const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                        const kHTML = (isMeHost && !isMe) ? '<button class="stop-btn" onclick="kick(\\\'' + id + '\\\')">Kick</button>' : '';
-                        
-                        // 쓰기 권한 토글 (호스트인 경우에만 게스트들을 대상으로 표시)
-                        let pHTML = '';
-                        if (isMeHost && !isMe && !isHost) {
-                            pHTML = '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\\\'' + id + '\\\', \\\'' + name + '\\\', this.checked)"><span class="slider"></span></label>';
-                        }
-
-                        udiv.innerHTML += '<div class="user-item">' + 
-                                            '<div class="user-name">' + nHTML + '</div>' + 
-                                            '<div>' + pHTML + '</div>' +
-                                            '<div class="badge-area">' + bHTML + '</div>' + 
-                                            '<div class="action-area">' + eHTML + kHTML + '</div>' + 
-                                         '</div>';
-                    });
-                }
+                renderRequests(m);
+                renderUsers(m);
             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
                 // 3. 호스트 생성/연결 중 모드
                 if (roleSel) roleSel.classList.remove('hidden');
@@ -500,7 +556,12 @@ function getSidebarScript(): string {
                 if (active) active.classList.add('hidden');
                 resetForms();
             }
+        }
 
+        /**
+         * 공유 중인 파일 목록을 화면에 렌더링합니다.
+         */
+        function renderFiles(m) {
             const fdiv = document.getElementById('files');
             if (fdiv) {
                 fdiv.innerHTML = '';
@@ -580,6 +641,23 @@ function getSidebarScript(): string {
                 });
             }
         }
+
+        /**
+         * UI의 상태 업데이트에 따른 렌더링을 일괄 수행합니다.
+         */
+        function renderUI(m) {
+            // [안전한 로딩 해제] 데이터가 정상적으로 전달되었을 때만 로딩을 풉니다.
+            const ld = document.getElementById('loading');
+            const mc = document.getElementById('mainContent');
+            if (ld) ld.classList.add('hidden');
+            if (mc) mc.classList.remove('hidden');
+
+            if (m.type === 'refresh' || !m.participants) return;
+
+            updateBadge(m);
+            updateModeLayout(m);
+            renderFiles(m);
+        }
         vscode.postMessage({ type: 'ready' });
     `;
 }
@@ -601,6 +679,10 @@ function getEngineBody(): string {
 
 /**
  * P2P 엔진에서 사용하는 JS 스크립트 코드를 반환합니다.
+ * @param initiator 호스트 여부
+ * @param autoStart 자동 시작 여부
+ * @param roomName 방 이름
+ * @param turnConfig TURN 서버 설정 정보
  */
 function getEngineScript(initiator: boolean, autoStart: boolean, roomName: string, turnConfig?: { url: string, username?: string, credential?: string }): string {
     const turnConfigSerialized = turnConfig && turnConfig.url ? JSON.stringify({
@@ -619,24 +701,39 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
         let peerServer = null;
         let activeSignalingConn = null;
 
+        /**
+         * 화면에 로그 메시지를 출력합니다.
+         */
         function log(m) { 
             const entry = document.createElement('div');
             entry.innerText = '> ' + new Date().toLocaleTimeString() + ' - ' + m;
             logDiv.prepend(entry);
         }
 
-        const iceServers = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' }
-        ];
-        const turnConfigVal = ${turnConfigSerialized};
-        if (turnConfigVal && turnConfigVal.urls) {
-            iceServers.push(turnConfigVal);
+        /**
+         * ICE 서버 설정을 구성하여 반환합니다.
+         */
+        function setupIceServers() {
+            const servers = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ];
+            const turnConfigVal = ${turnConfigSerialized};
+            if (turnConfigVal && turnConfigVal.urls) {
+                servers.push(turnConfigVal);
+            }
+            return servers;
         }
+        const iceServers = setupIceServers();
 
-        if ("${roomName}") {
-            const rName = "${roomName}";
+        /**
+         * PeerJS 신호(Signaling) 서버 연결을 설정합니다.
+         */
+        function setupPeerJS(rName) {
+            /**
+             * 방 이름을 PeerJS 연결에 안전한 ID 형태로 변환합니다.
+             */
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
             const pjsId = ${initiator} ? toSafeId(rName) : null;
             
@@ -680,6 +777,13 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             });
         }
 
+        if ("${roomName}") {
+            setupPeerJS("${roomName}");
+        }
+
+        /**
+         * 신호 서버와의 연결 채널을 처리합니다.
+         */
         function handleSignalingConn(conn) {
             activeSignalingConn = conn;
             conn.on('open', () => { 
@@ -715,6 +819,117 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
             });
         }
 
+        /**
+         * WebRTC 피어 연결 및 데이터 채널을 설정합니다.
+         */
+        function setupWebRTCPeer(peerId, p) {
+            const rawPc = p._pc;
+            if (rawPc) {
+                rawPc.addEventListener('icegatheringstatechange', () => {
+                    log('ICE Gathering State: ' + rawPc.iceGatheringState);
+                });
+                rawPc.addEventListener('iceconnectionstatechange', () => {
+                    log('ICE Connection State: ' + rawPc.iceConnectionState);
+                    if (rawPc.iceConnectionState === 'failed') {
+                        log('Direct connection failed or timed out. Checking TURN relay backup...');
+                    }
+                });
+            }
+
+            p.on('signal', data => { 
+                const sdpStr = JSON.stringify(data);
+                pendingSdpMap[peerId] = sdpStr;
+                vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId }); 
+                if (activeSignalingConn && activeSignalingConn.open) {
+                    log('SDP generated. Sending SDP message to ' + (${initiator} ? 'guest' : 'host') + ' via signaling channel.');
+                    activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
+                }
+            });
+            p.on('connect', () => { 
+                log('SDP exchange success. WebRTC P2P channel connected.');
+                let connType = 'Direct';
+                /**
+                 * 피어와의 연결 방식(TURN/직접 연결)을 감지하고 상태를 업데이트합니다.
+                 */
+                const updateStatus = () => {
+                    const statusStr = connType === 'TURN' ? 'Connected (via TURN)' : 'Connected';
+                    log('Successfully connected to peer (' + connType + ' connection established).');
+                    st.innerText = statusStr; st.style.color = '#4ec9b0';
+                    vscode.postMessage({ type: 'statusUpdate', value: statusStr, peerId }); 
+                };
+
+                if (p.getStats) {
+                    setTimeout(() => {
+                        p.getStats((err, stats) => {
+                            if (!err && stats) {
+                                let activePair = null;
+                                stats.forEach(report => {
+                                    if (report.type === 'candidate-pair' && (report.selected || report.nominated || report.state === 'succeeded')) {
+                                        activePair = report;
+                                    }
+                                });
+                                if (activePair) {
+                                    if (activePair.remoteCandidateType === 'relay' || activePair.localCandidateType === 'relay') {
+                                        connType = 'TURN';
+                                    } else {
+                                        const remoteCandId = activePair.remoteCandidateId;
+                                        const localCandId = activePair.localCandidateId;
+                                        const remoteCand = (stats.get && remoteCandId) ? stats.get(remoteCandId) : null;
+                                        const localCand = (stats.get && localCandId) ? stats.get(localCandId) : null;
+                                        
+                                        if ((remoteCand && remoteCand.candidateType === 'relay') || 
+                                            (localCand && localCand.candidateType === 'relay')) {
+                                            connType = 'TURN';
+                                        } else {
+                                            stats.forEach(report => {
+                                                if (report.id && (
+                                                    report.id === remoteCandId || 
+                                                    report.id === localCandId ||
+                                                    (remoteCandId && report.id.includes(remoteCandId)) ||
+                                                    (localCandId && report.id.includes(localCandId)) ||
+                                                    (remoteCandId && remoteCandId.includes(report.id)) ||
+                                                    (localCandId && localCandId.includes(report.id))
+                                                )) {
+                                                    if (report.candidateType === 'relay') {
+                                                        connType = 'TURN';
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            updateStatus();
+                        });
+                    }, 500);
+                } else {
+                    updateStatus();
+                }
+                if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
+            });
+            p.on('data', data => {
+                const raw = new Uint8Array(data);
+                if (raw.length !== 1 || raw[0] !== 255) {
+                    vscode.postMessage({ type: 'sendData', value: new TextDecoder().decode(raw), peerId });
+                }
+            });
+            p.on('error', err => { 
+                log('P2P connection error: ' + err.message);
+                delete peers[peerId];
+                if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
+                vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
+            });
+            p.on('close', () => {
+                log('P2P connection closed.');
+                delete peers[peerId];
+                if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
+                vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
+            });
+        }
+
+        /**
+         * 새로운 피어 연결 객체를 생성하고 관리 목록에 추가합니다.
+         */
         function addPeer(peerId, isInitiator) {
             if (peers[peerId]) return;
             try {
@@ -724,105 +939,7 @@ function getEngineScript(initiator: boolean, autoStart: boolean, roomName: strin
                     config: { iceServers: iceServers } 
                 });
                 
-                const rawPc = p._pc;
-                if (rawPc) {
-                    rawPc.addEventListener('icegatheringstatechange', () => {
-                        log('ICE Gathering State: ' + rawPc.iceGatheringState);
-                    });
-                    rawPc.addEventListener('iceconnectionstatechange', () => {
-                        log('ICE Connection State: ' + rawPc.iceConnectionState);
-                        if (rawPc.iceConnectionState === 'failed') {
-                            log('Direct connection failed or timed out. Checking TURN relay backup...');
-                        }
-                    });
-                }
-
-                p.on('signal', data => { 
-                    const sdpStr = JSON.stringify(data);
-                    pendingSdpMap[peerId] = sdpStr;
-                    vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId }); 
-                    if (activeSignalingConn && activeSignalingConn.open) {
-                        log('SDP generated. Sending SDP message to ' + (${initiator} ? 'guest' : 'host') + ' via signaling channel.');
-                        activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
-                    }
-                });
-                p.on('connect', () => { 
-                    log('SDP exchange success. WebRTC P2P channel connected.');
-                    let connType = 'Direct';
-                    const updateStatus = () => {
-                        const statusStr = connType === 'TURN' ? 'Connected (via TURN)' : 'Connected';
-                        log('Successfully connected to peer (' + connType + ' connection established).');
-                        st.innerText = statusStr; st.style.color = '#4ec9b0';
-                        vscode.postMessage({ type: 'statusUpdate', value: statusStr, peerId }); 
-                    };
-
-                    if (p.getStats) {
-                        setTimeout(() => {
-                            p.getStats((err, stats) => {
-                                if (!err && stats) {
-                                    let activePair = null;
-                                    stats.forEach(report => {
-                                        if (report.type === 'candidate-pair' && (report.selected || report.nominated || report.state === 'succeeded')) {
-                                            activePair = report;
-                                        }
-                                    });
-                                    if (activePair) {
-                                        if (activePair.remoteCandidateType === 'relay' || activePair.localCandidateType === 'relay') {
-                                            connType = 'TURN';
-                                        } else {
-                                            const remoteCandId = activePair.remoteCandidateId;
-                                            const localCandId = activePair.localCandidateId;
-                                            const remoteCand = (stats.get && remoteCandId) ? stats.get(remoteCandId) : null;
-                                            const localCand = (stats.get && localCandId) ? stats.get(localCandId) : null;
-                                            
-                                            if ((remoteCand && remoteCand.candidateType === 'relay') || 
-                                                (localCand && localCand.candidateType === 'relay')) {
-                                                connType = 'TURN';
-                                            } else {
-                                                stats.forEach(report => {
-                                                    if (report.id && (
-                                                        report.id === remoteCandId || 
-                                                        report.id === localCandId ||
-                                                        (remoteCandId && report.id.includes(remoteCandId)) ||
-                                                        (localCandId && report.id.includes(localCandId)) ||
-                                                        (remoteCandId && remoteCandId.includes(report.id)) ||
-                                                        (localCandId && localCandId.includes(report.id))
-                                                    )) {
-                                                        if (report.candidateType === 'relay') {
-                                                            connType = 'TURN';
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                updateStatus();
-                            });
-                        }, 500);
-                    } else {
-                        updateStatus();
-                    }
-                    if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
-                });
-                p.on('data', data => {
-                    const raw = new Uint8Array(data);
-                    if (raw.length !== 1 || raw[0] !== 255) {
-                        vscode.postMessage({ type: 'sendData', value: new TextDecoder().decode(raw), peerId });
-                    }
-                });
-                p.on('error', err => { 
-                    log('P2P connection error: ' + err.message);
-                    delete peers[peerId];
-                    if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
-                    vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
-                });
-                p.on('close', () => {
-                    log('P2P connection closed.');
-                    delete peers[peerId];
-                    if (Object.keys(peers).length === 0) st.innerText = 'DISCONNECTED';
-                    vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
-                });
+                setupWebRTCPeer(peerId, p);
                 peers[peerId] = p;
             } catch(e) { log('Error: ' + e.message); }
         }
