@@ -52,39 +52,314 @@ function getSidebarStyles(): string {
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         textarea { width: 100%; height: 80px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; font-family: monospace; font-size: 11px; }
         input { width: 100%; padding: 10px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
-        .badge { padding: 4px 10px; border-radius: 12px; font-size: 10px; font-weight: bold; background: #6c757d; color: white; text-transform: uppercase; align-self: flex-start; margin-bottom: 10px; display: inline-block; }
-        .online { background: #28a745; }
-        .room-info { margin: 10px 0; padding: 12px; background: var(--vscode-editor-background); border-left: 4px solid var(--vscode-charts-blue); border-radius: 4px; }
-        .room-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; }
-        .room-value { font-weight: bold; font-size: 14px; color: var(--vscode-charts-blue); }
-        .user-item { padding: 10px; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-divider); margin-bottom: 5px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
-        .user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .badge-area { width: 50px; display: flex; justify-content: center; flex-shrink: 0; }
-        .action-area { width: 35px; text-align: right; flex-shrink: 0; }
-        .me-badge { background: #28a745; color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold; }
-        .host-badge { background: #d73a49; color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold; }
-        .edit-name { color: var(--vscode-textLink-foreground); cursor: pointer; font-size: 10px; }
-        .file-item { padding: 8px 10px; cursor: pointer; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-divider); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-        .file-item:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
-        .stop-btn { width: auto !important; margin: 0 !important; background: #d73a49; color: white; border: none; padding: 3px 10px; border-radius: 4px; font-size: 10px; cursor: pointer; font-weight: bold; opacity: 0.9; line-height: 1.2; flex-shrink: 0; }
-        .stop-btn:hover { opacity: 1; background: #b31d28; }
-        h4 { margin: 20px 0 10px 0; color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
+        .badge { 
+            width: 100%;
+            justify-content: center;
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            font-size: 11px; 
+            font-weight: 600; 
+            background: rgba(30, 30, 30, 0.4); 
+            color: #cccccc; 
+            text-transform: uppercase; 
+            margin-bottom: 20px; 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 8px; 
+            border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.1));
+            letter-spacing: 0.5px;
+        }
+        .online { 
+            background: rgba(46, 60, 71, 0.7); 
+            color: #ffffff;
+        }
+        .online::after {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #3fb950;
+            border-radius: 50%;
+            animation: pulse-green 2s infinite;
+            box-shadow: 0 0 8px rgba(63, 185, 80, 0.8);
+        }
+        @keyframes pulse-green {
+            0% {
+                transform: scale(0.9);
+                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.7);
+            }
+            70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 0 5px rgba(63, 185, 80, 0);
+            }
+            100% {
+                transform: scale(0.9);
+                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+            }
+        }
+        .room-info { 
+            margin: 10px 0 20px 0; 
+            padding: 10px 12px; 
+            background: var(--vscode-welcomePage-tileBackground, var(--vscode-sideBar-background)); 
+            border: 1px solid var(--vscode-widget-border, var(--vscode-divider));
+            border-left: 3px solid var(--vscode-charts-blue); 
+            border-radius: 4px; 
+        }
+        .room-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+        .room-value { font-weight: bold; font-size: 18px; color: var(--vscode-foreground); margin-top: 4px; }
+        .user-item { 
+            padding: 8px 10px; 
+            border-radius: 4px; 
+            background: transparent; 
+            border: 1px solid transparent; 
+            margin-bottom: 3px; 
+            font-size: 14px; 
+            display: flex; 
+            align-items: center; 
+            gap: 10px; 
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .user-item:hover {
+            background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.05));
+            border-color: var(--vscode-list-hoverBorder, transparent);
+        }
+        .user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); display: flex; align-items: center; }
+        .user-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--vscode-badge-background, #3a3d41);
+            color: var(--vscode-badge-foreground, #cccccc);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            flex-shrink: 0;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .badge-area { display: flex; justify-content: center; flex-shrink: 0; }
+        .action-area { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .me-badge { background: #2ea043; color: white; padding: 2px 5px; border-radius: 3px; font-size: 8px; font-weight: bold; text-transform: uppercase; }
+        .host-badge { background: var(--vscode-badge-background, #3a3d41); color: var(--vscode-badge-foreground, #cccccc); padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600; margin-left: 6px; }
+        .edit-name-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--vscode-descriptionForeground);
+            cursor: pointer;
+            margin-left: 6px;
+            opacity: 0;
+            transition: opacity 0.15s ease, color 0.15s ease;
+            vertical-align: middle;
+        }
+        .user-item:hover .edit-name-btn {
+            opacity: 1;
+        }
+        .edit-name-btn:hover {
+            color: var(--vscode-textLink-foreground);
+        }
+        .user-action-btn {
+            background-color: rgba(255, 255, 255, 0.08) !important;
+            color: var(--vscode-foreground, #cccccc) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            padding: 4px !important;
+            margin: 0 !important;
+            border-radius: 4px !important;
+            cursor: pointer !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            width: 22px !important;
+            height: 22px !important;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .user-action-btn:hover {
+            background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.15));
+            border-color: var(--vscode-focusBorder, transparent);
+        }
+        .user-action-btn.kick-btn:hover {
+            background: #b31d28 !important;
+            color: white !important;
+            border-color: transparent;
+        }
+        .file-item { 
+            padding: 6px 10px 6px 20px; 
+            cursor: pointer; 
+            border-radius: 4px; 
+            background: transparent; 
+            border: 1px solid transparent; 
+            margin-bottom: 2px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-size: 12px;
+            transition: background 0.15s ease;
+        }
+        .file-item:hover { 
+            background: var(--vscode-list-hoverBackground); 
+        }
+        .file-name-container {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .file-icon {
+            color: var(--vscode-symbolIcon-fileForeground, #858585);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+        .file-icon svg {
+            width: 20px;
+            height: 20px;
+            display: block;
+        }
+        .file-assignee-badge {
+            font-size: 9px;
+            color: var(--vscode-descriptionForeground);
+            margin-left: 8px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: var(--vscode-badge-background, rgba(255,255,255,0.05));
+            border: 1px solid rgba(255,255,255,0.05);
+            flex-shrink: 0;
+        }
+        .file-assignee-badge.owner {
+            background: var(--vscode-button-background, #007acc);
+            color: var(--vscode-button-foreground, white);
+            border-color: transparent;
+            font-weight: 600;
+        }
+        .stop-btn { 
+            width: auto !important; 
+            margin: 0 0 0 8px !important; 
+            background: #d73a49; 
+            color: white; 
+            border: none;
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-size: 10px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            transition: background 0.15s ease, color 0.15s ease; 
+            flex-shrink: 0;
+        }
+        .stop-btn:hover { 
+            background: #b31d28; 
+            color: white; 
+            border-color: transparent;
+        }
+        
+        /* 아코디언 헤더 스타일 */
+        .accordion-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-sideBarSectionHeader-background, #252526);
+            color: var(--vscode-sideBarSectionHeader-foreground, #cccccc);
+            border-top: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+            border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+            padding: 6px 8px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-top: 15px;
+            margin-bottom: 10px;
+            border-left: 1px solid transparent;
+            border-right: 1px solid transparent;
+        }
+        
         .invite-btn { color: var(--vscode-charts-blue); cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 5px; }
         .invite-btn:hover { opacity: 0.7; }
         #hostForm { background: var(--vscode-sideBar-background); padding: 15px; border-radius: 6px; border: 1px solid var(--vscode-divider); margin-top: 10px; }
         
         /* 승인 시스템 스타일 */
-        .request-item { padding: 12px; border-radius: 6px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-focusBorder); margin-bottom: 10px; font-size: 12px; }
-        .request-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-        .request-name { font-weight: bold; color: var(--vscode-charts-blue); }
-        .request-desc { font-size: 11px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); padding: 6px; border-radius: 4px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; }
-        .request-actions { display: flex; gap: 8px; }
-        .approve-btn { flex: 1; background: #28a745; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .reject-btn { flex: 1; background: #d73a49; color: white; border: none; padding: 6px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .request-count { background: #d73a49; color: white; font-size: 9px; padding: 1px 5px; border-radius: 10px; margin-left: 4px; vertical-align: middle; }
+        .request-item { 
+            padding: 10px 12px; 
+            border-radius: 4px; 
+            background: var(--vscode-welcomePage-tileBackground, var(--vscode-sideBar-background)); 
+            border: 1px solid var(--vscode-widget-border, var(--vscode-divider)); 
+            margin-bottom: 10px; 
+            font-size: 12px; 
+        }
+        .request-header { 
+            display: flex; 
+            align-items: center; 
+            gap: 6px; 
+            margin-bottom: 8px; 
+        }
+        .request-name { 
+            font-weight: 600; 
+            color: var(--vscode-symbolIcon-keyForeground, var(--vscode-charts-blue)); 
+        }
+        .request-desc { 
+            font-size: 11px; 
+            color: var(--vscode-descriptionForeground); 
+            background: var(--vscode-editor-background); 
+            padding: 8px 10px; 
+            border-left: 3px solid var(--vscode-charts-blue);
+            border-radius: 0 4px 4px 0; 
+            margin-bottom: 10px; 
+            white-space: pre-wrap; 
+            word-break: break-all; 
+            line-height: 1.4;
+        }
+        .request-actions { 
+            display: flex; 
+            gap: 6px; 
+        }
+        .approve-btn { 
+            flex: 1; 
+            background: #2ea043;
+            color: white; 
+            border: none; 
+            padding: 6px 12px; 
+            border-radius: 2px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            font-size: 11px;
+            transition: background 0.15s ease;
+        }
+        .approve-btn:hover {
+            background: #3fb950;
+        }
+        .reject-btn { 
+            flex: 1; 
+            background: var(--vscode-button-secondaryBackground, #30363d); 
+            color: var(--vscode-button-secondaryForeground, #c9d1d9); 
+            border: 1px solid var(--vscode-button-secondaryBorder, transparent); 
+            padding: 6px 12px; 
+            border-radius: 2px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            font-size: 11px;
+            transition: background 0.15s ease;
+        }
+        .reject-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground, #8b949e);
+        }
+        .request-count { 
+            background: var(--vscode-badge-background, #d73a49); 
+            color: var(--vscode-badge-foreground, white); 
+            font-size: 9px; 
+            font-weight: 700;
+            padding: 1px 5px; 
+            border-radius: 10px; 
+            margin-left: 4px; 
+            vertical-align: middle; 
+        }
 
         /* 토글 스위치 스타일 */
-        .switch { position: relative; display: inline-block; width: 28px; height: 16px; margin-right: 4px; }
+        .switch { position: relative; display: inline-flex; align-items: center; width: 28px; height: 16px; margin-right: 4px; vertical-align: middle; }
         .switch input { opacity: 0; width: 0; height: 0; }
         .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--vscode-settings-checkboxBackground); border: 1px solid var(--vscode-settings-checkboxBorder); transition: .2s; border-radius: 16px; }
         .slider:before { position: absolute; content: ""; height: 10px; width: 10px; left: 2px; bottom: 2px; background-color: var(--vscode-settings-checkboxForeground); transition: .2s; border-radius: 50%; }
@@ -181,19 +456,49 @@ function getActiveView(): string {
     return `
         <div id="active" class="hidden">
             <div id="roomInfoArea">
-                <div class="room-info"><div class="room-label">Room Name</div><div id="dispRoomName" class="room-value"></div></div>
-                <h4>
-                    <span>Connected Users</span>
+                <div class="accordion-header">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <span>Room Info</span>
+                </div>
+                <div class="room-info" style="margin: 0 0 15px 0;">
+                    <div class="room-label">Room Name:</div>
+                    <div id="dispRoomName" class="room-value"></div>
+                </div>
+
+                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                        <span>Connected Users</span>
+                    </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <span id="btnShowRequests" class="invite-btn hidden" onclick="toggleRequests()" title="Join Requests">📋<span id="reqCount" class="request-count">0</span></span>
+                        <span id="btnShowRequests" class="invite-btn hidden" onclick="toggleRequests()" title="Join Requests" style="display: inline-flex; align-items: center;">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;">
+                                <path d="M8 16a2 2 0 0 0 1.99-2H6a2 2 0 0 0 2 2zm6-5V7.5a6.03 6.03 0 0 0-5-5.91V1a1 1 0 0 0-2 0v.59A6.03 6.03 0 0 0 2 7.5V11l-1.33 1.33A1 1 0 0 0 1 14h14a1 1 0 0 0 .67-1.67L14 11z"/>
+                            </svg>
+                            <span id="reqCount" class="request-count">0</span>
+                        </span>
                         <span id="btnAddUser" class="invite-btn" onclick="invite()">+</span>
                     </div>
-                </h4>
-                <div id="users"></div>
-                <h4>Active Snapshots</h4><div id="files"></div>
+                </div>
+                <div id="users" style="margin-bottom: 15px;"></div>
+
+                <div class="accordion-header" style="margin-top: 10px;">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <span>Active Snapshots</span>
+                </div>
+                <div id="files"></div>
             </div>
             <div id="requestsArea" class="hidden">
-                <h4><span>Join Requests</span><span class="edit-name" onclick="toggleRequests()">Back</span></h4>
+                <h4 style="display: flex; align-items: center; gap: 6px;">
+                    <span onclick="toggleRequests()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                        </svg>
+                        Back
+                    </span>
+                    <span style="color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: normal; margin-left: 4px;">|</span>
+                    <span style="font-weight: 600;">Join Requests</span>
+                </h4>
                 <div id="requestsList"></div>
             </div>
         </div>
@@ -455,9 +760,17 @@ function getSidebarScript(): string {
                     m.participants.joinRequests.forEach(req => {
                         const item = document.createElement('div');
                         item.className = 'request-item';
-                        item.innerHTML = '<div class="request-header"><span class="request-name">' + req.name + '</span></div>' +
-                                        '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
-                                        '<div class="request-actions"><button class="approve-btn" onclick="approve(\\\'' + req.peerId + '\\\')" title="Approve">✔</button><button class="reject-btn" onclick="reject(\\\'' + req.peerId + '\\\')" title="Reject">✖</button></div>';
+                        item.innerHTML = '<div class="request-header">' +
+                                            '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="color: var(--vscode-descriptionForeground);">' +
+                                                '<path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm4 11H2v-.5A2.5 2.5 0 0 1 4.5 13h7a2.5 2.5 0 0 1 2.5 2.5v.5zM3.062 15h9.876A1.5 1.5 0 0 0 11.5 14h-7a1.5 1.5 0 0 0-1.438 1z"/>' +
+                                            '</svg>' +
+                                            '<span class="request-name">' + req.name + '</span>' +
+                                         '</div>' +
+                                         '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
+                                         '<div class="request-actions">' +
+                                            '<button class="approve-btn" onclick="approve(\\\'' + req.peerId + '\\\')">Approve</button>' +
+                                            '<button class="reject-btn" onclick="reject(\\\'' + req.peerId + '\\\')">Reject</button>' +
+                                         '</div>';
                         rl.appendChild(item);
                     });
                 }
@@ -483,10 +796,20 @@ function getSidebarScript(): string {
                 const name = data.name;
                 const canEdit = data.globalCanEdit;
 
-                const bHTML = isMe ? '<span class="me-badge">ME</span>' : (isHost ? '<span class="host-badge">HOST</span>' : '');
-                const nHTML = isMe ? '<b>' + name + '</b>' : name;
-                const eHTML = isMe ? '<span class="edit-name" onclick="rename()">Edit</span>' : '';
-                const kHTML = (isMeHost && !isMe) ? '<button class="stop-btn" onclick="kick(\\\'' + id + '\\\')">Kick</button>' : '';
+                const initials = name ? name.substring(0, 2) : '??';
+                const avatarHTML = '<div class="user-avatar">' + initials + '</div>';
+
+                // 본인의 경우 이름 오른쪽에 연필 아이콘
+                let editBtnHTML = '';
+                if (isMe) {
+                    editBtnHTML = '<span class="edit-name-btn" onclick="rename()" title="Rename">' +
+                        '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">' +
+                            '<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>' +
+                        '</svg>' +
+                    '</span>';
+                }
+
+                const nHTML = isMe ? '<b>' + name + '</b> &nbsp;(Me)' + editBtnHTML : name + (isHost ? ' <span class="host-badge">Host</span>' : '');
                 
                 // 쓰기 권한 토글 (호스트인 경우에만 게스트들을 대상으로 표시)
                 let pHTML = '';
@@ -494,11 +817,30 @@ function getSidebarScript(): string {
                     pHTML = '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\\\'' + id + '\\\', \\\'' + name + '\\\', this.checked)"><span class="slider"></span></label>';
                 }
 
+                // 기여/손들기 버튼 및 강퇴 버튼
+                let controlButtonsHTML = '';
+                if (!isHost) {
+                    // 게스트 및 내 화면
+                    if (!isMe) {
+                        if (isMeHost) {
+                            controlButtonsHTML += pHTML;
+                            // 손 모양 아이콘 버튼
+                            controlButtonsHTML += '<button class="user-action-btn" title="Edit Permission Status" style="margin-left: 6px;">' +
+                                '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M14 6.5a2.5 2.5 0 0 0-5 0v3.08l-.83-.44a1.5 1.5 0 0 0-2 2.05l2.45 3.39A2.5 2.5 0 0 0 10.64 16h2.24a3 3 0 0 0 3-3V9a2.5 2.5 0 0 0-2.5-2.5zM8 4a2 2 0 1 1 4 0v2.5H8V4z"/></svg>' +
+                            '</button>';
+                            
+                            // 강퇴 버튼 (마이너스 원형 아이콘)
+                            controlButtonsHTML += '<button class="user-action-btn kick-btn" onclick="kick(\\\'' + id + '\\\')" title="Kick" style="margin-left: 6px;">' +
+                                '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/></svg>' +
+                            '</button>';
+                        }
+                    }
+                }
+
                 udiv.innerHTML += '<div class="user-item">' + 
+                                    avatarHTML +
                                     '<div class="user-name">' + nHTML + '</div>' + 
-                                    '<div>' + pHTML + '</div>' +
-                                    '<div class="badge-area">' + bHTML + '</div>' + 
-                                    '<div class="action-area">' + eHTML + kHTML + '</div>' + 
+                                    '<div class="action-area">' + controlButtonsHTML + '</div>' + 
                                  '</div>';
             });
         }
@@ -565,36 +907,152 @@ function getSidebarScript(): string {
         /**
          * 공유 중인 파일 목록을 화면에 렌더링합니다.
          */
+        function getFileIconSvg(fileName) {
+            if (!fileName) {
+                return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
+            }
+            
+            let base = fileName;
+            
+            if (base.endsWith('.part_shared')) {
+                base = base.substring(0, base.length - 12);
+            } else if (base.endsWith('.shared')) {
+                base = base.substring(0, base.length - 7);
+            }
+            
+            base = base.replace(new RegExp('_[0-9]+$'), '');
+            base = base.replace(new RegExp('_part_[0-9]+-[0-9]+$'), '');
+
+            const lowerBase = base.toLowerCase();
+            if (lowerBase === 'license') {
+                return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm-3 3a3 3 0 0 1 5.1-2.1L12.5 8.3c.4.4.4 1 0 1.4l-.8.8a1 1 0 0 1-1.4 0L9.1 9.3 8.3 10.1A3 3 0 0 1 3 6z" fill="#cbcb41"/><path d="M9.5 7.5l1.5 1.5M10.5 6.5l1.5 1.5" stroke="#cbcb41" stroke-width="1.5"/></svg>';
+            }
+            if (lowerBase === '.gitignore') {
+                return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 3.5C5 4.3 4.3 5 3.5 5S2 4.3 2 3.5 2.7 2 3.5 2 5 2.7 5 3.5zM14 12.5C14 13.3 13.3 14 12.5 14S11 13.3 11 12.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5zm-5.5-3.5c0-.8-.7-1.5-1.5-1.5S5.5 8.2 5.5 9s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5z" fill="#415a6b"/><path d="M3.5 5v6M12.5 11V7.5c0-1.4-1.1-2.5-2.5-2.5H7" stroke="#415a6b" stroke-width="1.5"/></svg>';
+            }
+            if (lowerBase === 'makefile') {
+                return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#cbcb41" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="2" stroke="#cbcb41" stroke-width="1"/></svg>';
+            }
+
+            const extIdx = base.lastIndexOf('.');
+            let ext = '';
+            if (extIdx !== -1) {
+                ext = base.substring(extIdx + 1).toLowerCase();
+            }
+
+            if (lowerBase === 'dockerfile') {
+                return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 7.5h12v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4z" fill="#519aba"/><rect x="3" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="9" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="1" width="2" height="2" rx="0.5" fill="#519aba"/></svg>';
+            }
+
+            switch (ext) {
+                case 'ts':
+                case 'tsx':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">TS</text></svg>';
+                case 'js':
+                case 'jsx':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">JS</text></svg>';
+                case 'c':
+                case 'h':
+                case 'hpp':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">C</text></svg>';
+                case 'cpp':
+                case 'cc':
+                case 'cxx':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#f34b7d" text-anchor="middle">C++</text></svg>';
+                case 'py':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M7.5 0.5C5.8 0.5 4.5 1.8 4.5 3.5V5.5H8.5V6H3C1.9 6 1 6.9 1 8C1 9.1 1.9 10 3 10H4.5V8.5C4.5 6.8 5.8 5.5 7.5 5.5H11.5V3.5C11.5 1.8 10.2 0.5 8.5 0.5H7.5Z" fill="#3572A5"/><path d="M8.5 15.5C10.2 15.5 11.5 14.2 11.5 12.5V10.5H7.5V10H13C14.1 10 15 9.1 15 8C15 6.9 14.1 6 13 6H11.5V7.5C11.5 9.2 10.2 10.5 8.5 10.5H4.5V12.5C4.5 14.2 5.8 15.5 7.5 15.5H8.5Z" fill="#F1E05A"/></svg>';
+                case 'json':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="13" font-weight="bold" fill="#cbcb41" text-anchor="middle">{}</text></svg>';
+                case 'html':
+                case 'htm':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 4L1 8L5 12M11 4L15 8L11 12" stroke="#e34c26" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                case 'css':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="15" font-family="sans-serif" font-size="14" font-weight="900" fill="#519aba" text-anchor="middle">#</text></svg>';
+                case 'md':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14" font-family="sans-serif" font-size="12" font-weight="bold" fill="#519aba" text-anchor="middle">M</text></svg>';
+                case 'java':
+                case 'class':
+                case 'jar':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 5h9v6a3 3 0 01-3 3H5a3 3 0 01-3-3V5zm9 2h1.5a1.5 1.5 0 011.5 1.5v1a1.5 1.5 0 01-1.5 1.5H11" stroke="#cc3e44" stroke-width="1.5"/><path d="M4 1v2M7 1v2M10 1v2" stroke="#cc3e44" stroke-width="1.2" stroke-linecap="round"/></svg>';
+                case 'go':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#00acd7" text-anchor="middle">GO</text></svg>';
+                case 'rs':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#dea584" text-anchor="middle">RS</text></svg>';
+                case 'yaml':
+                case 'yml':
+                case 'xml':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">⚙</text></svg>';
+                case 'sh':
+                case 'bash':
+                case 'zsh':
+                case 'ps1':
+                case 'bat':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M3 3l6 5-6 5M9 13h5" stroke="#415a6b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                case 'sql':
+                case 'db':
+                case 'sqlite':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-1.7 2.7-3 6-3s6 1.3 6 3v8c0 1.7-2.7 3-6 3s-6-1.3-6-3V4z" fill="#f34b7d" fill-opacity="0.1" stroke="#f34b7d" stroke-width="1.5"/><path d="M2 4c0 1.7 2.7 3 6 3s6-1.3 6-3M2 8c0 1.7 2.7 3 6 3s6-1.3 6-3" stroke="#f34b7d" stroke-width="1.5"/></svg>';
+                case 'php':
+                    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#519aba" text-anchor="middle">PHP</text></svg>';
+                case 'rb':
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M4 2h8l3 4-7 8-7-8 3-4z" fill="#cc3e44" stroke="#cc3e44" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+                default:
+                    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
+            }
+        }
+
+        /**
+         * 공유 중인 파일 목록을 화면에 렌더링합니다.
+         */
         function renderFiles(m) {
             const fdiv = document.getElementById('files');
             if (fdiv) {
                 fdiv.innerHTML = '';
                 const isFinalHost = m.participants.myId === 'host';
                 m.files.forEach(f => {
-                    const item = document.createElement('div'); item.className = 'file-item';
+                    const item = document.createElement('div'); 
+                    item.className = 'file-item';
+                    
+                    const infoContainer = document.createElement('div');
+                    infoContainer.style.display = 'flex';
+                    infoContainer.style.flexDirection = 'column';
+                    infoContainer.style.alignItems = 'flex-start';
+                    infoContainer.style.gap = '4px';
+                    infoContainer.style.flex = '1';
+                    infoContainer.style.overflow = 'hidden';
+                    
+                    const nameContainer = document.createElement('div');
+                    nameContainer.className = 'file-name-container';
+                    nameContainer.style.width = '100%';
+                    nameContainer.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+                    
+                    const fileIcon = document.createElement('span');
+                    fileIcon.className = 'file-icon';
+                    fileIcon.innerHTML = getFileIconSvg(f.name);
+                    
                     const nameSpan = document.createElement('span');
-                    nameSpan.innerText = '📄 ' + f.name; nameSpan.style.flex = '1';
-                    nameSpan.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
-                    item.appendChild(nameSpan);
+                    nameSpan.innerText = f.name;
+                    
+                    nameContainer.appendChild(fileIcon);
+                    nameContainer.appendChild(nameSpan);
+                    infoContainer.appendChild(nameContainer);
+                    
                     if (isFinalHost) {
-                        // 담당자 지정을 위한 select 생성
                         const select = document.createElement('select');
-                        select.style.marginLeft = '10px';
-                        select.style.marginRight = '10px';
+                        select.style.marginLeft = '26px';
                         select.style.fontSize = '10px';
                         select.style.background = 'var(--vscode-dropdown-background)';
                         select.style.color = 'var(--vscode-dropdown-foreground)';
                         select.style.border = '1px solid var(--vscode-dropdown-border)';
-                        select.style.borderRadius = '4px';
-                        select.style.padding = '2px';
+                        select.style.borderRadius = '2px';
+                        select.style.padding = '2px 4px';
+                        select.style.maxWidth = '180px';
                         
-                        // 기본 옵션: 담당자 없음 (누구나 편집 가능)
                         const optDefault = document.createElement('option');
                         optDefault.value = '';
                         optDefault.innerText = 'Anyone';
                         select.appendChild(optDefault);
                         
-                        // 참가자 명단 추가
                         Object.entries(m.participants.others).forEach(([id, data]) => {
                             const opt = document.createElement('option');
                             opt.value = id;
@@ -612,34 +1070,33 @@ function getSidebarScript(): string {
                                 assigneeId: e.target.value
                             });
                         };
-                        select.onclick = (e) => { e.stopPropagation(); }; // 클릭 시 파일 열기 이벤트 전파 방지
-                        item.appendChild(select);
+                        select.onclick = (e) => { e.stopPropagation(); };
+                        infoContainer.appendChild(select);
+                        
+                        item.appendChild(infoContainer);
 
-                        const stopBtn = document.createElement('button'); stopBtn.className = 'stop-btn'; stopBtn.innerText = 'Stop';
+                        const stopBtn = document.createElement('button'); 
+                        stopBtn.className = 'stop-btn'; 
+                        stopBtn.innerText = 'Stop';
                         stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
                         item.appendChild(stopBtn);
                     } else {
-                        // 게스트를 위해 담당자 정보 배지 렌더링
                         const assigneeSpan = document.createElement('span');
-                        assigneeSpan.style.fontSize = '10px';
-                        assigneeSpan.style.color = 'var(--vscode-descriptionForeground)';
-                        assigneeSpan.style.marginLeft = '10px';
-                        assigneeSpan.style.padding = '2px 6px';
-                        assigneeSpan.style.borderRadius = '4px';
-                        assigneeSpan.style.background = 'var(--vscode-badge-background)';
+                        assigneeSpan.className = 'file-assignee-badge';
+                        assigneeSpan.style.marginLeft = '26px';
                         
                         if (f.assigneeId) {
                             if (f.assigneeId === m.participants.myId) {
                                 assigneeSpan.innerText = 'Me (Owner)';
-                                assigneeSpan.style.background = 'var(--vscode-button-background)';
-                                assigneeSpan.style.color = 'var(--vscode-button-foreground)';
+                                assigneeSpan.classList.add('owner');
                             } else {
                                 assigneeSpan.innerText = f.assigneeName || f.assigneeId;
                             }
                         } else {
                             assigneeSpan.innerText = 'Anyone';
                         }
-                        item.appendChild(assigneeSpan);
+                        infoContainer.appendChild(assigneeSpan);
+                        item.appendChild(infoContainer);
                     }
                     fdiv.appendChild(item);
                 });
