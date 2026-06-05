@@ -224,17 +224,16 @@ function getSidebarStyles(): string {
             display: block;
         }
         .file-assignee-badge {
-            font-size: 9px;
-            color: var(--vscode-descriptionForeground);
+            font-size: 11px;
+            color: #cbcbcb;
             margin-left: 8px;
             padding: 2px 6px;
-            border-radius: 10px;
-            background: var(--vscode-badge-background, rgba(255,255,255,0.05));
+            border-radius: 2px;
+            background:rgba(67,67,67,0.94);
             border: 1px solid rgba(255,255,255,0.05);
             flex-shrink: 0;
         }
         .file-assignee-badge.owner {
-            background: var(--vscode-button-background, #007acc);
             color: var(--vscode-button-foreground, white);
             border-color: transparent;
             font-weight: 600;
@@ -285,11 +284,11 @@ function getSidebarStyles(): string {
         /* 승인 시스템 스타일 */
         .request-item { 
             padding: 10px 12px; 
-            border-radius: 4px; 
+            border-radius: 5px; 
             background: var(--vscode-welcomePage-tileBackground, var(--vscode-sideBar-background)); 
-            border: 1px solid var(--vscode-widget-border, var(--vscode-divider)); 
+            border: 1px solid #393939;
             margin-bottom: 10px; 
-            font-size: 12px; 
+            font-size: 13px; 
         }
         .request-header { 
             display: flex; 
@@ -319,11 +318,11 @@ function getSidebarStyles(): string {
         }
         .approve-btn { 
             flex: 1; 
-            background: #2ea043;
-            color: white; 
+            background: #76b381;
+            color: var(--vscode-button-secondaryForeground, #c9d1d9); 
             border: none; 
             padding: 6px 12px; 
-            border-radius: 2px; 
+            border-radius: 3px; 
             cursor: pointer; 
             font-weight: 600; 
             font-size: 11px;
@@ -334,11 +333,11 @@ function getSidebarStyles(): string {
         }
         .reject-btn { 
             flex: 1; 
-            background: var(--vscode-button-secondaryBackground, #30363d); 
+            background: #434343;
             color: var(--vscode-button-secondaryForeground, #c9d1d9); 
             border: 1px solid var(--vscode-button-secondaryBorder, transparent); 
             padding: 6px 12px; 
-            border-radius: 2px; 
+            border-radius: 3px; 
             cursor: pointer; 
             font-weight: 600; 
             font-size: 11px;
@@ -489,16 +488,16 @@ function getActiveView(): string {
                 <div id="files"></div>
             </div>
             <div id="requestsArea" class="hidden">
-                <h4 style="display: flex; align-items: center; gap: 6px;">
-                    <span onclick="toggleRequests()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
+                <div class="accordion-header">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <span>Join Requests</span>
+                    <span onclick="toggleRequests()" style="margin-left: auto;cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
                         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                             <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
                         </svg>
                         Back
                     </span>
-                    <span style="color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: normal; margin-left: 4px;">|</span>
-                    <span style="font-weight: 600;">Join Requests</span>
-                </h4>
+                </div>
                 <div id="requestsList"></div>
             </div>
         </div>
@@ -761,7 +760,7 @@ function getSidebarScript(): string {
                         const item = document.createElement('div');
                         item.className = 'request-item';
                         item.innerHTML = '<div class="request-header">' +
-                                            '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="color: var(--vscode-descriptionForeground);">' +
+                                            '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" style="color: var(--vscode-descriptionForeground);">' +
                                                 '<path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm4 11H2v-.5A2.5 2.5 0 0 1 4.5 13h7a2.5 2.5 0 0 1 2.5 2.5v.5zM3.062 15h9.876A1.5 1.5 0 0 0 11.5 14h-7a1.5 1.5 0 0 0-1.438 1z"/>' +
                                             '</svg>' +
                                             '<span class="request-name">' + req.name + '</span>' +
@@ -1031,6 +1030,7 @@ function getSidebarScript(): string {
                     fileIcon.innerHTML = getFileIconSvg(f.name);
                     
                     const nameSpan = document.createElement('span');
+                    nameSpan.style.fontSize = '13px';
                     nameSpan.innerText = f.name;
                     
                     nameContainer.appendChild(fileIcon);
@@ -1040,7 +1040,7 @@ function getSidebarScript(): string {
                     if (isFinalHost) {
                         const select = document.createElement('select');
                         select.style.marginLeft = '26px';
-                        select.style.fontSize = '10px';
+                        select.style.fontSize = '12px';
                         select.style.background = 'var(--vscode-dropdown-background)';
                         select.style.color = 'var(--vscode-dropdown-foreground)';
                         select.style.border = '1px solid var(--vscode-dropdown-border)';
