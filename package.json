@@ -61,24 +61,24 @@
       "explorer/context": [
         {
           "command": "p2p-code-share.shareActiveFile",
-          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost",
+          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && !p2pCodeShare.isActiveFileShared",
           "group": "4_p2p_sharing@1"
         }
       ],
       "editor/context": [
         {
           "command": "p2p-code-share.shareActiveFile",
-          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost",
+          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && !p2pCodeShare.isActiveFileShared",
           "group": "4_p2p_sharing@1"
         },
         {
           "command": "p2p-code-share.shareSelectedRange",
-          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && editorHasSelection",
+          "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && editorHasSelection && !p2pCodeShare.isActiveFileShared",
           "group": "4_p2p_sharing@2"
         },
         {
           "command": "p2p-code-share.addDecoration",
-          "when": "p2pCodeShare.isConnected",
+          "when": "p2pCodeShare.isConnected && p2pCodeShare.isActiveFileShared",
           "group": "4_p2p_sharing@3"
         }
       ]

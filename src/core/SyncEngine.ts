@@ -533,8 +533,11 @@ export class SyncEngine {
         const prevSelection = this.remoteSelectionDecorations.get(peerId);
         if (prevSelection) prevSelection.dispose();
 
+        const editorConfig = vscode.workspace.getConfiguration('editor', vscode.Uri.file(file.path));
+        const editorFontSize = editorConfig.get<number>('fontSize') || 14;
+        const badgeFontSize = Math.max(9, Math.round(editorFontSize * 0.8));
+
         const color = this.getUserColor(peerId); 
-        // 랭킹에 따라 수직 오프셋 계산 (기본 1.4em 아래부터 시작하여 랭크당 약 1.5em씩 추가)
         const verticalOffset = 1.4 + (rank * 1.5);
 
         // 새 커서 데코레이션 생성
@@ -545,7 +548,7 @@ export class SyncEngine {
                 backgroundColor: color, color: 'white', 
                 margin: `${verticalOffset}em 0 0 0`, 
                 fontWeight: 'bold',
-                textDecoration: `none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; z-index: ${1000 - rank}; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);`
+                textDecoration: `none; font-size: ${badgeFontSize}px; padding: 1px 4px; border-radius: 3px; position: absolute; z-index: ${1000 - rank}; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);`
             }
         });
         // 새 선택 영역 데코레이션 생성
@@ -857,8 +860,9 @@ export class SyncEngine {
      * 텍스트 문서 변경 이벤트 리스너를 설정합니다.
      */
     private setupTextListeners() {
-        // 에디터 변경 감지 (새로 열거나 탭 전환 시 읽기 전용 상태 동기화)
+        // 에디터 변경 감지 (새로 열거나 탭 전환 시 읽기 전용 상태 동기화 및 공유 상태 컨텍스트 업데이트)
         vscode.window.onDidChangeActiveTextEditor(async editor => {
+            this.updateActiveFileSharedContext();
             if (!editor || this.isHost) return;
             const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
             if (file) {
@@ -969,6 +973,16 @@ export class SyncEngine {
         vscode.window.onDidChangeVisibleTextEditors(() => {
             this.refreshAllDecorations();
         });
+
+        // 폰트 크기 변경 감지 및 데코레이션 갱신 리스너 등록
+        this.context.subscriptions.push(
+            vscode.workspace.onDidChangeConfiguration(e => {
+                if (e.affectsConfiguration('editor.fontSize')) {
+                    this.sharedFiles.forEach(file => this.renderCursorsForFile(file));
+                    this.refreshDecorationsInEditors();
+                }
+            })
+        );
     }
     
     /**
@@ -1007,16 +1021,10 @@ export class SyncEngine {
         
         const oldText = doc.getText();
         
-        // [수정] 내용이 이미 같더라도 디스크 파일은 최신 상태로 업데이트
-        // (게스트가 'Don't Save'로 닫을 때 최신 상태로 복구되도록 보장)
         if (oldText === content) {
-            try { 
-                const currentMode = fs.statSync(filePath).mode;
-                const wasReadonly = (currentMode & 0o200) === 0;
-                if (wasReadonly) fs.chmodSync(filePath, 0o666);
-                fs.writeFileSync(filePath, content); 
-                if (wasReadonly) fs.chmodSync(filePath, 0o444);
-            } catch(e) {}
+            if (doc.isDirty) {
+                try { await doc.save(); } catch(e) {}
+            }
             return;
         }
 
@@ -1047,8 +1055,8 @@ export class SyncEngine {
             edit.replace(doc.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(oldEnd)), content.slice(start, newEnd));
             await vscode.workspace.applyEdit(edit);
             
-            // [추가] 에디터 적용 직후 디스크 파일도 즉시 동기화
-            try { fs.writeFileSync(filePath, content); } catch(e) {}
+            // [수정] 외부 파일 직접 쓰기(fs.writeFileSync) 대신 VS Code API를 통한 안전한 저장 수행
+            try { await doc.save(); } catch(e) {}
         } finally {
             // [추가] 속성 복구
             if (wasReadonly) fs.chmodSync(filePath, 0o444);
@@ -1641,6 +1649,10 @@ export class SyncEngine {
                 return;
             }
 
+            const editorConfig = vscode.workspace.getConfiguration('editor', editor.document.uri);
+            const editorFontSize = editorConfig.get<number>('fontSize') || 14;
+            const badgeFontSize = Math.max(9, Math.round(editorFontSize * 0.8));
+
             // 본인에게 보이는 데코레이션 필터링
             const fileDecos = this.decorations.filter(d => d.fileName === file.name);
             const visibleDecos = fileDecos.filter(d => {
@@ -1699,7 +1711,7 @@ export class SyncEngine {
                             backgroundColor: badgeColor,
                             margin: '1.4em 0 0 0.2ch',
                             fontWeight: 'bold',
-                            textDecoration: 'none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 999; text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);'
+                            textDecoration: `none; font-size: ${badgeFontSize}px; padding: 1px 4px; border-radius: 3px; position: absolute; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 999; text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);`
                         }
                     }
                 });
@@ -1858,5 +1870,15 @@ export class SyncEngine {
             joinRequests: this.joinRequests,
             decorations: visibleDecos
         });
+        this.updateActiveFileSharedContext();
+    }
+
+    /**
+     * 현재 활성화된 에디터의 파일이 공유 중인지 여부를 VS Code context에 업데이트합니다.
+     */
+    public updateActiveFileSharedContext() {
+        const editor = vscode.window.activeTextEditor;
+        const isShared = editor ? this.sharedFiles.some(f => f.path === editor.document.uri.fsPath) : false;
+        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isActiveFileShared', isShared);
     }
 }
