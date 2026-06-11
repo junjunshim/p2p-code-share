@@ -645,13 +645,13 @@ export class SyncEngine {
             return;
         }
 
-        // 스냅샷 경로 생성 및 파일 쓰기
-        const snapshotPath = path.join(this.storagePath, msg.fileName + '.shared');
+        // 스냅샷 경로 생성 및 파일 쓰기 (호스트가 넘겨준 원본 확장자를 가진 고유명 그대로 사용)
+        const snapshotPath = path.join(this.storagePath, msg.fileName);
         this.logToUI(`Writing snapshot to: ${snapshotPath}`);
         fs.writeFileSync(snapshotPath, msg.content);
         
-        // [수정] 파일 목록에 먼저 추가 (여기서 읽기 전용 상태가 설정됨)
-        this.addSharedFile(msg.fileName, snapshotPath, undefined, msg.assigneeId, msg.assigneeName);
+        // [수정] 파일 목록에 먼저 추가 (여기서 읽기 전용 상태가 설정됨, startLine / endLine도 함께 저장)
+        this.addSharedFile(msg.fileName, snapshotPath, undefined, msg.assigneeId, msg.assigneeName, msg.startLine, msg.endLine);
 
         // 문서 열기 및 표시
         const doc = await vscode.workspace.openTextDocument(snapshotPath);
@@ -690,28 +690,49 @@ export class SyncEngine {
         this.pushUIUpdate();
     }
 
-    /**
-     * 게스트의 편집 내용을 처리합니다.
-     * @param msg 편집 메시지 (파일 이름 및 내용 포함).
-     */
     private async handleGuestEdit(msg: any) {
         // 편집 대상 파일 찾기
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
         if (file) { 
-            // [추가] 가상 공유 파일 변경에 따른 endLine 동적 보정
-            if (file.startLine !== undefined && file.endLine !== undefined && fs.existsSync(file.path)) {
+            const isPartialShare = file.startLine !== undefined && file.endLine !== undefined;
+            if (isPartialShare) {
                 try {
-                    const prevSharedText = fs.readFileSync(file.path, 'utf8');
+                    // 호스트 원본 파일에서 구간 치환
+                    const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
+                    const currentText = doc ? doc.getText() : fs.readFileSync(file.path, 'utf8');
+                    const lines = currentText.split(/\r?\n/);
+                    
+                    const beforePart = lines.slice(0, file.startLine).join('\n');
+                    const afterPart = lines.slice(file.endLine! + 1).join('\n');
+                    
+                    let mergedText = "";
+                    if (file.startLine! > 0) {
+                        mergedText += beforePart + '\n';
+                    }
+                    mergedText += msg.content;
+                    if (file.endLine! < lines.length - 1) {
+                        mergedText += '\n' + afterPart;
+                    }
+
+                    // 게스트 편집에 따른 endLine 범위 보정
+                    const prevSharedText = lines.slice(file.startLine!, file.endLine! + 1).join('\n');
                     const prevSharedLinesCount = prevSharedText.split(/\r?\n/).length;
                     const newSharedLinesCount = msg.content.split(/\r?\n/).length;
                     const lineDelta = newSharedLinesCount - prevSharedLinesCount;
-                    file.endLine += lineDelta;
-                } catch (e) {}
+                    
+                    file.endLine! += lineDelta;
+
+                    // 호스트 실제 에디터 업데이트 및 브로드캐스트
+                    await this.forceUpdateEditor(file.name, mergedText, file.path);
+                    this.broadcastFullContent(file.name, file.path);
+                } catch (e) {
+                    this.logToUI(`Error merging range share edit: ${e}`);
+                }
+            } else {
+                // 전체 공유 시 호스트 실제 에디터 내용 업데이트 및 브로드캐스트
+                await this.forceUpdateEditor(file.name, msg.content, file.path); 
+                this.broadcastFullContent(file.name, file.path); 
             }
-            
-            // 공유 진행 중에는 호스트 원본 파일은 건드리지 않고, 오직 가상 스냅샷 에디터 내용만 강제 업데이트 및 브로드캐스트합니다.
-            await this.forceUpdateEditor(file.name, msg.content, file.path); 
-            this.broadcastFullContent(file.name, file.path); 
         }
     }
 
@@ -1057,17 +1078,20 @@ export class SyncEngine {
         }
         
         const fileName = path.basename(sourcePath);
-        if (this.sharedFiles.find(f => f.source === sourcePath)) return;
+        // 이미 실제 파일이 공유 중인 경우 무시
+        if (this.sharedFiles.find(f => f.path === sourcePath)) return;
         
-        // [수정] 공유할 때마다 고유 경로를 갖도록 타임스탬프 결합 (원본파일명_타임스탬프.shared)
+        // 공유할 때마다 고유 경로를 갖도록 하되 원본 확장자를 유지 (원본파일명_타임스탬프.확장자)
         const timestamp = Date.now();
-        const virtualFileName = `${fileName}_${timestamp}.shared`;
-        const snapshotPath = path.join(this.storagePath, virtualFileName);
-        fs.writeFileSync(snapshotPath, document.getText());
+        const ext = path.extname(fileName);
+        const baseName = path.basename(fileName, ext);
+        const virtualFileName = `${baseName}_${timestamp}${ext}`;
         
-        // 스냅샷 문서 열기 및 표시
-        const doc = await vscode.workspace.openTextDocument(snapshotPath);
-        await vscode.window.showTextDocument(doc);
+        // 원본 백업본 생성 (.original)
+        const backupPath = path.join(this.storagePath, `${baseName}_${timestamp}.original`);
+        fs.writeFileSync(backupPath, document.getText());
+        
+        // 호스트는 에디터를 전환하지 않고 실제 프로젝트 파일(sourcePath)에서 직접 동 편집
         
         // 게스트에게 초기 스냅샷 전송
         this.sendMessage('INIT_SNAPSHOT', { 
@@ -1076,7 +1100,7 @@ export class SyncEngine {
             assigneeId: undefined,
             assigneeName: undefined
         });
-        this.addSharedFile(virtualFileName, snapshotPath, sourcePath);
+        this.addSharedFile(virtualFileName, sourcePath, backupPath);
         this.logToUI(`Started sharing: ${fileName}`);
     }
 
@@ -1111,34 +1135,36 @@ export class SyncEngine {
         const selectedText = document.getText(range);
         const originalFileName = path.basename(sourcePath);
         
-        // [수정] 공유할 때마다 고유 경로를 갖도록 타임스탬프 결합 (원본파일명_part_시작-끝_타임스탬프.part_shared)
+        // 공유할 때마다 고유 경로를 갖도록 하되 원본 확장자를 유지 (원본파일명_part_시작-끝_타임스탬프.확장자)
         const timestamp = Date.now();
-        const virtualFileName = `${originalFileName}_part_${startLine + 1}-${endLine + 1}_${timestamp}.part_shared`;
+        const ext = path.extname(originalFileName);
+        const baseName = path.basename(originalFileName, ext);
+        const virtualFileName = `${baseName}_part_${startLine + 1}-${endLine + 1}_${timestamp}${ext}`;
         
         // 기존에 이미 동일한 영역이 공유 중인지 체크
-        if (this.sharedFiles.find(f => f.source === sourcePath && f.startLine === startLine && f.endLine === endLine)) {
+        if (this.sharedFiles.find(f => f.path === sourcePath && f.startLine === startLine && f.endLine === endLine)) {
             vscode.window.showInformationMessage("이미 동일한 영역이 공유 중입니다.");
             return;
         }
 
-        // 가상 공유 파일 경로 생성 및 쓰기 (.part_shared 확장자 사용)
-        const snapshotPath = path.join(this.storagePath, virtualFileName);
-        fs.writeFileSync(snapshotPath, selectedText);
+        // 원본 백업본 생성 (.original)
+        const backupPath = path.join(this.storagePath, `${baseName}_part_${startLine + 1}-${endLine + 1}_${timestamp}.original`);
+        fs.writeFileSync(backupPath, selectedText);
 
-        // 스냅샷 문서 열기 및 표시 (호스트에서도 원할 시 확인할 수 있도록 에디터 열기)
-        const doc = await vscode.workspace.openTextDocument(snapshotPath);
-        await vscode.window.showTextDocument(doc);
+        // 호스트는 에디터를 전환하지 않고 실제 소스 파일에서 직접 작업
 
         // 게스트들에게 초기 스냅샷 전송
         this.sendMessage('INIT_SNAPSHOT', {
             fileName: virtualFileName,
             content: selectedText,
             assigneeId: undefined,
-            assigneeName: undefined
+            assigneeName: undefined,
+            startLine,
+            endLine
         });
 
-        // 공유 파일 목록에 등록 (startLine, endLine 추가 전달)
-        this.addSharedFile(virtualFileName, snapshotPath, sourcePath, undefined, undefined, startLine, endLine);
+        // 공유 파일 목록에 등록 (path는 실제 파일 경로, source는 원본 백업본 경로)
+        this.addSharedFile(virtualFileName, sourcePath, backupPath, undefined, undefined, startLine, endLine);
         this.logToUI(`Started sharing range (${startLine + 1}~${endLine + 1}): ${originalFileName}`);
     }
 
@@ -1229,11 +1255,22 @@ export class SyncEngine {
      * @param filePath 파일 경로.
      */
     private broadcastFullContent(fileName: string, filePath: string) {
-        // 열려있는 문서에서 내용 가져오기, 없으면 파일 시스템에서 읽기
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-        const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf8');
-        // 전체 동기화 메시지 전송
-        this.sendMessage('SYNC_FULL', { fileName, content });
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (file) {
+            // 열려있는 문서에서 내용 가져오기, 없으면 파일 시스템에서 읽기
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+            let content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf8');
+            
+            // 호스트측 부분 범위 공유 시에는 전체 파일이 아닌 해당 영역만 추출하여 게스트에게 전송
+            const isPartialShare = file.startLine !== undefined && file.endLine !== undefined;
+            if (this.isHost && isPartialShare) {
+                const lines = content.split(/\r?\n/);
+                content = lines.slice(file.startLine, file.endLine! + 1).join('\n');
+            }
+            
+            // 전체 동기화 메시지 전송
+            this.sendMessage('SYNC_FULL', { fileName, content });
+        }
     }
 
     /**
@@ -1286,13 +1323,15 @@ export class SyncEngine {
      * @param endLine 호스트 원본 끝 라인 (선택 사항).
      */
     private addSharedFile(name: string, filePath: string, source?: string, assigneeId?: string, assigneeName?: string, startLine?: number, endLine?: number) {
-        // 이미 목록에 없으면 파일 추가
-        let file = this.sharedFiles.find(f => f.path === filePath);
+        // 중복 공유 구분을 위해 고유 이름(name)을 기준으로 탐색
+        let file = this.sharedFiles.find(f => f.name === name);
         if (!file) {
             file = { name, path: filePath, source, assigneeId, assigneeName, startLine, endLine };
             this.sharedFiles.push(file);
         } else {
             // 이미 있으면 정보 업데이트
+            file.path = filePath;
+            file.source = source;
             file.assigneeId = assigneeId;
             file.assigneeName = assigneeName;
             if (startLine !== undefined) file.startLine = startLine;
@@ -1331,7 +1370,7 @@ export class SyncEngine {
         
         const file = this.sharedFiles.find(f => f.name === fileName);
         if (file && file.source) {
-            // 변경 사항 저장 및 원본 파일 업데이트
+            // 변경 사항 저장
             const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
             if (doc) { 
                 await doc.save();
@@ -1339,45 +1378,33 @@ export class SyncEngine {
                 const isPartialShare = file.startLine !== undefined && file.endLine !== undefined;
                 if (isPartialShare) {
                     try {
-                        const latestSharedText = doc.getText();
-                        const origDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.source);
-                        const originalText = origDoc ? origDoc.getText() : fs.readFileSync(file.source, 'utf8');
-                        const origLines = originalText.split(/\r?\n/);
+                        // 부분 공유의 경우, 원본 선택영역 백업(file.source)과 현재 수정한 영역을 추출하여 Diff 비교
+                        const currentRange = new vscode.Range(
+                            new vscode.Position(file.startLine!, 0),
+                            new vscode.Position(file.endLine!, doc.lineAt(file.endLine!).text.length)
+                        );
+                        const currentRangeText = doc.getText(currentRange);
+                        const tempEditedPath = path.join(this.storagePath, `${file.name}_edited.tmp`);
+                        fs.writeFileSync(tempEditedPath, currentRangeText);
                         
-                        const beforePart = origLines.slice(0, file.startLine).join('\n');
-                        const afterPart = origLines.slice(file.endLine! + 1).join('\n');
-                        
-                        let mergedText = "";
-                        if (file.startLine! > 0) {
-                            mergedText += beforePart + '\n';
-                        }
-                        mergedText += latestSharedText;
-                        if (file.endLine! < origLines.length - 1) {
-                            mergedText += '\n' + afterPart;
-                        }
-                        
-                        if (origDoc) {
-                            this.isApplyingRemoteChange = true;
-                            try {
-                                const edit = new vscode.WorkspaceEdit();
-                                const fullRange = new vscode.Range(
-                                    new vscode.Position(0, 0),
-                                    new vscode.Position(origDoc.lineCount, 0)
-                                );
-                                edit.replace(origDoc.uri, fullRange, mergedText);
-                                await vscode.workspace.applyEdit(edit);
-                                await origDoc.save();
-                            } finally {
-                                this.isApplyingRemoteChange = false;
-                            }
-                        } else {
-                            fs.writeFileSync(file.source, mergedText);
-                        }
+                        // Diff 뷰어 열기
+                        vscode.commands.executeCommand(
+                            'vscode.diff',
+                            vscode.Uri.file(file.source),
+                            vscode.Uri.file(tempEditedPath),
+                            `선택 영역 비교: ${file.name} (원본 vs 협업본)`
+                        );
                     } catch (e) {
-                        this.logToUI(`Error saving partial share on stop: ${e}`);
+                        this.logToUI(`Error opening diff for partial share: ${e}`);
                     }
                 } else {
-                    fs.writeFileSync(file.source, doc.getText()); 
+                    // 전체 공유의 경우, 원본 백업 파일(file.source)과 현재 프로젝트 실제 파일(file.path)을 Diff 비교
+                    vscode.commands.executeCommand(
+                        'vscode.diff',
+                        vscode.Uri.file(file.source),
+                        vscode.Uri.file(file.path),
+                        `파일 비교: ${file.name} (원본 vs 협업본)`
+                    );
                 }
             }
             // 공유 중지 알림 전송 및 원격 처리
@@ -1398,8 +1425,8 @@ export class SyncEngine {
         const file = this.sharedFiles[index];
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
         
-        // 문서 닫기 및 탭 그룹에서 제거
-        if (doc) {
+        // 문서 닫기 및 탭 그룹에서 제거 (게스트만 수행)
+        if (!this.isHost && doc) {
             // [추가] 즉시 닫기 보호 목록에 추가 (이벤트 차단)
             this.closingDocuments.add(doc.uri.fsPath);
 
@@ -1424,8 +1451,8 @@ export class SyncEngine {
         // [추가] 에디터가 완전히 정리되기를 잠시 기다림
         await new Promise(resolve => setTimeout(resolve, 50));
 
-        // 파일 삭제 시도
-        if (fs.existsSync(file.path)) {
+        // 파일 삭제 시도 (게스트만 수행)
+        if (!this.isHost && fs.existsSync(file.path)) {
             try { 
                 // [추가] 읽기 전용 속성 해제 후 삭제
                 fs.chmodSync(file.path, 0o666);

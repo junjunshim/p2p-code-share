@@ -1010,12 +1010,22 @@ function getSidebarScript(): string {
             
             if (base.endsWith('.part_shared')) {
                 base = base.substring(0, base.length - 12);
+                base = base.replace(new RegExp('_[0-9]+$'), '');
+                base = base.replace(new RegExp('_part_[0-9]+-[0-9]+$'), '');
             } else if (base.endsWith('.shared')) {
                 base = base.substring(0, base.length - 7);
+                base = base.replace(new RegExp('_[0-9]+$'), '');
+                base = base.replace(new RegExp('_part_[0-9]+-[0-9]+$'), '');
+            } else {
+                const lastDot = base.lastIndexOf('.');
+                if (lastDot !== -1) {
+                    const ext = base.substring(lastDot);
+                    let nameWithoutExt = base.substring(0, lastDot);
+                    nameWithoutExt = nameWithoutExt.replace(/_[0-9]+$/, '');
+                    nameWithoutExt = nameWithoutExt.replace(/_part_[0-9]+-[0-9]+$/, '');
+                    base = nameWithoutExt + ext;
+                }
             }
-            
-            base = base.replace(new RegExp('_[0-9]+$'), '');
-            base = base.replace(new RegExp('_part_[0-9]+-[0-9]+$'), '');
 
             const lowerBase = base.toLowerCase();
             if (lowerBase === 'license') {
