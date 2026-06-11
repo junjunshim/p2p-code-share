@@ -37,7 +37,8 @@ export function activate(context: vscode.ExtensionContext) {
                 participants: state,
                 roomName: state.roomName,
                 invitingSdp: state.invitingSdp,
-                connectionType: state.connectionType
+                connectionType: state.connectionType,
+                decorations: state.decorations
             });
         }
     });
@@ -124,6 +125,14 @@ export function activate(context: vscode.ExtensionContext) {
         engine.setFileAssignee(fileName, assigneeId);
     };
 
+    // [추가] 데코레이션 처리
+    sidebar.onDeleteDecoration = (id) => {
+        engine.deleteDecoration(id);
+    };
+    sidebar.onJumpToDecoration = (fileName, line, char) => {
+        engine.jumpToDecoration(fileName, line, char);
+    };
+
     // 시그널링을 위한 SDP 생성 처리
     hub.onSdpGenerated = (sdp, peerId) => {
         sidebar.postMessage({ type: 'sdpGenerated', sdp, peerId });
@@ -190,7 +199,9 @@ export function activate(context: vscode.ExtensionContext) {
             engine.shareSelectedRange();
         }),
         vscode.commands.registerCommand('p2p-code-share.stopSharing', () => engine.stopSharing()),
-        vscode.commands.registerCommand('p2p-code-share.openSnapshot', (p) => vscode.workspace.openTextDocument(p).then(d => vscode.window.showTextDocument(d)))
+        vscode.commands.registerCommand('p2p-code-share.openSnapshot', (p) => vscode.workspace.openTextDocument(p).then(d => vscode.window.showTextDocument(d))),
+        vscode.commands.registerCommand('p2p-code-share.addDecoration', () => engine.addDecorationFlow()),
+        vscode.commands.registerCommand('p2p-code-share.deleteDecoration', (id: string) => engine.deleteDecoration(id))
     );
 }
 

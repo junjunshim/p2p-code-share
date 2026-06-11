@@ -258,7 +258,88 @@ function getSidebarStyles(): string {
             border-color: transparent;
         }
         
-        /* 아코디언 헤더 스타일 */
+        /* 데코레이션 목록 스타일 */
+        .deco-item {
+            padding: 8px 10px;
+            border-radius: 4px;
+            background: var(--vscode-welcomePage-tileBackground, var(--vscode-sideBar-background));
+            border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.05));
+            margin-bottom: 6px;
+            font-size: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .deco-item:hover {
+            background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.05));
+            border-color: var(--vscode-focusBorder, rgba(255,255,255,0.15));
+        }
+        .deco-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+        }
+        .deco-title {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-weight: bold;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .deco-badge {
+            font-size: 9px;
+            padding: 1px 4px;
+            border-radius: 3px;
+            color: white;
+            font-weight: normal;
+        }
+        .deco-badge.Typo { background-color: #d9534f; }
+        .deco-badge.Grammar { background-color: #f0ad4e; }
+        .deco-badge.Logical { background-color: #d9534f; }
+        .deco-badge.Other { background-color: #5bc0de; }
+        .deco-badge.Highlight { background-color: #5cb85c; }
+        
+        .deco-meta {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .deco-memo {
+            font-size: 11px;
+            color: var(--vscode-foreground);
+            padding: 2px 4px;
+            background: rgba(0,0,0,0.15);
+            border-radius: 3px;
+            word-break: break-all;
+        }
+        .deco-delete-btn {
+            background: transparent !important;
+            border: none;
+            color: var(--vscode-descriptionForeground);
+            cursor: pointer;
+            padding: 2px 4px !important;
+            margin: 0 !important;
+            border-radius: 3px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: auto !important;
+            opacity: 0.7;
+        }
+        .deco-delete-btn:hover {
+            color: #d73a49;
+            opacity: 1;
+            background: rgba(215, 58, 73, 0.1) !important;
+        }
+        
+        
         .accordion-header {
             display: flex;
             align-items: center;
@@ -275,6 +356,14 @@ function getSidebarStyles(): string {
             margin-bottom: 10px;
             border-left: 1px solid transparent;
             border-right: 1px solid transparent;
+            cursor: pointer;
+            user-select: none;
+        }
+        .accordion-header .arrow-icon {
+            transition: transform 0.15s ease;
+        }
+        .accordion-header.collapsed .arrow-icon {
+            transform: rotate(-90deg);
         }
         
         .invite-btn { color: var(--vscode-charts-blue); cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 5px; }
@@ -456,7 +545,7 @@ function getActiveView(): string {
         <div id="active" class="hidden">
             <div id="roomInfoArea">
                 <div class="accordion-header">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Room Info</span>
                 </div>
                 <div class="room-info" style="margin: 0 0 15px 0;">
@@ -466,7 +555,7 @@ function getActiveView(): string {
 
                 <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
                     <div style="display: flex; align-items: center; gap: 6px;">
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                        <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                         <span>Connected Users</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
@@ -482,14 +571,20 @@ function getActiveView(): string {
                 <div id="users" style="margin-bottom: 15px;"></div>
 
                 <div class="accordion-header" style="margin-top: 10px;">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Active Snapshots</span>
                 </div>
-                <div id="files"></div>
+                <div id="files" style="margin-bottom: 15px;"></div>
+
+                <div class="accordion-header" style="margin-top: 10px;">
+                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <span>Decorations (Reviews)</span>
+                </div>
+                <div id="decorations" style="max-height: 250px; overflow-y: auto;"></div>
             </div>
             <div id="requestsArea" class="hidden">
                 <div class="accordion-header">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Join Requests</span>
                     <span onclick="toggleRequests()" style="margin-left: auto;cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
                         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -1104,6 +1199,103 @@ function getSidebarScript(): string {
         }
 
         /**
+         * 데코레이션 목록을 화면에 렌더링합니다.
+         */
+        function renderDecorations(m) {
+            const decodiv = document.getElementById('decorations');
+            if (!decodiv) return;
+            decodiv.innerHTML = '';
+            
+            const decos = m.decorations || [];
+            if (decos.length === 0) {
+                return;
+            }
+
+            const myId = m.participants.myId;
+            const isMeHost = myId === 'host';
+
+            decos.forEach(d => {
+                const item = document.createElement('div');
+                item.className = 'deco-item';
+                // 클릭 시 해당 위치로 이동
+                item.onclick = () => {
+                    vscode.postMessage({
+                        type: 'jumpToDecoration',
+                        fileName: d.fileName,
+                        line: d.startLine,
+                        char: d.startChar
+                    });
+                };
+
+                const header = document.createElement('div');
+                header.className = 'deco-header';
+
+                const title = document.createElement('div');
+                title.className = 'deco-title';
+
+                // 배지 표시
+                const typeName = d.type === 'Typo' ? '오타' :
+                                 d.type === 'Grammar' ? '문법 오류' :
+                                 d.type === 'Logical' ? '논리 오류' :
+                                 d.type === 'Other' ? '기타' : '하이라이트';
+                
+                const badge = document.createElement('span');
+                badge.className = 'deco-badge ' + d.type;
+                badge.innerText = typeName;
+                title.appendChild(badge);
+
+                // 파일명 및 라인
+                const fileSpan = document.createElement('span');
+                fileSpan.innerText = d.fileName.split('_')[0] + ' (L.' + (d.startLine + 1) + ')';
+                title.appendChild(fileSpan);
+
+                header.appendChild(title);
+
+                // 삭제 버튼 (호스트이거나 본인이 작성한 데코레이션인 경우에만 표시)
+                const canDelete = isMeHost || d.creatorId === myId;
+                if (canDelete) {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'deco-delete-btn';
+                    deleteBtn.title = 'Delete review';
+                    deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 1 0z"/></svg>';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        vscode.postMessage({ type: 'deleteDecoration', id: d.id });
+                    };
+                    header.appendChild(deleteBtn);
+                }
+
+                item.appendChild(header);
+
+                // 메모
+                if (d.memo) {
+                    const memo = document.createElement('div');
+                    memo.className = 'deco-memo';
+                    memo.innerText = d.memo;
+                    item.appendChild(memo);
+                }
+
+                // 메타 데이터 (작성자 및 가시성)
+                const meta = document.createElement('div');
+                meta.className = 'deco-meta';
+                
+                const creator = document.createElement('span');
+                creator.innerText = 'By: ' + d.creatorName;
+                meta.appendChild(creator);
+
+                const visibility = document.createElement('span');
+                visibility.style.fontSize = '9px';
+                visibility.style.opacity = '0.7';
+                visibility.innerText = d.visibility === 'host' ? '🔒 Host Only' : '👥 Everyone';
+                meta.appendChild(visibility);
+
+                item.appendChild(meta);
+
+                decodiv.appendChild(item);
+            });
+        }
+
+        /**
          * UI의 상태 업데이트에 따른 렌더링을 일괄 수행합니다.
          */
         function renderUI(m) {
@@ -1113,12 +1305,28 @@ function getSidebarScript(): string {
             updateBadge(m);
             updateModeLayout(m);
             renderFiles(m);
+            renderDecorations(m);
 
             // 2. 렌더링 준비가 완료된 후, 로딩 창을 끄고 메인 컨텐츠를 보여줍니다.
             // (동일한 렌더 프레임 내에서 한 번에 그려지므로 초기 화면 깜빡임이 사라집니다)
             setVisible('loading', false);
             setVisible('mainContent', true);
         }
+
+        // 아코디언 헤더 접기/펼치기 이벤트 바인딩
+        document.querySelectorAll('#roomInfoArea .accordion-header').forEach(header => {
+            header.addEventListener('click', (e) => {
+                // 초청(+) 이나 요청 알림(종) 버튼 클릭 시 아코디언이 접히는 것을 방지
+                if (e.target.closest('.invite-btn')) return;
+                
+                header.classList.toggle('collapsed');
+                const content = header.nextElementSibling;
+                if (content) {
+                    content.classList.toggle('hidden');
+                }
+            });
+        });
+
         vscode.postMessage({ type: 'ready' });
     `;
 }

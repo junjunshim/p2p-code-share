@@ -13,7 +13,7 @@ import * as crypto from 'crypto';
 // P2P 네트워킹을 위한 허브 매니저
 import { HubManager } from './HubManager';
 // 프로젝트 고유 타입
-import { SharedFile, P2PMessage, PeerPermission } from '../types';
+import { SharedFile, P2PMessage, PeerPermission, FileDecoration } from '../types';
 // 경로 정리 및 디렉토리 생성을 위한 유틸리티
 import { sanitizePath, ensureDirectory } from '../utils/helpers';
 
@@ -49,6 +49,27 @@ export class SyncEngine {
     private remoteCursorStates = new Map<string, any>();
     private userColorMap = new Map<string, string>();
     private colorPalette = ['#4ec9b0', '#ffeb3b', '#2196f3', '#9c27b0', '#ff9800', '#00bcd4', '#8bc34a'];
+
+    private decorations: FileDecoration[] = [];
+    private typoDecoType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(255, 0, 0, 0.12)',
+        textDecoration: 'underline wavy rgba(255, 0, 0, 0.7)'
+    });
+    private grammarDecoType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(240, 173, 78, 0.12)',
+        textDecoration: 'underline wavy rgba(240, 173, 78, 0.7)'
+    });
+    private logicalDecoType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(217, 83, 79, 0.12)',
+        textDecoration: 'underline wavy rgba(217, 83, 79, 0.7)'
+    });
+    private otherDecoType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(91, 192, 222, 0.12)',
+        textDecoration: 'underline solid rgba(91, 192, 222, 0.5)'
+    });
+    private highlightDecoType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(92, 184, 92, 0.22)'
+    });
 
     /**
      * SyncEngine을 초기화합니다.
@@ -103,6 +124,12 @@ export class SyncEngine {
                                 name: msg.newName 
                             }; 
                             this.broadcastUserList(); 
+
+                            // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경 및 브로드캐스트
+                            this.decorations.forEach(d => {
+                                if (d.creatorId === peerId) d.creatorName = msg.newName;
+                            });
+                            this.broadcastDecorations();
                         }
                         break;
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
@@ -121,6 +148,26 @@ export class SyncEngine {
                     case 'JOIN_RESPONSE': this.handleJoinResponse(msg); break;
                     case 'KICKED': this.handleKicked(msg); break;
                     case 'SET_PERMISSION': await this.handleSetPermission(msg); break;
+                    case 'ADD_DECORATION':
+                        if (this.isHost) {
+                            this.decorations.push(msg.decoration);
+                            this.broadcastDecorations();
+                        }
+                        break;
+                    case 'DELETE_DECORATION':
+                        if (this.isHost) {
+                            const deco = this.decorations.find(d => d.id === msg.id);
+                            if (deco && (deco.creatorId === peerId || peerId === 'host')) {
+                                this.decorations = this.decorations.filter(d => d.id !== msg.id);
+                                this.broadcastDecorations();
+                            }
+                        }
+                        break;
+                    case 'SYNC_DECORATIONS':
+                        this.decorations = msg.decorations || [];
+                        this.refreshDecorationsInEditors();
+                        this.pushUIUpdate();
+                        break;
                 }
             } catch (e) {}
         };
@@ -498,7 +545,7 @@ export class SyncEngine {
                 backgroundColor: color, color: 'white', 
                 margin: `${verticalOffset}em 0 0 0`, 
                 fontWeight: 'bold',
-                textDecoration: `none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; z-index: ${1000 - rank}; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3);`
+                textDecoration: `none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; z-index: ${1000 - rank}; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);`
             }
         });
         // 새 선택 영역 데코레이션 생성
@@ -531,6 +578,9 @@ export class SyncEngine {
                 processedFiles.add(file.path);
             }
         });
+
+        // 사용자 정의 데코레이션(오타, 오류, 하이라이트 등) 업데이트
+        this.refreshDecorationsInEditors();
     }
 
     /**
@@ -688,6 +738,10 @@ export class SyncEngine {
                     assigneeName: f.assigneeName
                 });
             });
+
+            // 현재 데코레이션 목록 전송 (비공개 처리 적용)
+            const peerDecos = this.decorations.filter(d => d.visibility !== 'host' || d.creatorId === peerId);
+            this.sendMessageToPeer(peerId, 'SYNC_DECORATIONS', { decorations: peerDecos });
         }
     }
 
@@ -1110,10 +1164,23 @@ export class SyncEngine {
             this.myName = trimmedNewName; 
             this.participants['host'] = { ...this.participants['host'], name: trimmedNewName }; 
             this.broadcastUserList(); 
+
+            // 호스트가 남긴 데코레이션의 작성자 이름 변경 및 전송
+            this.decorations.forEach(d => {
+                if (d.creatorId === 'host') d.creatorName = trimmedNewName;
+            });
+            this.broadcastDecorations();
         } else { 
             // 게스트 이름 변경 및 서버에 알림
             this.myName = trimmedNewName;
             this.sendMessage('GUEST_RENAME', { newName: trimmedNewName }); 
+
+            // 로컬 데코레이션에 즉시 반영
+            this.decorations.forEach(d => {
+                if (d.creatorId === this.myId) d.creatorName = trimmedNewName;
+            });
+            this.refreshDecorationsInEditors();
+            this.pushUIUpdate();
         }
 
         // 이름 변경 즉시 커서 정보도 최신 이름으로 브로드캐스트
@@ -1369,6 +1436,11 @@ export class SyncEngine {
         // 목록에서 제거 및 동기화 맵 갱신
         this.sharedFiles.splice(index, 1);
         this.lastRemoteContentMap.delete(fileName);
+
+        // 해당 파일에 남겨졌던 모든 데코레이션(리뷰) 삭제 및 에디터 갱신
+        this.decorations = this.decorations.filter(d => d.fileName !== fileName);
+        this.refreshDecorationsInEditors();
+
         this.pushUIUpdate();
     }
 
@@ -1462,6 +1534,10 @@ export class SyncEngine {
         this.isSetupMode = false; 
         this.isStorageInitialized = false; 
         this.lastRemoteContentMap.clear();
+
+        // 데코레이션 초기화
+        this.decorations = [];
+        this.refreshDecorationsInEditors();
         
         // UI 상태 갱신
         if (!skipUIUpdate) {
@@ -1506,6 +1582,212 @@ export class SyncEngine {
     }
 
     /**
+     * 데코레이션 목록을 참가자들에게 공유합니다. (호스트 전용)
+     */
+    private broadcastDecorations() {
+        if (!this.isHost) return;
+        Object.keys(this.participants).forEach(peerId => {
+            if (peerId !== 'host') {
+                const filtered = this.decorations.filter(d => d.visibility !== 'host' || d.creatorId === peerId);
+                this.sendMessageToPeer(peerId, 'SYNC_DECORATIONS', { decorations: filtered });
+            }
+        });
+        this.refreshDecorationsInEditors();
+        this.pushUIUpdate();
+    }
+
+    /**
+     * 에디터에 데코레이션을 렌더링합니다.
+     */
+    private refreshDecorationsInEditors() {
+        const visibleEditors = vscode.window.visibleTextEditors;
+        visibleEditors.forEach(editor => {
+            const document = editor.document;
+            const file = this.sharedFiles.find(f => f.path === document.uri.fsPath);
+            if (!file) {
+                // 공유 파일이 아닌 경우 데코레이션 제거
+                editor.setDecorations(this.typoDecoType, []);
+                editor.setDecorations(this.grammarDecoType, []);
+                editor.setDecorations(this.logicalDecoType, []);
+                editor.setDecorations(this.otherDecoType, []);
+                editor.setDecorations(this.highlightDecoType, []);
+                return;
+            }
+
+            // 본인에게 보이는 데코레이션 필터링
+            const fileDecos = this.decorations.filter(d => d.fileName === file.name);
+            const visibleDecos = fileDecos.filter(d => {
+                if (d.visibility === 'host') {
+                    return this.isHost || d.creatorId === this.myId;
+                }
+                return true;
+            });
+
+            const decosByType: { [key: string]: vscode.DecorationOptions[] } = {
+                Typo: [],
+                Grammar: [],
+                Logical: [],
+                Other: [],
+                Highlight: []
+            };
+
+            visibleDecos.forEach(d => {
+                const range = new vscode.Range(
+                    new vscode.Position(d.startLine, d.startChar),
+                    new vscode.Position(d.endLine, d.endChar)
+                );
+
+                const hoverMarkdown = new vscode.MarkdownString();
+                hoverMarkdown.isTrusted = true;
+                const typeName = d.type === 'Typo' ? '오타' :
+                                 d.type === 'Grammar' ? '문법 오류' :
+                                 d.type === 'Logical' ? '논리 오류' :
+                                 d.type === 'Other' ? '기타' : '하이라이트';
+
+                hoverMarkdown.appendMarkdown(`### 🔍 [${typeName}] \n\n`);
+                hoverMarkdown.appendMarkdown(`**작성자:** ${d.creatorName} (${d.creatorId === 'host' ? 'Host' : 'Guest'})\n\n`);
+                if (d.memo) {
+                    hoverMarkdown.appendMarkdown(`**메모:** ${d.memo}\n\n`);
+                }
+
+                // 삭제 권한이 있는 경우 툴팁에 삭제 버튼 추가
+                const canDelete = this.isHost || d.creatorId === this.myId;
+                if (canDelete) {
+                    const deleteCommandUri = vscode.Uri.parse(`command:p2p-code-share.deleteDecoration?${encodeURIComponent(JSON.stringify(d.id))}`);
+                    hoverMarkdown.appendMarkdown(`[🗑️ 삭제하기](${deleteCommandUri})`);
+                }
+
+                const badgeColor = d.type === 'Typo' ? '#d9534f' :
+                                   d.type === 'Grammar' ? '#f0ad4e' :
+                                   d.type === 'Logical' ? '#d9534f' :
+                                   d.type === 'Other' ? '#5bc0de' : '#5cb85c';
+
+                decosByType[d.type].push({
+                    range,
+                    hoverMessage: hoverMarkdown,
+                    renderOptions: {
+                        after: {
+                            contentText: `[${typeName}]`,
+                            color: 'white',
+                            backgroundColor: badgeColor,
+                            margin: '1.4em 0 0 0.2ch',
+                            fontWeight: 'bold',
+                            textDecoration: 'none; font-size: 11px; padding: 1px 4px; border-radius: 3px; position: absolute; white-space: nowrap; line-height: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 999; text-shadow: -1px -1px 0 rgba(0,0,0,0.8), 1px -1px 0 rgba(0,0,0,0.8), -1px 1px 0 rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.8);'
+                        }
+                    }
+                });
+            });
+
+            editor.setDecorations(this.typoDecoType, decosByType['Typo']);
+            editor.setDecorations(this.grammarDecoType, decosByType['Grammar']);
+            editor.setDecorations(this.logicalDecoType, decosByType['Logical']);
+            editor.setDecorations(this.otherDecoType, decosByType['Other']);
+            editor.setDecorations(this.highlightDecoType, decosByType['Highlight']);
+        });
+    }
+
+    /**
+     * 우클릭 메뉴를 통해 데코레이션을 추가하는 플로우입니다.
+     */
+    public async addDecorationFlow() {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+        const document = editor.document;
+        const file = this.sharedFiles.find(f => f.path === document.uri.fsPath);
+        if (!file) {
+            vscode.window.showWarningMessage("공유 중인 파일에서만 데코레이션을 추가할 수 있습니다.");
+            return;
+        }
+
+        const selection = editor.selection;
+
+        const typePick = await vscode.window.showQuickPick([
+            { label: 'Typo (오타)', value: 'Typo' },
+            { label: 'Grammar Error (문법 오류)', value: 'Grammar' },
+            { label: 'Logical Error (논리 오류)', value: 'Logical' },
+            { label: 'Other (기타)', value: 'Other' },
+            { label: 'Highlight (하이라이트)', value: 'Highlight' }
+        ], { placeHolder: '데코레이션 종류를 선택하세요' });
+
+        if (!typePick) return;
+
+        const visibilityPick = await vscode.window.showQuickPick([
+            { label: 'Everyone (모두에게 보이기)', value: 'everyone' },
+            { label: 'Host only (host에게만 보이기)', value: 'host' }
+        ], { placeHolder: '공개 범위를 선택하세요' });
+
+        if (!visibilityPick) return;
+
+        const memo = await vscode.window.showInputBox({
+            prompt: '메모 내용을 입력하세요',
+            placeHolder: '여기에 메모 내용을 입력할 수 있습니다.'
+        });
+
+        if (memo === undefined) return;
+
+        const newDeco: FileDecoration = {
+            id: crypto.randomBytes(8).toString('hex'),
+            fileName: file.name,
+            startLine: selection.start.line,
+            startChar: selection.start.character,
+            endLine: selection.end.line,
+            endChar: selection.end.character,
+            type: typePick.value as any,
+            visibility: visibilityPick.value as any,
+            creatorId: this.myId,
+            creatorName: this.myName || 'Anonymous',
+            memo: memo || ''
+        };
+
+        if (this.isHost) {
+            this.decorations.push(newDeco);
+            this.broadcastDecorations();
+        } else {
+            this.sendMessage('ADD_DECORATION', { decoration: newDeco });
+        }
+        
+        this.refreshDecorationsInEditors();
+        this.pushUIUpdate();
+    }
+
+    /**
+     * 지정된 ID의 데코레이션을 삭제합니다.
+     */
+    public deleteDecoration(id: string) {
+        if (this.isHost) {
+            this.decorations = this.decorations.filter(d => d.id !== id);
+            this.broadcastDecorations();
+        } else {
+            const deco = this.decorations.find(d => d.id === id);
+            if (deco && deco.creatorId === this.myId) {
+                this.sendMessage('DELETE_DECORATION', { id });
+                // 게스트는 호스트 응답 전 로컬 상태를 우선 업데이트하여 화면 전환 반응성을 높임
+                this.decorations = this.decorations.filter(d => d.id !== id);
+                this.refreshDecorationsInEditors();
+                this.pushUIUpdate();
+            } else {
+                vscode.window.showWarningMessage("본인이 작성한 데코레이션만 삭제할 수 있습니다.");
+            }
+        }
+    }
+
+    /**
+     * 해당 데코레이션이 작성된 파일과 라인 위치로 이동합니다.
+     */
+    public jumpToDecoration(fileName: string, line: number, char: number) {
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (file) {
+            vscode.workspace.openTextDocument(file.path).then(doc => {
+                vscode.window.showTextDocument(doc).then(editor => {
+                    const pos = new vscode.Position(line, char);
+                    editor.selection = new vscode.Selection(pos, pos);
+                    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+                });
+            });
+        }
+    }
+
+    /**
      * UI 웹뷰에 로그를 출력합니다.
      */
     private logToUI(message: string) {
@@ -1525,6 +1807,14 @@ export class SyncEngine {
      * 현재 상태를 바탕으로 UI 업데이트를 실행합니다.
      */
     public pushUIUpdate() { 
+        // 사용자에게 보일 수 있는 데코레이션만 필터링 (host만 보기 설정인 경우 creator 및 host만 보임)
+        const visibleDecos = this.decorations.filter(d => {
+            if (d.visibility === 'host') {
+                return this.isHost || d.creatorId === this.myId;
+            }
+            return true;
+        });
+
         // UI 콜백을 호출하여 현재 상태 전달
         this.updateUI({ 
             type: 'renderParticipants', 
@@ -1538,7 +1828,8 @@ export class SyncEngine {
             connectionType: this.connectionType,
             // [핵심] 현재 초대 중인 아이디 목록 및 참여 요청 목록을 UI로 전달
             pendingInvites: Array.from(this.pendingInvites),
-            joinRequests: this.joinRequests
+            joinRequests: this.joinRequests,
+            decorations: visibleDecos
         });
     }
 }

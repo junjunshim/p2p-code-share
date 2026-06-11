@@ -52,3 +52,21 @@ export interface P2PMessage {
     // 추가 데이터 필드
     [key: string]: any;
 }
+
+/**
+ * 공유 파일에 남기는 데코레이션(리뷰) 정보를 정의합니다.
+ */
+export interface FileDecoration {
+    id: string;
+    fileName: string;
+    startLine: number;
+    startChar: number;
+    endLine: number;
+    endChar: number;
+    type: 'Typo' | 'Grammar' | 'Logical' | 'Other' | 'Highlight';
+    visibility: 'host' | 'everyone';
+    creatorId: string;
+    creatorName: string;
+    memo: string;
+}
+

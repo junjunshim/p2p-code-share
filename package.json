@@ -47,6 +47,14 @@
       {
         "command": "p2p-code-share.stopSharing",
         "title": "P2P: Stop Sharing"
+      },
+      {
+        "command": "p2p-code-share.addDecoration",
+        "title": "P2P: Add Decoration (오타/오류/하이라이트 등)"
+      },
+      {
+        "command": "p2p-code-share.deleteDecoration",
+        "title": "P2P: Delete Decoration"
       }
     ],
     "menus": {
@@ -67,6 +75,11 @@
           "command": "p2p-code-share.shareSelectedRange",
           "when": "p2pCodeShare.isConnected && p2pCodeShare.isHost && editorHasSelection",
           "group": "4_p2p_sharing@2"
+        },
+        {
+          "command": "p2p-code-share.addDecoration",
+          "when": "p2pCodeShare.isConnected",
+          "group": "4_p2p_sharing@3"
         }
       ]
     },
