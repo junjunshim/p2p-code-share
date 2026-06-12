@@ -38,11 +38,6 @@ export class SyncEngine {
     private myId = ''; 
     private initialName = '';
     private participants: { [key: string]: PeerPermission } = {};
-    private lastRemoteContentMap = new Map<string, string>();
-    private pollingTimer?: NodeJS.Timeout;
-    private syncDebounceTimer?: NodeJS.Timeout;
-    // [추가] 타이핑 속도 적응형 디바운싱을 위한 상태
-    private lastKeystrokeTime = 0;
     public roomName = ''; 
     private isStorageInitialized = false;
     public isSetupMode = false; 
@@ -110,7 +105,6 @@ export class SyncEngine {
                         if (!this.isStorageInitialized) this.initializeStorage();
                         await this.handleGuestInit(msg); 
                         break;
-                    case 'SYNC_FULL': await this.forceUpdateEditor(msg.fileName, msg.content); break;
                     case 'YJS_SYNC_STEP_1': this.handleYjsSyncStep1(msg); break;
                     case 'YJS_SYNC_STEP_2': await this.handleYjsSyncStep2(msg); break;
                     case 'YJS_UPDATE': await this.handleYjsUpdate(msg); break;
@@ -144,9 +138,6 @@ export class SyncEngine {
                         }
                         break;
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
-                    case 'GUEST_EDIT': if (this.isHost) { await this.handleGuestEdit(msg); } break;
-                    case 'REQUEST_FULL_SYNC': if (this.isHost) this.broadcastAll(); break;
-                    case 'FILE_HASH': this.handleFileHash(msg); break;
                     case 'FILE_ASSIGNEE_UPDATE': await this.handleFileAssigneeUpdate(msg); break;
                     case 'STOP_SHARING': await this.handleRemoteStop(msg.fileName); break;
                     case 'CURSOR_UPDATE': 
@@ -237,18 +228,7 @@ export class SyncEngine {
         }
     }
 
-    private handleFileHash(msg: any) {
-        if (!this.isHost) {
-            const file = this.sharedFiles.find(f => f.name === msg.fileName);
-            if (file) {
-                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path);
-                const content = doc ? doc.getText() : fs.readFileSync(file.path, 'utf8');
-                if (this.calculateHash(content) !== msg.hash) {
-                    this.sendMessage('REQUEST_FULL_SYNC', { fileName: msg.fileName });
-                }
-            }
-        }
-    }
+
 
     private async handleFileAssigneeUpdate(msg: any) {
         if (!this.isHost) {
@@ -662,7 +642,6 @@ export class SyncEngine {
             }
         } else { 
             this.isSetupMode = (this.roomName && this.roomName !== 'Untitled Room') ? false : true; 
-            this.startPolling(); 
             this.hub.createHub(false, this.roomName, 'default'); 
             if (this.isSetupMode) this.updateStatus('Waiting...'); // [수정] 대기 모드 시 Waiting... 상태 표시
         }
@@ -755,15 +734,6 @@ export class SyncEngine {
         this.pushUIUpdate();
     }
 
-    private async handleGuestEdit(msg: any) {
-        // 편집 대상 파일 찾기
-        const file = this.sharedFiles.find(f => f.name === msg.fileName);
-        if (file) { 
-            // 전체 공유 시 호스트 실제 에디터 내용 업데이트 및 브로드캐스트
-            await this.forceUpdateEditor(file.name, msg.content, file.path); 
-            this.broadcastFullContent(file.name, file.path); 
-        }
-    }
 
     /**
      * 게스트 참여 요청을 처리합니다.
@@ -1011,9 +981,6 @@ export class SyncEngine {
             return;
         }
 
-        // 원격 변경 사항 적용 플래그 설정
-        this.lastRemoteContentMap.set(fileName, content);
-
         // [추가] 쓰기 전 잠시 읽기 전용 속성 해제
         const currentMode = fs.statSync(filePath).mode;
         const wasReadonly = (currentMode & 0o200) === 0;
@@ -1190,39 +1157,7 @@ export class SyncEngine {
         this.pushUIUpdate();
     }
 
-    /**
-     * 공유 중인 모든 파일의 내용을 브로드캐스트합니다.
-     */
-    private broadcastAll() { 
-        // 공유 중인 각 파일에 대해 전체 내용 브로드캐스트 실행
-        this.sharedFiles.forEach(f => this.broadcastFullContent(f.name, f.path)); 
-    }
 
-    /**
-     * 특정 파일의 전체 내용을 브로드캐스트합니다.
-     * @param fileName 파일 이름.
-     * @param filePath 파일 경로.
-     */
-    private broadcastFullContent(fileName: string, filePath: string) {
-        const file = this.sharedFiles.find(f => f.name === fileName);
-        if (file) {
-            // 열려있는 문서에서 내용 가져오기, 없으면 파일 시스템에서 읽기
-            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-            const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf8');
-            
-            // 전체 동기화 메시지 전송
-            this.sendMessage('SYNC_FULL', { fileName, content });
-        }
-    }
-
-    /**
-     * 텍스트 내용의 MD5 해시를 계산합니다.
-     * @param text 해시를 계산할 텍스트.
-     * @returns 16진수 해시 문자열.
-     */
-    private calculateHash(text: string): string {
-        return crypto.createHash('md5').update(text).digest('hex');
-    }
 
     /**
      * 엔진을 통해 메시지를 전송합니다.
@@ -1547,9 +1482,9 @@ export class SyncEngine {
             } catch(e) {}
         }
         
-        // 목록에서 제거 및 동기화 맵 갱신
+        // 목록에서 제거
         this.sharedFiles.splice(index, 1);
-        this.lastRemoteContentMap.delete(fileName);
+
 
         // Yjs 자원 해제
         const ydoc = this.yDocs.get(fileName);
@@ -1570,8 +1505,6 @@ export class SyncEngine {
      * 모든 공유 및 리소스를 정리하고 중지합니다.
      */
     public async stopAll() {
-        // 폴링 타이머 중지
-        if (this.pollingTimer) clearInterval(this.pollingTimer);
         
         // [수정] 공유 중인 모든 파일 공유 중지 (비동기 순차 처리)
         const fileNames = this.sharedFiles.map(f => f.name);
@@ -1640,8 +1573,6 @@ export class SyncEngine {
      * 엔진의 모든 상태를 초기화합니다.
      */
     public reset(skipUIUpdate = false) {
-        // 타이머 중지 및 리소스 정리
-        if (this.pollingTimer) clearInterval(this.pollingTimer);
         this.stopAll();
         
         // 모든 상태 변수 초기화
@@ -1654,8 +1585,7 @@ export class SyncEngine {
         this.initialName = ''; 
         this.participants = {}; 
         this.isSetupMode = false; 
-        this.isStorageInitialized = false; 
-        this.lastRemoteContentMap.clear();
+        this.isStorageInitialized = false;
 
         // Yjs 자원 초기화
         this.yDocs.forEach(d => d.destroy());
@@ -1672,29 +1602,7 @@ export class SyncEngine {
         }
     }
 
-    /**
-     * 전체 동기화를 위해 주기적인 폴링을 시작합니다.
-     */
-    private startPolling() {
-        // 기존 폴링 타이머 중지
-        if (this.pollingTimer) clearInterval(this.pollingTimer);
-        
-        if (this.isHost) {
-            // 호스트: 1초마다 공유 파일 해시 브로드캐스트
-            this.pollingTimer = setInterval(() => {
-                this.sharedFiles.forEach(f => {
-                    const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === f.path);
-                    const content = doc ? doc.getText() : fs.readFileSync(f.path, 'utf8');
-                    this.sendMessage('FILE_HASH', { fileName: f.name, hash: this.calculateHash(content) });
-                });
-            }, 1000);
-        } else {
-            // 게스트: 5초마다 전체 동기화 요청 (기존 방식 유지 - 백업용)
-            this.pollingTimer = setInterval(() => { 
-                if (this.sharedFiles.length > 0) this.sendMessage('REQUEST_FULL_SYNC', {}); 
-            }, 5000);
-        }
-    }
+
 
     /**
      * 엔진 웹뷰에 상태를 업데이트합니다.
