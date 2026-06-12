@@ -16,13 +16,21 @@ import { HubManager } from './HubManager';
 import { SharedFile, P2PMessage, PeerPermission, FileDecoration } from '../types';
 // 경로 정리 및 디렉토리 생성을 위한 유틸리티
 import { sanitizePath, ensureDirectory } from '../utils/helpers';
+// Yjs CRDT 라이브러리
+import * as Y from 'yjs';
 
 /**
  * SyncEngine 클래스.
  * 파일 공유, 커서 및 피어 상태에 대한 동기화 로직을 처리합니다.
  */
 export class SyncEngine {
-    private isApplyingRemoteChange = false;
+    private remoteChangeLockCount = 0;
+    private get isApplyingRemoteChange(): boolean {
+        return this.remoteChangeLockCount > 0;
+    }
+    private yDocs = new Map<string, Y.Doc>();
+    private yTexts = new Map<string, Y.Text>();
+    private selfCorrectionTimers = new Map<string, NodeJS.Timeout>();
     public isHost = false; 
     private storagePath = '';
     private sharedFiles: SharedFile[] = [];
@@ -103,6 +111,9 @@ export class SyncEngine {
                         await this.handleGuestInit(msg); 
                         break;
                     case 'SYNC_FULL': await this.forceUpdateEditor(msg.fileName, msg.content); break;
+                    case 'YJS_SYNC_STEP_1': this.handleYjsSyncStep1(msg); break;
+                    case 'YJS_SYNC_STEP_2': await this.handleYjsSyncStep2(msg); break;
+                    case 'YJS_UPDATE': await this.handleYjsUpdate(msg); break;
                     case 'GUEST_JOIN': 
                         // 게스트 연결 처리
                         this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
@@ -659,6 +670,16 @@ export class SyncEngine {
         // 문서 열기 및 표시
         const doc = await vscode.workspace.openTextDocument(snapshotPath);
         await vscode.window.showTextDocument(doc);
+
+        // 호스트에게 Sync Step 1 요청 전송하여 Yjs 동기화 시작
+        const ydoc = this.yDocs.get(msg.fileName);
+        if (ydoc) {
+            const stateVector = Y.encodeStateVector(ydoc);
+            this.sendMessage('YJS_SYNC_STEP_1', {
+                fileName: msg.fileName,
+                stateVector: Buffer.from(stateVector).toString('base64')
+            });
+        }
     }
 
     /**
@@ -836,40 +857,39 @@ export class SyncEngine {
         });
 
         vscode.workspace.onDidChangeTextDocument(e => {
-            // [수정] 원격 변경 적용 중이거나, 문서가 닫히는 중이면 동기화 무시
             if (this.isApplyingRemoteChange || this.closingDocuments.has(e.document.uri.fsPath)) return;
 
             const file = this.sharedFiles.find(f => f.path === e.document.uri.fsPath);
             if (!file) return;
 
-            // [추가] 권한 체크
+            // 권한 체크
             if (!this.canIEdit(file.name)) {
                 this.logToUI(`Blocked unauthorized edit on ${file.name}`);
-                // TODO: Undo 로직 추가 가능
                 return;
             }
 
-            // [핵심] 실제 사용자의 타이핑인지 확인
-            const isManualChange = e.contentChanges.length > 0;
-            if (!isManualChange) return;
+            const ydoc = this.yDocs.get(file.name);
+            const ytext = this.yTexts.get(file.name);
+            if (!ydoc || !ytext) return;
 
-            // [추가] 타이핑 속도에 따른 적응형 디바운싱
-            const now = Date.now();
-            const timeSinceLastKeystroke = now - this.lastKeystrokeTime;
-            this.lastKeystrokeTime = now;
+            // 로컬 에디터 변경 내용을 Yjs 문서에 적용
+            ydoc.transact(() => {
+                for (const change of e.contentChanges) {
+                    const startOffset = change.rangeOffset;
+                    const deleteLength = change.rangeLength;
+                    const newText = change.text;
 
-            // 타이핑이 빠를수록(예: < 300ms) 디바운스 시간을 줄이고(예: 50ms), 느리면 늘림(예: 200ms)
-            const dynamicDelay = timeSinceLastKeystroke < 300 ? 50 : 200;
+                    if (deleteLength > 0) {
+                        ytext.delete(startOffset, deleteLength);
+                    }
+                    if (newText.length > 0) {
+                        ytext.insert(startOffset, newText);
+                    }
+                }
+            });
 
-            if (this.syncDebounceTimer) clearTimeout(this.syncDebounceTimer);
-            this.syncDebounceTimer = setTimeout(() => {
-                const text = e.document.getText();
-                if (text === this.lastRemoteContentMap.get(file.name)) return;
-
-                this.lastRemoteContentMap.set(file.name, text);
-                // 호스트 여부에 따라 동기화 메시지 전송
-                this.sendMessage(this.isHost ? 'SYNC_FULL' : 'GUEST_EDIT', { fileName: file.name, content: text });
-            }, dynamicDelay);
+            // 타이핑 멈춤 감지 시 에디터와 Yjs의 텍스트가 일치하는지 보정 테스트 트리거
+            this.triggerSelfCorrection(file.name, file.path);
         });
 
         vscode.workspace.onWillSaveTextDocument(e => {
@@ -955,7 +975,7 @@ export class SyncEngine {
         const wasReadonly = (currentMode & 0o200) === 0;
         if (wasReadonly) fs.chmodSync(filePath, 0o666);
 
-        this.isApplyingRemoteChange = true;
+        this.remoteChangeLockCount++;
 
         try {
             // [수정] 전체 교체가 아닌 최소 범위 교체 (Surgical Update)
@@ -979,8 +999,11 @@ export class SyncEngine {
         } finally {
             // [추가] 속성 복구
             if (wasReadonly) fs.chmodSync(filePath, 0o444);
-            // 변경 사항 적용 후 플래그 해제
-            setTimeout(() => { this.isApplyingRemoteChange = false; }, 100);
+            // 변경 사항 적용 후 플래그 해제 및 자가 보정 트리거
+            setTimeout(() => { 
+                if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
+                this.triggerSelfCorrection(fileName, filePath);
+            }, 300);
         }
     }
 
@@ -1191,6 +1214,40 @@ export class SyncEngine {
             file.assigneeId = assigneeId;
             file.assigneeName = assigneeName;
         }
+
+        // Yjs Doc 및 Text 객체 초기 생성 및 이벤트 바인딩
+        if (!this.yDocs.has(name)) {
+            const ydoc = new Y.Doc();
+            const ytext = ydoc.getText('codetext');
+            this.yDocs.set(name, ydoc);
+            this.yTexts.set(name, ytext);
+
+            // 호스트인 경우 원본 파일 내용을 Yjs에 채워넣음
+            if (this.isHost) {
+                try {
+                    const content = fs.readFileSync(filePath, 'utf8');
+                    ytext.insert(0, content);
+                } catch (e) {
+                    this.logToUI(`Error reading original file for initial Yjs insert: ${e}`);
+                }
+            }
+
+            // Yjs 문서 업데이트 이벤트 바인딩
+            ydoc.on('update', (update, origin) => {
+                // 원격 변경 적용 중이거나 다른 피어가 보낸 변경이라면 무한 에코 루프 방지를 위해 스킵
+                if (this.isApplyingRemoteChange || origin === 'remote') return;
+
+                const base64Update = Buffer.from(update).toString('base64');
+                this.sendMessage('YJS_UPDATE', { fileName: name, update: base64Update });
+            });
+
+            // Yjs 텍스트 변경 감지 시 에디터에 반영
+            ytext.observe(event => {
+                if (event.transaction.origin === 'remote') {
+                    this.forceUpdateEditor(name, ytext.toString(), filePath);
+                }
+            });
+        }
         
         // [추가] 파일 추가 시 읽기 전용 상태 설정
         this.updateReadonlyState(file);
@@ -1244,6 +1301,93 @@ export class SyncEngine {
     }
 
     /**
+     * 로컬 에디터 문서의 텍스트가 Yjs 내부의 진리 텍스트와 일치하는지 검증하고 강제 보정합니다.
+     */
+    private triggerSelfCorrection(fileName: string, filePath: string) {
+        const timer = this.selfCorrectionTimers.get(fileName);
+        if (timer) clearTimeout(timer);
+
+        const newTimer = setTimeout(async () => {
+            const ytext = this.yTexts.get(fileName);
+            if (!ytext) return;
+
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath && !d.isClosed);
+            if (doc) {
+                const editorText = doc.getText();
+                const yjsText = ytext.toString();
+                if (editorText !== yjsText) {
+                    this.logToUI(`Self-correction (desync resolve) triggered for ${fileName} due to text mismatch.`);
+                    await this.forceUpdateEditor(fileName, yjsText, filePath);
+                }
+            }
+        }, 250);
+        this.selfCorrectionTimers.set(fileName, newTimer);
+    }
+
+    /**
+     * YJS 동기화 Sync Step 1 요청을 처리합니다 (호스트 전용).
+     */
+    private handleYjsSyncStep1(msg: any) {
+        const name = msg.fileName;
+        const ydoc = this.yDocs.get(name);
+        if (!ydoc) return;
+
+        try {
+            const guestStateVector = Uint8Array.from(Buffer.from(msg.stateVector, 'base64'));
+            const update = Y.encodeStateAsUpdate(ydoc, guestStateVector);
+
+            this.sendMessage('YJS_SYNC_STEP_2', {
+                fileName: name,
+                update: Buffer.from(update).toString('base64')
+            });
+        } catch (e) {
+            this.logToUI(`Error in handleYjsSyncStep1: ${e}`);
+        }
+    }
+
+    /**
+     * YJS 동기화 Sync Step 2 응답을 처리합니다 (게스트 전용).
+     */
+    private async handleYjsSyncStep2(msg: any) {
+        const name = msg.fileName;
+        const ydoc = this.yDocs.get(name);
+        if (!ydoc) return;
+
+        try {
+            const update = Uint8Array.from(Buffer.from(msg.update, 'base64'));
+            this.remoteChangeLockCount++;
+            Y.applyUpdate(ydoc, update, 'remote');
+        } catch (e) {
+            this.logToUI(`Error in handleYjsSyncStep2: ${e}`);
+        } finally {
+            setTimeout(() => {
+                if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
+            }, 400);
+        }
+    }
+
+    /**
+     * 실시간 YJS 델타 변경 패킷을 처리합니다.
+     */
+    private async handleYjsUpdate(msg: any) {
+        const name = msg.fileName;
+        const ydoc = this.yDocs.get(name);
+        if (!ydoc) return;
+
+        try {
+            const updateBinary = Uint8Array.from(Buffer.from(msg.update, 'base64'));
+            this.remoteChangeLockCount++;
+            Y.applyUpdate(ydoc, updateBinary, 'remote');
+        } catch (e) {
+            this.logToUI(`Error applying Yjs update: ${e}`);
+        } finally {
+            setTimeout(() => {
+                if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
+            }, 400);
+        }
+    }
+
+    /**
      * 원격 공유 중지 요청을 처리합니다.
      * @param fileName 중지할 파일 이름.
      */
@@ -1293,6 +1437,14 @@ export class SyncEngine {
         // 목록에서 제거 및 동기화 맵 갱신
         this.sharedFiles.splice(index, 1);
         this.lastRemoteContentMap.delete(fileName);
+
+        // Yjs 자원 해제
+        const ydoc = this.yDocs.get(fileName);
+        if (ydoc) {
+            ydoc.destroy();
+            this.yDocs.delete(fileName);
+            this.yTexts.delete(fileName);
+        }
 
         // 해당 파일에 남겨졌던 모든 데코레이션(리뷰) 삭제 및 에디터 갱신
         this.decorations = this.decorations.filter(d => d.fileName !== fileName);
@@ -1391,6 +1543,11 @@ export class SyncEngine {
         this.isSetupMode = false; 
         this.isStorageInitialized = false; 
         this.lastRemoteContentMap.clear();
+
+        // Yjs 자원 초기화
+        this.yDocs.forEach(d => d.destroy());
+        this.yDocs.clear();
+        this.yTexts.clear();
 
         // 데코레이션 초기화
         this.decorations = [];
