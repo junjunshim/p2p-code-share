@@ -486,6 +486,12 @@ export class SyncEngine {
         const file = this.sharedFiles.find(f => f.name === msg.fileName);
         if (!file) {
             // 파일이 다르거나 없더라도 이전 데코레이션은 무조건 정리 (고스트 커서 방지)
+            const cached = this.remoteCursorDecoTypes.get(actualPeerId);
+            if (cached) {
+                cached.cursorDeco.dispose();
+                cached.selectionDeco.dispose();
+                this.remoteCursorDecoTypes.delete(actualPeerId);
+            }
             const prevCursor = this.remoteCursorDecorations.get(actualPeerId);
             if (prevCursor) prevCursor.dispose();
             const prevSelection = this.remoteSelectionDecorations.get(actualPeerId);
@@ -555,28 +561,47 @@ export class SyncEngine {
         });
     }
 
+    private remoteCursorDecoTypes = new Map<string, { cursorDeco: vscode.TextEditorDecorationType; selectionDeco: vscode.TextEditorDecorationType; key: string }>();
+
     /**
      * 역산된 에디터 좌표를 기반으로 개별 피어의 데코레이션을 생성하고 적용합니다.
      */
     private applyPeerDecorationWithPositions(peerId: string, state: any, file: SharedFile, rank: number, activePos: vscode.Position, startPos: vscode.Position, endPos: vscode.Position) {
-        // 이전 데코레이션 정리
-        const prevCursor = this.remoteCursorDecorations.get(peerId);
-        if (prevCursor) prevCursor.dispose();
-        const prevSelection = this.remoteSelectionDecorations.get(peerId);
-        if (prevSelection) prevSelection.dispose();
-
         const editorConfig = vscode.workspace.getConfiguration('editor', vscode.Uri.file(file.path));
         const editorFontSize = editorConfig.get<number>('fontSize') || 14;
         const badgeFontSize = Math.max(9, Math.round(editorFontSize * 0.8));
 
         const color = this.getUserColor(peerId); 
         const verticalOffset = 1.4 + (rank * 1.5);
+        const userName = state.userName || 'Anonymous';
+
+        // 데코레이션의 unique 속성 변경 여부를 감지하기 위한 키 생성
+        // 좌표, 색상, 랭크, 폰트크기, 사용자 이름이 이전과 다르면 새로 고침이 필요합니다.
+        const cacheKey = `${activePos.line},${activePos.character},${startPos.line},${startPos.character},${endPos.line},${endPos.character},${rank},${badgeFontSize},${color},${userName}`;
+        
+        const cached = this.remoteCursorDecoTypes.get(peerId);
+        if (cached && cached.key === cacheKey) {
+            // 위치와 형태가 달라지지 않았다면 dispose/recreate하지 않고 반환하여 깜박임 방지
+            return;
+        }
+
+        // 이전 데코레이션 정리
+        if (cached) {
+            cached.cursorDeco.dispose();
+            cached.selectionDeco.dispose();
+        } else {
+            // 하위 호환성을 위해 기존 Map에서도 제거
+            const prevCursor = this.remoteCursorDecorations.get(peerId);
+            if (prevCursor) prevCursor.dispose();
+            const prevSelection = this.remoteSelectionDecorations.get(peerId);
+            if (prevSelection) prevSelection.dispose();
+        }
 
         // 새 커서 데코레이션 생성
         const cursorDeco = vscode.window.createTextEditorDecorationType({
             borderWidth: '0 0 0 2px', borderStyle: 'solid', borderColor: color,
             after: {
-                contentText: state.userName || 'Anonymous', 
+                contentText: userName, 
                 backgroundColor: color, color: 'white', 
                 margin: `${verticalOffset}em 0 0 0`, 
                 fontWeight: 'bold',
@@ -588,6 +613,7 @@ export class SyncEngine {
         
         this.remoteCursorDecorations.set(peerId, cursorDeco);
         this.remoteSelectionDecorations.set(peerId, selectionDeco);
+        this.remoteCursorDecoTypes.set(peerId, { cursorDeco, selectionDeco, key: cacheKey });
         
         const cursorRange = [new vscode.Range(activePos, activePos)];
         const selectionRange = [new vscode.Range(startPos, endPos)];
