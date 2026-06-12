@@ -195,9 +195,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('p2p-code-share.shareActiveFile', (uri?: vscode.Uri) => {
             engine.shareActiveFile(uri);
         }),
-        vscode.commands.registerCommand('p2p-code-share.shareSelectedRange', () => {
-            engine.shareSelectedRange();
-        }),
         vscode.commands.registerCommand('p2p-code-share.stopSharing', () => engine.stopSharing()),
         vscode.commands.registerCommand('p2p-code-share.openSnapshot', (p) => vscode.workspace.openTextDocument(p).then(d => vscode.window.showTextDocument(d))),
         vscode.commands.registerCommand('p2p-code-share.addDecoration', () => engine.addDecorationFlow()),
