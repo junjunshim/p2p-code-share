@@ -449,9 +449,6 @@ export class SyncEngine {
         return this.userColorMap.get(peerId)!;
     }
 
-    /**
-     * 텍스트 에디터 선택 영역 변경 이벤트 리스너를 설정합니다.
-     */
     private setupSelectionListeners() {
         vscode.window.onDidChangeTextEditorSelection(e => {
             // [핵심] myId가 정상적으로 할당된 경우에만 전송
@@ -459,15 +456,35 @@ export class SyncEngine {
 
             const file = this.sharedFiles.find(f => f.path === e.textEditor.document.uri.fsPath);
             if (!file) return;
+
+            const ydoc = this.yDocs.get(file.name);
+            const ytext = this.yTexts.get(file.name);
+            if (!ydoc || !ytext) return;
+
             const selection = e.selections[0];
-            // 커서 및 선택 영역 정보 브로드캐스트
-            this.sendMessage('CURSOR_UPDATE', {
-                fileName: file.name,
-                userId: this.myId,
-                userName: this.myName,
-                cursorPos: [selection.active.line, selection.active.character],
-                selectionRange: [selection.start.line, selection.start.character, selection.end.line, selection.end.character]
-            });
+            const document = e.textEditor.document;
+
+            try {
+                // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성
+                const startIndex = document.offsetAt(selection.start);
+                const endIndex = document.offsetAt(selection.end);
+                const activeIndex = document.offsetAt(selection.active);
+
+                const startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
+                const endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));
+                const activeRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, activeIndex));
+
+                this.sendMessage('CURSOR_UPDATE', {
+                    fileName: file.name,
+                    userId: this.myId,
+                    userName: this.myName,
+                    startRel,
+                    endRel,
+                    activeRel
+                });
+            } catch (err) {
+                this.logToUI(`Error creating relative cursor positions: ${err}`);
+            }
         });
     }
 
@@ -500,44 +517,68 @@ export class SyncEngine {
         this.renderCursorsForFile(file);
     }
 
-    /**
-     * 특정 파일의 모든 원격 커서를 다시 그립니다. (동일 위치 겹침 방지)
-     * @param file 렌더링할 공유 파일.
-     */
     private renderCursorsForFile(file: SharedFile) {
+        const ydoc = this.yDocs.get(file.name);
+        if (!ydoc) return;
+
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path && !d.isClosed);
+        if (!doc) return;
+
         // 해당 파일에 있는 모든 원격 피어 필터링
         const peersInFile = Array.from(this.remoteCursorStates.entries())
             .filter(([id, state]) => state.fileName === file.name && id !== this.myId);
 
-        // 위치별 피어 그룹화 (line,char -> [peerId1, peerId2, ...])
-        const posGroups = new Map<string, string[]>();
-        peersInFile.forEach(([id, state]) => {
-            const key = `${state.cursorPos[0]},${state.cursorPos[1]}`;
-            if (!posGroups.has(key)) posGroups.set(key, []);
-            posGroups.get(key)!.push(id);
+        // 먼저 각 피어별로 Yjs 상대 좌표로부터 최신 실제 Position을 역산
+        const parsedPeers: { peerId: string; state: any; activePos: vscode.Position; startPos: vscode.Position; endPos: vscode.Position }[] = [];
+        peersInFile.forEach(([peerId, state]) => {
+            if (!state.startRel || !state.endRel || !state.activeRel) return;
+
+            try {
+                const startRelPos = Y.createRelativePositionFromJSON(state.startRel);
+                const endRelPos = Y.createRelativePositionFromJSON(state.endRel);
+                const activeRelPos = Y.createRelativePositionFromJSON(state.activeRel);
+
+                const startAbs = Y.createAbsolutePositionFromRelativePosition(startRelPos, ydoc);
+                const endAbs = Y.createAbsolutePositionFromRelativePosition(endRelPos, ydoc);
+                const activeAbs = Y.createAbsolutePositionFromRelativePosition(activeRelPos, ydoc);
+
+                if (startAbs && endAbs && activeAbs) {
+                    parsedPeers.push({
+                        peerId,
+                        state,
+                        activePos: doc.positionAt(activeAbs.index),
+                        startPos: doc.positionAt(startAbs.index),
+                        endPos: doc.positionAt(endAbs.index)
+                    });
+                }
+            } catch (e) {}
         });
 
-        // 각 위치 그룹 내에서 피어 ID 순으로 정렬 (안정적인 랭킹 부여)
+        // 위치별 피어 그룹화 (겹침 방지 및 수직 스택용)
+        const posGroups = new Map<string, string[]>();
+        parsedPeers.forEach(p => {
+            const key = `${p.activePos.line},${p.activePos.character}`;
+            if (!posGroups.has(key)) posGroups.set(key, []);
+            posGroups.get(key)!.push(p.peerId);
+        });
+
+        // 정렬
         posGroups.forEach(ids => ids.sort());
 
-        // 각 피어별로 랭킹에 따른 데코레이션 적용
-        peersInFile.forEach(([peerId, state]) => {
-            const key = `${state.cursorPos[0]},${state.cursorPos[1]}`;
+        // 렌더링 적용
+        parsedPeers.forEach(p => {
+            const key = `${p.activePos.line},${p.activePos.character}`;
             const group = posGroups.get(key)!;
-            const rank = group.indexOf(peerId);
+            const rank = group.indexOf(p.peerId);
             
-            this.applyPeerDecoration(peerId, state, file, rank);
+            this.applyPeerDecorationWithPositions(p.peerId, p.state, file, rank, p.activePos, p.startPos, p.endPos);
         });
     }
 
     /**
-     * 개별 피어의 데코레이션을 생성하고 적용합니다.
-     * @param peerId 피어 ID.
-     * @param state 커서 상태.
-     * @param file 대상 파일.
-     * @param rank 해당 위치에서의 랭킹 (0부터 시작, 수직 오프셋 결정).
+     * 역산된 에디터 좌표를 기반으로 개별 피어의 데코레이션을 생성하고 적용합니다.
      */
-    private applyPeerDecoration(peerId: string, state: any, file: SharedFile, rank: number) {
+    private applyPeerDecorationWithPositions(peerId: string, state: any, file: SharedFile, rank: number, activePos: vscode.Position, startPos: vscode.Position, endPos: vscode.Position) {
         // 이전 데코레이션 정리
         const prevCursor = this.remoteCursorDecorations.get(peerId);
         if (prevCursor) prevCursor.dispose();
@@ -568,8 +609,8 @@ export class SyncEngine {
         this.remoteCursorDecorations.set(peerId, cursorDeco);
         this.remoteSelectionDecorations.set(peerId, selectionDeco);
         
-        const cursorRange = [new vscode.Range(new vscode.Position(state.cursorPos[0], state.cursorPos[1]), new vscode.Position(state.cursorPos[0], state.cursorPos[1]))];
-        const selectionRange = [new vscode.Range(new vscode.Position(state.selectionRange[0], state.selectionRange[1]), new vscode.Position(state.selectionRange[2], state.selectionRange[3]))];
+        const cursorRange = [new vscode.Range(activePos, activePos)];
+        const selectionRange = [new vscode.Range(startPos, endPos)];
 
         // 가시적인 모든 에디터 중 해당 파일에 대해 데코레이션 적용
         const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.fsPath === file.path);
@@ -857,10 +898,10 @@ export class SyncEngine {
         });
 
         vscode.workspace.onDidChangeTextDocument(e => {
-            if (this.isApplyingRemoteChange || this.closingDocuments.has(e.document.uri.fsPath)) return;
-
             const file = this.sharedFiles.find(f => f.path === e.document.uri.fsPath);
             if (!file) return;
+
+            if (this.isApplyingRemoteChange || this.closingDocuments.has(e.document.uri.fsPath)) return;
 
             // 권한 체크
             if (!this.canIEdit(file.name)) {
@@ -887,6 +928,9 @@ export class SyncEngine {
                     }
                 }
             });
+
+            // 로컬 트랜잭션 반영 후 데코레이션 상대 위치 역산 갱신
+            this.recalculateDecorationsPositions(file.name, file.path);
 
             // 타이핑 멈춤 감지 시 에디터와 Yjs의 텍스트가 일치하는지 보정 테스트 트리거
             this.triggerSelfCorrection(file.name, file.path);
@@ -999,9 +1043,10 @@ export class SyncEngine {
         } finally {
             // [추가] 속성 복구
             if (wasReadonly) fs.chmodSync(filePath, 0o444);
-            // 변경 사항 적용 후 플래그 해제 및 자가 보정 트리거
+            // 변경 사항 적용 후 플래그 해제, 자가 보정 및 데코레이션 상대 위치 역산 갱신
             setTimeout(() => { 
                 if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
+                this.recalculateDecorationsPositions(fileName, filePath);
                 this.triggerSelfCorrection(fileName, filePath);
             }, 300);
         }
@@ -1102,14 +1147,30 @@ export class SyncEngine {
         if (editor) {
             const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
             if (file) {
-                const selection = editor.selection;
-                this.sendMessage('CURSOR_UPDATE', {
-                    fileName: file.name,
-                    userId: this.myId,
-                    userName: this.myName,
-                    cursorPos: [selection.active.line, selection.active.character],
-                    selectionRange: [selection.start.line, selection.start.character, selection.end.line, selection.end.character]
-                });
+                const ydoc = this.yDocs.get(file.name);
+                const ytext = this.yTexts.get(file.name);
+                if (ydoc && ytext) {
+                    const selection = editor.selection;
+                    const document = editor.document;
+                    try {
+                        const startIndex = document.offsetAt(selection.start);
+                        const endIndex = document.offsetAt(selection.end);
+                        const activeIndex = document.offsetAt(selection.active);
+
+                        const startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
+                        const endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));
+                        const activeRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, activeIndex));
+
+                        this.sendMessage('CURSOR_UPDATE', {
+                            fileName: file.name,
+                            userId: this.myId,
+                            userName: this.myName,
+                            startRel,
+                            endRel,
+                            activeRel
+                        });
+                    } catch (e) {}
+                }
             }
         }
         this.pushUIUpdate();
@@ -1322,6 +1383,58 @@ export class SyncEngine {
             }
         }, 250);
         this.selfCorrectionTimers.set(fileName, newTimer);
+    }
+
+    /**
+     * Yjs 상대 위치를 이용해 데코레이션(리뷰)들의 현재 절대 에디터 좌표를 역산하여 갱신합니다.
+     */
+    private recalculateDecorationsPositions(fileName: string, filePath: string) {
+        const ydoc = this.yDocs.get(fileName);
+        const ytext = this.yTexts.get(fileName);
+        if (!ydoc || !ytext) return;
+
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath && !d.isClosed);
+        if (!doc) return;
+
+        let isModified = false;
+
+        this.decorations.forEach(d => {
+            if (d.fileName !== fileName || !d.startRel || !d.endRel) return;
+
+            try {
+                const startRelPos = Y.createRelativePositionFromJSON(d.startRel);
+                const endRelPos = Y.createRelativePositionFromJSON(d.endRel);
+
+                const startAbs = Y.createAbsolutePositionFromRelativePosition(startRelPos, ydoc);
+                const endAbs = Y.createAbsolutePositionFromRelativePosition(endRelPos, ydoc);
+
+                if (startAbs && endAbs) {
+                    const newStartPos = doc.positionAt(startAbs.index);
+                    const newEndPos = doc.positionAt(endAbs.index);
+
+                    if (d.startLine !== newStartPos.line || d.startChar !== newStartPos.character ||
+                        d.endLine !== newEndPos.line || d.endChar !== newEndPos.character) {
+                        
+                        d.startLine = newStartPos.line;
+                        d.startChar = newStartPos.character;
+                        d.endLine = newEndPos.line;
+                        d.endChar = newEndPos.character;
+                        isModified = true;
+                    }
+                }
+            } catch (e) {
+                this.logToUI(`Error recalculating position for decoration ${d.id}: ${e}`);
+            }
+        });
+
+        if (isModified) {
+            this.refreshDecorationsInEditors();
+            this.pushUIUpdate();
+            if (this.isHost) {
+                this.broadcastDecorations();
+            }
+        }
+        this.refreshAllDecorations(); // 데코레이션 보정 여부와 관계없이 상대방 사용자 커서들도 실시간 역산하여 새로 칠함
     }
 
     /**
@@ -1743,6 +1856,18 @@ export class SyncEngine {
 
         if (memo === undefined) return;
 
+        const ydoc = this.yDocs.get(file.name);
+        const ytext = this.yTexts.get(file.name);
+        let startRel: any = undefined;
+        let endRel: any = undefined;
+
+        if (ydoc && ytext) {
+            const startIndex = document.offsetAt(selection.start);
+            const endIndex = document.offsetAt(selection.end);
+            startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
+            endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));
+        }
+
         const newDeco: FileDecoration = {
             id: crypto.randomBytes(8).toString('hex'),
             fileName: file.name,
@@ -1754,7 +1879,9 @@ export class SyncEngine {
             visibility: visibilityPick.value as any,
             creatorId: this.myId,
             creatorName: this.myName || 'Anonymous',
-            memo: memo || ''
+            memo: memo || '',
+            startRel,
+            endRel
         };
 
         if (this.isHost) {

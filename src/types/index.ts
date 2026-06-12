@@ -65,5 +65,7 @@ export interface FileDecoration {
     creatorId: string;
     creatorName: string;
     memo: string;
+    startRel?: any;
+    endRel?: any;
 }
 
