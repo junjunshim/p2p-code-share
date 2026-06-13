@@ -31,6 +31,7 @@ export class SyncEngine {
     private yDocs = new Map<string, Y.Doc>();
     private yTexts = new Map<string, Y.Text>();
     private selfCorrectionTimers = new Map<string, NodeJS.Timeout>();
+    private decorationRecalculateTimers = new Map<string, NodeJS.Timeout>();
     public isHost = false; 
     private storagePath = '';
     private sharedFiles: SharedFile[] = [];
@@ -505,7 +506,8 @@ export class SyncEngine {
 
     private renderCursorsForFile(file: SharedFile) {
         const ydoc = this.yDocs.get(file.name);
-        if (!ydoc) return;
+        const ytext = this.yTexts.get(file.name);
+        if (!ydoc || !ytext) return;
 
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path && !d.isClosed);
         if (!doc) return;
@@ -516,6 +518,7 @@ export class SyncEngine {
 
         // 먼저 각 피어별로 Yjs 상대 좌표로부터 최신 실제 Position을 역산
         const parsedPeers: { peerId: string; state: any; activePos: vscode.Position; startPos: vscode.Position; endPos: vscode.Position }[] = [];
+        const yjsText = ytext.toString();
         peersInFile.forEach(([peerId, state]) => {
             if (!state.startRel || !state.endRel || !state.activeRel) return;
 
@@ -532,9 +535,9 @@ export class SyncEngine {
                     parsedPeers.push({
                         peerId,
                         state,
-                        activePos: doc.positionAt(activeAbs.index),
-                        startPos: doc.positionAt(startAbs.index),
-                        endPos: doc.positionAt(endAbs.index)
+                        activePos: this.getPositionFromIndex(yjsText, activeAbs.index),
+                        startPos: this.getPositionFromIndex(yjsText, startAbs.index),
+                        endPos: this.getPositionFromIndex(yjsText, endAbs.index)
                     });
                 }
             } catch (e) {}
@@ -925,8 +928,8 @@ export class SyncEngine {
                 }
             });
 
-            // 로컬 트랜잭션 반영 후 데코레이션 상대 위치 역산 갱신
-            this.recalculateDecorationsPositions(file.name, file.path);
+            // 로컬 트랜잭션 반영 후 데코레이션 상대 위치 역산 갱신 (디바운스 처리하여 연속 타이핑 시 네이티브 보정 보존)
+            this.debouncedRecalculateDecorations(file.name, file.path);
 
             // 타이핑 멈춤 감지 시 에디터와 Yjs의 텍스트가 일치하는지 보정 테스트 트리거
             this.triggerSelfCorrection(file.name, file.path);
@@ -1039,9 +1042,9 @@ export class SyncEngine {
             // 변경 사항 적용 후 플래그 해제, 자가 보정 및 데코레이션 상대 위치 역산 갱신
             setTimeout(() => { 
                 if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
-                this.recalculateDecorationsPositions(fileName, filePath);
+                this.debouncedRecalculateDecorations(fileName, filePath);
                 this.triggerSelfCorrection(fileName, filePath);
-            }, 300);
+            }, 50);
         }
     }
 
@@ -1342,8 +1345,41 @@ export class SyncEngine {
                     await this.forceUpdateEditor(fileName, yjsText, filePath);
                 }
             }
-        }, 250);
+        }, 200);
         this.selfCorrectionTimers.set(fileName, newTimer);
+    }
+
+    /**
+     * 데코레이션 위치 재계산을 디바운싱 처리합니다. (연속 타이핑 시 네이티브 보정 방해 차단)
+     */
+    private debouncedRecalculateDecorations(fileName: string, filePath: string) {
+        const timer = this.decorationRecalculateTimers.get(fileName);
+        if (timer) clearTimeout(timer);
+
+        const newTimer = setTimeout(() => {
+            this.recalculateDecorationsPositions(fileName, filePath);
+        }, 200); // 200ms debounce
+        this.decorationRecalculateTimers.set(fileName, newTimer);
+    }
+
+    /**
+     * Yjs 텍스트와 인덱스로부터 안전한 vscode.Position을 계산합니다.
+     * VS Code 문서의 비동기적 지연에 따른 일시적 좌표 튐 현상을 해결합니다.
+     */
+    private getPositionFromIndex(text: string, index: number): vscode.Position {
+        let line = 0;
+        let character = 0;
+        const len = Math.min(index, text.length);
+        for (let i = 0; i < len; i++) {
+            const ch = text[i];
+            if (ch === '\n') {
+                line++;
+                character = 0;
+            } else {
+                character++;
+            }
+        }
+        return new vscode.Position(line, character);
     }
 
     /**
@@ -1370,8 +1406,9 @@ export class SyncEngine {
                 const endAbs = Y.createAbsolutePositionFromRelativePosition(endRelPos, ydoc);
 
                 if (startAbs && endAbs) {
-                    const newStartPos = doc.positionAt(startAbs.index);
-                    const newEndPos = doc.positionAt(endAbs.index);
+                    const yjsText = ytext.toString();
+                    const newStartPos = this.getPositionFromIndex(yjsText, startAbs.index);
+                    const newEndPos = this.getPositionFromIndex(yjsText, endAbs.index);
 
                     if (d.startLine !== newStartPos.line || d.startChar !== newStartPos.character ||
                         d.endLine !== newEndPos.line || d.endChar !== newEndPos.character) {
@@ -1457,7 +1494,7 @@ export class SyncEngine {
         } finally {
             setTimeout(() => {
                 if (this.remoteChangeLockCount > 0) this.remoteChangeLockCount--;
-            }, 400);
+            }, 50);
         }
     }
 
