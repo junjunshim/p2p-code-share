@@ -38,7 +38,8 @@ export function activate(context: vscode.ExtensionContext) {
                 roomName: state.roomName,
                 invitingSdp: state.invitingSdp,
                 connectionType: state.connectionType,
-                decorations: state.decorations
+                decorations: state.decorations,
+                cursorFilter: state.cursorFilter
             });
         }
     });
@@ -131,6 +132,9 @@ export function activate(context: vscode.ExtensionContext) {
     };
     sidebar.onJumpToDecoration = (fileName, line, char) => {
         engine.jumpToDecoration(fileName, line, char);
+    };
+    sidebar.onChangeCursorFilter = (filter) => {
+        engine.setCursorFilter(filter);
     };
 
     // 시그널링을 위한 SDP 생성 처리

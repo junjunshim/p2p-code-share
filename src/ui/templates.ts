@@ -98,7 +98,6 @@ function getSidebarStyles(): string {
             }
         }
         .room-info { 
-            margin: 10px 0 20px 0; 
             padding: 10px 12px; 
             background: var(--vscode-welcomePage-tileBackground, var(--vscode-sideBar-background)); 
             border: 1px solid var(--vscode-widget-border, var(--vscode-divider));
@@ -107,6 +106,35 @@ function getSidebarStyles(): string {
         }
         .room-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
         .room-value { font-weight: bold; font-size: 18px; color: var(--vscode-foreground); margin-top: 4px; }
+        .option-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            background: var(--vscode-welcomePage-tileBackground, rgba(255, 255, 255, 0.03));
+            border: 1px solid var(--vscode-widget-border, var(--vscode-divider));
+            border-radius: 4px;
+            margin-bottom: 6px;
+        }
+        .option-label {
+            font-size: 12px;
+            color: var(--vscode-foreground);
+            font-weight: 500;
+        }
+        .option-select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            border-radius: 2px;
+            padding: 3px 6px;
+            outline: none;
+            cursor: pointer;
+            font-size: 11px;
+            transition: border-color 0.15s ease;
+        }
+        .option-select:focus {
+            border-color: var(--vscode-focusBorder);
+        }
         .user-item { 
             padding: 8px 10px; 
             border-radius: 4px; 
@@ -352,8 +380,8 @@ function getSidebarStyles(): string {
             font-size: 11px;
             font-weight: bold;
             text-transform: uppercase;
-            margin-top: 15px;
-            margin-bottom: 10px;
+            margin-top: 6px;
+            margin-bottom: 8px;
             border-left: 1px solid transparent;
             border-right: 1px solid transparent;
             cursor: pointer;
@@ -364,6 +392,18 @@ function getSidebarStyles(): string {
         }
         .accordion-header.collapsed .arrow-icon {
             transform: rotate(-90deg);
+        }
+        
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin-bottom 0.25s ease;
+            opacity: 0;
+            margin-bottom: 0;
+        }
+        .accordion-content.expanded {
+            max-height: 1000px;
+            opacity: 1;
         }
         
         .invite-btn { color: var(--vscode-charts-blue); cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 5px; }
@@ -548,12 +588,28 @@ function getActiveView(): string {
                     <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Room Info</span>
                 </div>
-                <div class="room-info" style="margin: 0 0 15px 0;">
-                    <div class="room-label">Room Name:</div>
-                    <div id="dispRoomName" class="room-value"></div>
+                <div class="accordion-content expanded">
+                    <div class="room-info">
+                        <div class="room-label">Room Name:</div>
+                        <div id="dispRoomName" class="room-value"></div>
+                    </div>
+                </div>
+                <div class="accordion-header">
+                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                    <span>Room Options</span>
+                </div>
+                <div id="roomOptions" class="accordion-content expanded">
+                    <div class="option-item">
+                        <div class="option-label">Cursor Filter</div>
+                        <select id="cursorFilterSelect" class="option-select" onchange="changeCursorFilter(this.value)">
+                            <option value="host">Host Only</option>
+                            <option value="editable">Editable Only</option>
+                            <option value="all">Show All</option>
+                        </select>
+                    </div>
                 </div>
 
-                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 6px;">
                         <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                         <span>Connected Users</span>
@@ -568,19 +624,19 @@ function getActiveView(): string {
                         <span id="btnAddUser" class="invite-btn" onclick="invite()">+</span>
                     </div>
                 </div>
-                <div id="users" style="margin-bottom: 15px;"></div>
+                <div id="users" class="accordion-content expanded"></div>
 
-                <div class="accordion-header" style="margin-top: 10px;">
+                <div class="accordion-header">
                     <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Active Snapshots</span>
                 </div>
-                <div id="files" style="margin-bottom: 15px;"></div>
+                <div id="files" class="accordion-content expanded"></div>
 
-                <div class="accordion-header" style="margin-top: 10px;">
+                <div class="accordion-header">
                     <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                     <span>Decorations (Reviews)</span>
                 </div>
-                <div id="decorations" style="max-height: 250px; overflow-y: auto;"></div>
+                <div id="decorations" class="accordion-content expanded"></div>
             </div>
             <div id="requestsArea" class="hidden">
                 <div class="accordion-header">
@@ -626,6 +682,13 @@ function getSidebarScript(): string {
          * 게스트의 참가 요청을 거절합니다.
          */
         function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
+
+        /**
+         * 커서 필터 상태 변경 요청을 보냅니다.
+         */
+        function changeCursorFilter(val) {
+            vscode.postMessage({ type: 'changeCursorFilter', filter: val });
+        }
 
         /**
          * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
@@ -964,6 +1027,11 @@ function getSidebarScript(): string {
 
                 const isMeHost = m.participants.myId === 'host';
                 setVisible('btnAddUser', isMeHost);
+
+                const cursorFilterSelect = document.getElementById('cursorFilterSelect');
+                if (cursorFilterSelect && m.cursorFilter) {
+                    cursorFilterSelect.value = m.cursorFilter;
+                }
 
                 renderRequests(m);
                 renderUsers(m);
@@ -1317,16 +1385,46 @@ function getSidebarScript(): string {
             setVisible('mainContent', true);
         }
 
-        // 아코디언 헤더 접기/펼치기 이벤트 바인딩
+        // 아코디언 헤더 접기/펼치기 부드러운 애니메이션 이벤트 바인딩
         document.querySelectorAll('#roomInfoArea .accordion-header').forEach(header => {
+            const content = header.nextElementSibling;
+            if (content && content.classList.contains('accordion-content')) {
+                // 내부 돔 요소 변경 감지하여 콘텐츠가 채워질 때 높이를 재보정
+                const observer = new MutationObserver(() => {
+                    if (content.classList.contains('expanded')) {
+                        content.style.maxHeight = content.scrollHeight + 'px';
+                    }
+                });
+                observer.observe(content, { childList: true, subtree: true, characterData: true });
+
+                // 초기 상태에 대한 max-height 활성화 처리
+                if (content.classList.contains('expanded')) {
+                    content.style.maxHeight = content.scrollHeight + 'px';
+                }
+            }
+
             header.addEventListener('click', (e) => {
                 // 초청(+) 이나 요청 알림(종) 버튼 클릭 시 아코디언이 접히는 것을 방지
                 if (e.target.closest('.invite-btn')) return;
                 
                 header.classList.toggle('collapsed');
-                const content = header.nextElementSibling;
-                if (content) {
-                    content.classList.toggle('hidden');
+                if (content && content.classList.contains('accordion-content')) {
+                    const isExpanding = !content.classList.contains('expanded');
+                    content.classList.toggle('expanded', isExpanding);
+                    
+                    if (isExpanding) {
+                        content.style.maxHeight = content.scrollHeight + 'px';
+                        // 트랜지션 완료 후 유연한 내부 변경을 위해 auto에 가깝게 변경 (새 데이터가 동적으로 들어왔을 때도 대응)
+                        setTimeout(() => {
+                            if (content.classList.contains('expanded')) content.style.maxHeight = '1000px';
+                        }, 250);
+                    } else {
+                        // 닫을 때는 정확한 scrollHeight에서 0px로 전이
+                        content.style.maxHeight = content.scrollHeight + 'px';
+                        requestAnimationFrame(() => {
+                            content.style.maxHeight = '0px';
+                        });
+                    }
                 }
             });
         });

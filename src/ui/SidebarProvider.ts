@@ -30,6 +30,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onAssignFileOwner?: (fileName: string, assigneeId: string) => void; // [추가]
     public onDeleteDecoration?: (id: string) => void; // [추가]
     public onJumpToDecoration?: (fileName: string, line: number, char: number) => void; // [추가]
+    public onChangeCursorFilter?: (filter: 'host' | 'editable' | 'all') => void; // [추가]
 
     /**
      * SidebarProvider의 인스턴스를 생성합니다.
@@ -82,6 +83,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // [추가] 데코레이션 관련
                 case 'deleteDecoration': this.onDeleteDecoration?.(msg.id); break;
                 case 'jumpToDecoration': this.onJumpToDecoration?.(msg.fileName, msg.line, msg.char); break;
+                case 'changeCursorFilter': this.onChangeCursorFilter?.(msg.filter); break;
             }
         });
     }

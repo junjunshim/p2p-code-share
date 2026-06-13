@@ -47,6 +47,7 @@ export class SyncEngine {
     private isAutoJoin = false; // [추가] 자동 참여 여부 추적
     private pendingInvites = new Set<string>();
     private joinRequests: any[] = []; // [추가] 방 참여 요청 목록
+    private cursorFilter: 'host' | 'editable' | 'all' = 'host';
 
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
@@ -239,6 +240,7 @@ export class SyncEngine {
                 file.assigneeName = msg.assigneeName;
                 await this.updateReadonlyState(file);
                 this.pushUIUpdate();
+                this.refreshAllDecorations();
             }
         }
     }
@@ -292,6 +294,7 @@ export class SyncEngine {
             this.logToUI(`Permission updated: Global=${p.globalCanEdit}`);
             await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
             this.pushUIUpdate();
+            this.refreshAllDecorations();
         }
     }
 
@@ -369,6 +372,7 @@ export class SyncEngine {
         // 전체 사용자 목록 갱신 브로드캐스트
         this.broadcastUserList();
         this.logToUI(`Permission set for ${peerId}: Global=${permission.globalCanEdit}`);
+        this.refreshAllDecorations();
     }
 
     /**
@@ -402,6 +406,7 @@ export class SyncEngine {
         
         // 내 에디터 및 UI 업데이트
         this.pushUIUpdate();
+        this.refreshAllDecorations();
     }
 
     /**
@@ -512,9 +517,19 @@ export class SyncEngine {
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path && !d.isClosed);
         if (!doc) return;
 
-        // 해당 파일에 있는 모든 원격 피어 필터링
+        // 해당 파일에 있는 모든 원격 피어 필터링 (커서 필터 적용)
         const peersInFile = Array.from(this.remoteCursorStates.entries())
-            .filter(([id, state]) => state.fileName === file.name && id !== this.myId);
+            .filter(([id, state]) => {
+                if (state.fileName !== file.name || id === this.myId) return false;
+                
+                // 커서 필터 조건 적용
+                if (this.cursorFilter === 'host') {
+                    return id === 'host';
+                } else if (this.cursorFilter === 'editable') {
+                    return this.canPeerEdit(id, file.name);
+                }
+                return true; // 'all'
+            });
 
         // 먼저 각 피어별로 Yjs 상대 좌표로부터 최신 실제 Position을 역산
         const parsedPeers: { peerId: string; state: any; activePos: vscode.Position; startPos: vscode.Position; endPos: vscode.Position }[] = [];
@@ -561,6 +576,21 @@ export class SyncEngine {
             const rank = group.indexOf(p.peerId);
             
             this.applyPeerDecorationWithPositions(p.peerId, p.state, file, rank, p.activePos, p.startPos, p.endPos);
+        });
+
+        // 필터링 등으로 인해 이제 렌더링 대상이 아닌 피어들의 기존 데코레이션 제거
+        const activePeerIds = new Set(parsedPeers.map(p => p.peerId));
+        this.remoteCursorDecoTypes.forEach((cached, peerId) => {
+            if (!activePeerIds.has(peerId)) {
+                cached.cursorDeco.dispose();
+                cached.selectionDeco.dispose();
+                this.remoteCursorDecoTypes.delete(peerId);
+                
+                const prevCursor = this.remoteCursorDecorations.get(peerId);
+                if (prevCursor) prevCursor.dispose();
+                const prevSelection = this.remoteSelectionDecorations.get(peerId);
+                if (prevSelection) prevSelection.dispose();
+            }
         });
     }
 
@@ -761,6 +791,7 @@ export class SyncEngine {
         
         await this.updateAllReadonlyStates(); // [수정] 비동기로 순차 처리 대기
         this.pushUIUpdate();
+        this.refreshAllDecorations();
     }
 
 
@@ -795,6 +826,23 @@ export class SyncEngine {
     }
 
     private closingDocuments = new Set<string>();
+
+    /**
+     * 특정 피어가 특정 파일에 대한 편집 권한이 있는지 확인합니다.
+     */
+    private canPeerEdit(peerId: string, fileName: string): boolean {
+        if (peerId === 'host') return true;
+        const peerData = this.participants[peerId];
+        if (!peerData) return false;
+
+        const file = this.sharedFiles.find(f => f.name === fileName);
+        if (file && file.assigneeId) {
+            return file.assigneeId === peerId;
+        }
+
+        if (peerData.globalCanEdit) return true;
+        return peerData.filePermissions[fileName] === true;
+    }
 
     /**
      * 현재 사용자가 특정 파일에 대한 편집 권한이 있는지 확인합니다.
@@ -1888,6 +1936,21 @@ export class SyncEngine {
     }
 
     /**
+     * 커서 필터 방식을 변경하고 화면을 재갱신합니다.
+     */
+    public setCursorFilter(filter: 'host' | 'editable' | 'all') {
+        this.cursorFilter = filter;
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const file = this.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            if (file) {
+                this.renderCursorsForFile(file);
+            }
+        }
+        this.pushUIUpdate();
+    }
+
+    /**
      * 해당 데코레이션이 작성된 파일과 라인 위치로 이동합니다.
      */
     public jumpToDecoration(fileName: string, line: number, char: number) {
@@ -1945,7 +2008,8 @@ export class SyncEngine {
             // [핵심] 현재 초대 중인 아이디 목록 및 참여 요청 목록을 UI로 전달
             pendingInvites: Array.from(this.pendingInvites),
             joinRequests: this.joinRequests,
-            decorations: visibleDecos
+            decorations: visibleDecos,
+            cursorFilter: this.cursorFilter
         });
         this.updateActiveFileSharedContext();
     }
