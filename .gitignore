@@ -3,3 +3,6 @@ out/*
 
 .vscode/guest-data/*
 .vscode/host-data/*
+
+.agent/*
+.antigravitycli/*
