@@ -1392,14 +1392,14 @@ function getSidebarScript(): string {
                 // 내부 돔 요소 변경 감지하여 콘텐츠가 채워질 때 높이를 재보정
                 const observer = new MutationObserver(() => {
                     if (content.classList.contains('expanded')) {
-                        content.style.maxHeight = content.scrollHeight + 'px';
+                        content.style.maxHeight = content.scrollHeight > 0 ? content.scrollHeight + 'px' : '1000px';
                     }
                 });
                 observer.observe(content, { childList: true, subtree: true, characterData: true });
 
                 // 초기 상태에 대한 max-height 활성화 처리
                 if (content.classList.contains('expanded')) {
-                    content.style.maxHeight = content.scrollHeight + 'px';
+                    content.style.maxHeight = content.scrollHeight > 0 ? content.scrollHeight + 'px' : '1000px';
                 }
             }
 
