@@ -142,6 +142,9 @@ export class SyncEngine {
                         this.decorationManager.refreshDecorationsInEditors();
                         this.pushUIUpdate();
                         break;
+                    case 'GUEST_LEAVE':
+                        this.handleGuestLeave(msg, peerId);
+                        break;
                 }
             } catch (e) {}
         };
@@ -498,6 +501,64 @@ export class SyncEngine {
     }
     public async addDecorationFlow() {
         await this.decorationManager.addDecorationFlow();
+    }
+
+    /**
+     * 방 나가기(퇴장) 플로우를 처리합니다.
+     */
+    public async leaveRoomFlow() {
+        if (this.isHost) {
+            // 1. 호스트인 경우 공유 중인 파일이 있는지 확인
+            if (this.fileStorageManager.sharedFiles.length > 0) {
+                vscode.window.showErrorMessage("공유 중인 파일을 모두 중지해주세요.");
+                return;
+            }
+            // 2. 파일이 없으면 최종 확인 창 표시
+            const answer = await vscode.window.showWarningMessage(
+                "퇴장을 하시면 연결된 모든 guest들의 연결이 끊어집니다.",
+                { modal: true },
+                "Yes"
+            );
+            if (answer === "Yes") {
+                this.reset();
+                this.hub.dispose();
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+            }
+        } else {
+            // 3. 게스트인 경우 호스트에게 퇴장 알림 전송
+            this.sendMessage('GUEST_LEAVE', { userId: this.myId });
+
+            // 4. 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
+            const filesToClean = [...this.fileStorageManager.sharedFiles];
+            for (const file of filesToClean) {
+                await this.fileStorageManager.handleRemoteStop(file.name);
+            }
+
+            // 5. 연결 초기화 및 종료
+            this.reset();
+            this.hub.dispose();
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+        }
+    }
+
+    /**
+     * 게스트가 방을 퇴장할 때 호스트가 수신하여 해당 게스트 리소스(커서, 데코레이션)를 정리합니다.
+     */
+    private handleGuestLeave(msg: any, peerId: string) {
+        if (this.isHost) {
+            const actualPeerId = msg.userId || peerId;
+            this.logToUI(`GUEST_LEAVE received from: ${actualPeerId}`);
+            
+            // 1. 이 게스트가 생성한 데코레이션 완전히 삭제 및 전송
+            this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.creatorId !== actualPeerId);
+            this.decorationManager.refreshDecorationsInEditors();
+            this.decorationManager.broadcastDecorations();
+
+            // 2. 해당 피어 연결 정리 (커서 정리, 참가자 리스트 제거, 유저 리스트 브로드캐스트)
+            this.participantManager.handlePeerDisconnect(actualPeerId);
+        }
     }
 
     /**

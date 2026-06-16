@@ -76,9 +76,12 @@ function getActiveView(): string {
     return `
         <div id="active" class="hidden">
             <div id="roomInfoArea">
-                <div class="accordion-header">
-                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
-                    <span>Room Info</span>
+                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                        <span>Room Info</span>
+                    </div>
+                    <span id="btnLeaveRoom" class="invite-btn" onclick="leaveRoom()" title="Leave Room" style="font-size: 11px; padding: 2px 6px; background: #d9534f; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center;">Leave</span>
                 </div>
                 <div class="accordion-content expanded">
                     <div class="room-info">

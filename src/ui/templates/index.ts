@@ -20,8 +20,13 @@ export function getSidebarTemplate(): string {
         </head>
         <body>
             ${getSidebarBody()}
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js"></script>
+            <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
             <script>
                 ${getSidebarScript()}
+            </script>
+            <script>
+                ${getEngineScript(false, false, '')}
             </script>
         </body></html>`;
 }

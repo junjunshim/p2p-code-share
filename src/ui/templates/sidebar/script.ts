@@ -5,7 +5,15 @@
 
 export function getSidebarScript(): string {
     return `
-        const vscode = acquireVsCodeApi();
+        window.vscode = acquireVsCodeApi();
+        const vscode = window.vscode;
+        window.onerror = function(message, source, lineno, colno, error) {
+            vscode.postMessage({
+                type: 'statusUpdate',
+                value: 'Error: ' + message + ' (' + lineno + ':' + colno + ')',
+                peerId: 'default'
+            });
+        };
         let showingRequests = false;
 
         /**
@@ -33,6 +41,13 @@ export function getSidebarScript(): string {
          */
         function changeCursorFilter(val) {
             vscode.postMessage({ type: 'changeCursorFilter', filter: val });
+        }
+
+        /**
+         * 방에서 나가는 요청을 보냅니다.
+         */
+        function leaveRoom() {
+            vscode.postMessage({ type: 'leaveRoom' });
         }
 
         /**

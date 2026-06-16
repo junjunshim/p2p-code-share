@@ -64,8 +64,27 @@ export function activate(context: vscode.ExtensionContext) {
         engine.sendJoinRequest(roomName, description);
     };
 
+    // P2P 엔진 메시지 수신 연동
+    sidebar.onEngineMessage = (msg) => {
+        const pid = msg.peerId || 'default';
+        if (msg.type === 'sendData') hub.onDidReceiveData?.(msg.value, pid);
+        else if (msg.type === 'statusUpdate') hub.onStatusUpdate?.(msg.value, pid);
+        else if (msg.type === 'requireInvite') hub.onRequireInvite?.();
+        else if (msg.type === 'roomNameSuccess') hub.onRoomNameSuccess?.();
+        else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType);
+        else if (msg.type === 'sdpGenerated') {
+            hub.sdpMap.set(pid, msg.sdp);
+            hub.onSdpGenerated?.(msg.sdp, pid);
+        }
+    };
+
     // 사이드바가 준비되면 초기 UI 동기화 실행
-    sidebar.onReady = () => { engine.pushUIUpdate(); };
+    sidebar.onReady = () => {
+        if (sidebar.webview) {
+            hub.setWebview(sidebar.webview);
+        }
+        engine.pushUIUpdate();
+    };
 
     // 게스트 초대 프로세스 시작
     sidebar.onInviteGuest = () => {
@@ -135,6 +154,9 @@ export function activate(context: vscode.ExtensionContext) {
     };
     sidebar.onChangeCursorFilter = (filter) => {
         engine.setCursorFilter(filter);
+    };
+    sidebar.onLeaveRoom = () => {
+        engine.leaveRoomFlow();
     };
 
     // 시그널링을 위한 SDP 생성 처리

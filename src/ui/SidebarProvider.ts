@@ -31,6 +31,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onDeleteDecoration?: (id: string) => void; // [추가]
     public onJumpToDecoration?: (fileName: string, line: number, char: number) => void; // [추가]
     public onChangeCursorFilter?: (filter: 'host' | 'editable' | 'all') => void; // [추가]
+    public onLeaveRoom?: () => void; // [추가]
+    public onEngineMessage?: (msg: any) => void; // [추가]
+
+    public get webview(): vscode.Webview | undefined {
+        return this._view?.webview;
+    }
 
     /**
      * SidebarProvider의 인스턴스를 생성합니다.
@@ -84,6 +90,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'deleteDecoration': this.onDeleteDecoration?.(msg.id); break;
                 case 'jumpToDecoration': this.onJumpToDecoration?.(msg.fileName, msg.line, msg.char); break;
                 case 'changeCursorFilter': this.onChangeCursorFilter?.(msg.filter); break;
+                case 'leaveRoom': this.onLeaveRoom?.(); break;
+                // [추가] P2P 엔진 메시지 라우팅
+                case 'sendData':
+                case 'statusUpdate':
+                case 'requireInvite':
+                case 'roomNameSuccess':
+                case 'roomNameError':
+                case 'sdpGenerated':
+                    this.onEngineMessage?.(msg);
+                    break;
             }
         });
     }
