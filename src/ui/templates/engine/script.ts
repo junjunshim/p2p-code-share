@@ -186,7 +186,12 @@ export function getEngineScript(
                         debug: 3,
                         config: { iceServers: iceServers }
                     });
+                    let wasOpened = false;
                     peerServer.on('open', (id) => {
+                        if (wasOpened) {
+                            vscode.postMessage({ type: 'logMessage', level: 'info', text: 'PeerJS 시그널링 서버와의 재연결에 성공했습니다.' });
+                        }
+                        wasOpened = true;
                         log('Successfully connected to PeerJS signaling server.');
                         if (currentInitiator) {
                             log('Created room: "' + rName + '". Waiting for guest connection...');
@@ -201,15 +206,35 @@ export function getEngineScript(
                         log('Received connection request from guest signaling client.');
                         handleSignalingConn(conn); 
                     });
+                    peerServer.on('disconnected', () => {
+                        if (wasOpened && peerServer && !peerServer.destroyed) {
+                            log('PeerJS connection to signaling server lost. Reconnecting...');
+                            vscode.postMessage({ type: 'logMessage', level: 'warning', text: 'PeerJS 시그널링 서버와의 연결이 끊어졌습니다. 자동으로 재연결을 시도합니다...' });
+                            peerServer.reconnect();
+                        }
+                    });
                     peerServer.on('error', (err) => {
                         log('PeerJS Connection Error: ' + err.type);
-                        if (!currentInitiator && err.type === 'peer-unavailable') {
-                            log('Error: Room "' + rName + '" does not exist or the host is offline.');
-                        }
-                        if (err.type === 'server-error' || err.type === 'network') {
-                            log('Error: Failed to connect to PeerJS signaling server (network/server issue).');
+                        if (!currentInitiator) {
+                            if (err.type === 'peer-unavailable') {
+                                vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
+                            } else if (err.type === 'server-error' || err.type === 'network') {
+                                vscode.postMessage({ type: 'roomNameError', errorType: 'server' });
+                            }
                         }
                         if (currentInitiator) {
+                            if (wasOpened) {
+                                log('Host PeerJS reconnection error (temporary collision or issue): ' + err.type);
+                                if (err.type === 'unavailable-id') {
+                                    setTimeout(() => {
+                                        if (peerServer && !peerServer.destroyed && peerServer.disconnected) {
+                                            log('Retrying host PeerJS reconnection after temporary collision...');
+                                            peerServer.reconnect();
+                                        }
+                                    }, 3000);
+                                }
+                                return;
+                            }
                             let errorType = 'unknown';
                             if (err.type === 'unavailable-id') errorType = 'duplicate';
                             else if (err.type === 'server-error' || err.type === 'network') errorType = 'server';

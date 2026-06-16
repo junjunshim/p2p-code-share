@@ -14,6 +14,7 @@ export class ParticipantManager {
     public pendingInvites = new Set<string>();
     public isAutoJoin = false;
     public pendingJoinRequest: { roomName: string, description: string } | null = null;
+    private joinTimeout?: NodeJS.Timeout;
 
     constructor(private engine: SyncEngine) {}
 
@@ -73,8 +74,30 @@ export class ParticipantManager {
         this.pendingJoinRequest = { roomName, description }; // 요청 큐에 저장
         this.engine.pushUIUpdate();
 
+        // 15초 내에 연결 단계가 완료되지 않으면 에러 및 리셋 처리
+        if (this.joinTimeout) {
+            clearTimeout(this.joinTimeout);
+        }
+        this.joinTimeout = setTimeout(() => {
+            if (!this.engine.isConnected && this.isAutoJoin) {
+                vscode.window.showErrorMessage("호스트와의 연결 시도 시간이 초과되었습니다. 방 이름이 올바른지 혹은 호스트가 온라인인지 확인해주세요.");
+                this.engine.reset();
+                this.engine.hub.dispose();
+            }
+        }, 15000);
+
         // 허브 생성 (게스트 모드)
         this.engine.hub.createHub(false, roomName, 'default');
+    }
+
+    /**
+     * 연결 요청 제한시간을 정리합니다.
+     */
+    public clearJoinTimeout() {
+        if (this.joinTimeout) {
+            clearTimeout(this.joinTimeout);
+            this.joinTimeout = undefined;
+        }
     }
 
     /**
@@ -297,20 +320,32 @@ export class ParticipantManager {
      */
     public handlePeerDisconnect(peerId: string) {
         if (!this.engine.isHost) {
-            // 게스트일 경우 호스트 연결 손실 알림
+            // 게스트일 경우 호스트 연결 손실 알림 (승인되어 연결된 상태였을 때만 알림 표시)
             if (peerId === 'default' || peerId === 'all') { 
-                vscode.window.showErrorMessage("호스트와의 연결이 끊겼습니다."); 
+                if (this.engine.isConnected) {
+                    vscode.window.showErrorMessage("호스트와의 연결이 끊겼습니다."); 
+                }
                 this.engine.reset(); 
             }
         } else {
             // 호스트일 경우 참가자 제거 및 UI 알림
-            const disconnectedName = this.participants[peerId]?.name || '누군가';
-            vscode.window.setStatusBarMessage(`P2P: ${disconnectedName}님이 방을 나갔습니다.`, 3000);
-            delete this.participants[peerId];
-            
-            // 해당 피어의 데코레이션 및 색상 정리
-            this.engine.cursorManager.clearPeerCursor(peerId);
-            this.broadcastUserList();
+            const isParticipant = !!this.participants[peerId];
+            const isJoinRequest = this.joinRequests.some(req => req.peerId === peerId);
+
+            if (isParticipant) {
+                const disconnectedName = this.participants[peerId]?.name || '누군가';
+                vscode.window.setStatusBarMessage(`P2P: ${disconnectedName}님이 방을 나갔습니다.`, 3000);
+                delete this.participants[peerId];
+                
+                // 해당 피어의 데코레이션 및 색상 정리
+                this.engine.cursorManager.clearPeerCursor(peerId);
+                this.broadcastUserList();
+            }
+
+            if (isJoinRequest) {
+                this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
+                this.engine.pushUIUpdate();
+            }
         }
     }
 
@@ -376,6 +411,7 @@ export class ParticipantManager {
     }
 
     public reset() {
+        this.clearJoinTimeout();
         this.participants = {};
         this.joinRequests = [];
         this.pendingInvites.clear();

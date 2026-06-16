@@ -75,6 +75,13 @@ export function activate(context: vscode.ExtensionContext) {
         else if (msg.type === 'sdpGenerated') {
             hub.sdpMap.set(pid, msg.sdp);
             hub.onSdpGenerated?.(msg.sdp, pid);
+        } else if (msg.type === 'logMessage') {
+            if (msg.level === 'warning') {
+                vscode.window.showWarningMessage(msg.text);
+            } else if (msg.level === 'info') {
+                vscode.window.showInformationMessage(msg.text);
+            }
+            engine.logToUI(msg.text);
         }
     };
 
@@ -178,6 +185,19 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 방 이름 중복 또는 서버 에러 처리
     hub.onRoomNameError = (errorType: string) => {
+        if (!engine.isHost) {
+            let msg = "호스트 연결에 실패했습니다.";
+            if (errorType === 'unavailable') {
+                msg = "호스트가 오프라인이거나 존재하지 않는 방 이름입니다.";
+            } else if (errorType === 'server') {
+                msg = "시그널링 서버 연결에 실패했습니다.";
+            }
+            vscode.window.showErrorMessage(msg);
+            hub.dispose();
+            engine.reset();
+            return;
+        }
+
         let msg = "";
         if (errorType === 'duplicate') {
             msg = "이미 사용 중인 방 이름입니다. 자동 연결 기능이 비활성화됩니다.";

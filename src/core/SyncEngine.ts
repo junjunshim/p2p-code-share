@@ -191,6 +191,8 @@ export class SyncEngine {
                     description: this.participantManager.pendingJoinRequest.description 
                 });
                 this.participantManager.pendingJoinRequest = null;
+                // 호스트에게 요청을 정상 송신했으므로 초기 연결 타임아웃 해제
+                this.participantManager.clearJoinTimeout();
             }
             
             this.sendMessage('GUEST_JOIN', { name: this.myName }); 

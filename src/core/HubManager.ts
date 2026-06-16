@@ -48,19 +48,21 @@ export class HubManager {
         const turnCredential = config.get<string>('turnCredential') || '';
         const turnConfig = turnUrl ? { url: turnUrl, username: turnUsername, credential: turnCredential } : undefined;
 
-        // 웹뷰 측에 엔진 시작 메시지 전송
-        this.sendToEngine({
-            type: 'startEngine',
-            initiator,
-            autoStart: !initiator,
-            roomName,
-            turnConfig,
-            peerId
-        });
-
-        // 필요한 경우 새 피어 추가
-        if (initiator && peerId !== 'none' && peerId !== 'default') {
-            this.sendToEngine({ type: 'addNewPeer', initiator, peerId });
+        // peerId가 'none'이거나 'default'인 경우에만 엔진을 최초 시작합니다.
+        if (peerId === 'none' || peerId === 'default') {
+            this.sendToEngine({
+                type: 'startEngine',
+                initiator,
+                autoStart: !initiator,
+                roomName,
+                turnConfig,
+                peerId
+            });
+        } else {
+            // 이미 엔진이 실행 중인 상태에서 새 피어를 추가하는 경우
+            if (initiator) {
+                this.sendToEngine({ type: 'addNewPeer', initiator, peerId });
+            }
         }
     }
 
