@@ -3,6 +3,11 @@
   "displayName": "P2P Code Share",
   "description": "P2P 실시간 코드 동시 편집 확장 프로그램",
   "version": "0.0.1",
+  "publisher": "junjunshim",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/junjunshim/p2p-code-share"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },

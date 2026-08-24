@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+.git/**
+.agent/**
+test-workspace-host/**
+test-workspace-guest/**
+tsconfig.json
+.gitignore
+.gitkeep
+src/**/*.ts
+out/**/*.map
+out/test/**
+test/**
+eslint.config.js
+.eslintrc.json
+webpack.config.js
+**/*.map
