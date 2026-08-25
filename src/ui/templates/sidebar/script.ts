@@ -393,6 +393,14 @@ export function getSidebarScript(): string {
                     cursorFilterSelect.value = m.cursorFilter;
                 }
 
+                // 채팅 안 읽은 개수 배지 업데이트
+                const unreadBadge = document.getElementById('unreadChatBadge');
+                if (unreadBadge) {
+                    const count = m.unreadChatCount || 0;
+                    unreadBadge.innerText = count;
+                    unreadBadge.classList.toggle('hidden', count === 0);
+                }
+
                 renderRequests(m);
                 renderUsers(m);
             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
@@ -788,6 +796,13 @@ export function getSidebarScript(): string {
                 }
             });
         });
+
+        /**
+         * 채팅방 팝업창을 열기 위해 이벤트를 전송합니다.
+         */
+        function openChat() {
+            vscode.postMessage({ type: 'openChat' });
+        }
 
         vscode.postMessage({ type: 'ready' });
     `;

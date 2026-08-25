@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import { SidebarProvider } from './ui/SidebarProvider';
 import { HubManager } from './core/HubManager';
 import { SyncEngine } from './core/SyncEngine';
+import { ChatPanel } from './ui/ChatPanel';
 
 /**
  * 확장 프로그램을 활성화합니다.
@@ -39,7 +40,8 @@ export function activate(context: vscode.ExtensionContext) {
                 invitingSdp: state.invitingSdp,
                 connectionType: state.connectionType,
                 decorations: state.decorations,
-                cursorFilter: state.cursorFilter
+                cursorFilter: state.cursorFilter,
+                unreadChatCount: state.unreadChatCount
             });
         }
     });
@@ -164,6 +166,26 @@ export function activate(context: vscode.ExtensionContext) {
     };
     sidebar.onLeaveRoom = () => {
         engine.leaveRoomFlow();
+    };
+    sidebar.onOpenChat = () => {
+        engine.unreadChatCount = 0;
+        engine.pushUIUpdate();
+        
+        engine.chatPanel = ChatPanel.createOrShow(
+            context.extensionUri, 
+            engine.chatHistory, 
+            engine.myId,
+            engine.participantManager.participants
+        );
+        engine.chatPanel.onSendMessage = (text) => {
+            engine.sendChatMessage(text);
+        };
+        engine.chatPanel.onClose = () => {
+            engine.chatPanel = undefined;
+        };
+    };
+    sidebar.onSendChat = (text) => {
+        engine.sendChatMessage(text);
     };
 
     // 시그널링을 위한 SDP 생성 처리

@@ -456,5 +456,23 @@ export function getSidebarStyles(): string {
         .slider:before { position: absolute; content: ""; height: 10px; width: 10px; left: 2px; bottom: 2px; background-color: var(--vscode-settings-checkboxForeground); transition: .2s; border-radius: 50%; }
         input:checked + .slider { background-color: #28a745; border-color: #28a745; }
         input:checked + .slider:before { transform: translateX(12px); background-color: white; }
+
+        /* 안 읽은 채팅 배지 스타일 */
+        .unread-chat-count {
+            background-color: #ff3b30; /* 눈에 잘 띄는 빨간색 */
+            color: #ffffff;            /* 흰색 텍스트 */
+            font-size: 10px;
+            font-weight: bold;
+            border-radius: 10px;
+            padding: 1px 6px;
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
     `;
 }

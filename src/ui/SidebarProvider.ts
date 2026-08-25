@@ -33,6 +33,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onChangeCursorFilter?: (filter: 'host' | 'editable' | 'all') => void; // [추가]
     public onLeaveRoom?: () => void; // [추가]
     public onEngineMessage?: (msg: any) => void; // [추가]
+    public onSendChat?: (text: string) => void; // [추가] 채팅 기능
+    public onOpenChat?: () => void; // [추가] 채팅방 팝업 열기
 
     public get webview(): vscode.Webview | undefined {
         return this._view?.webview;
@@ -91,6 +93,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'jumpToDecoration': this.onJumpToDecoration?.(msg.fileName, msg.line, msg.char); break;
                 case 'changeCursorFilter': this.onChangeCursorFilter?.(msg.filter); break;
                 case 'leaveRoom': this.onLeaveRoom?.(); break;
+                // [추가] 채팅방 팝업 및 메시지 전송
+                case 'openChat': this.onOpenChat?.(); break;
+                case 'sendChat': this.onSendChat?.(msg.text); break;
                 // [추가] P2P 엔진 메시지 라우팅
                 case 'sendData':
                 case 'statusUpdate':

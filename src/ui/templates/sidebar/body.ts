@@ -84,10 +84,14 @@ function getActiveView(): string {
                     <span id="btnLeaveRoom" class="invite-btn" onclick="leaveRoom()" title="Leave Room" style="font-size: 11px; padding: 2px 6px; background: #d9534f; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center;">Leave</span>
                 </div>
                 <div class="accordion-content expanded">
-                    <div class="room-info">
+                    <div class="room-info" style="margin-bottom: 8px;">
                         <div class="room-label">Room Name:</div>
                         <div id="dispRoomName" class="room-value"></div>
                     </div>
+                    <button id="btnOpenChat" onclick="openChat()" style="margin-bottom: 4px; position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                        <span>💬 Open Chat Room</span>
+                        <span id="unreadChatBadge" class="unread-chat-count hidden">0</span>
+                    </button>
                 </div>
                 <div class="accordion-header">
                     <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>

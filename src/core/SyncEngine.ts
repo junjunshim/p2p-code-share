@@ -6,7 +6,8 @@
 
 import * as vscode from 'vscode';
 import { HubManager } from './HubManager';
-import { SharedFile, P2PMessage, PeerPermission, FileDecoration } from '../types';
+import { SharedFile, P2PMessage, PeerPermission, FileDecoration, ChatMessage } from '../types';
+import { ChatPanel } from '../ui/ChatPanel';
 
 import { FileStorageManager } from './sync/FileStorageManager';
 import { ParticipantManager } from './sync/ParticipantManager';
@@ -15,6 +16,11 @@ import { DecorationManager } from './sync/DecorationManager';
 import { DocumentSyncManager } from './sync/DocumentSyncManager';
 
 export class SyncEngine {
+    // 채팅 관련 속성
+    public chatHistory: ChatMessage[] = [];
+    public chatPanel?: ChatPanel;
+    public unreadChatCount = 0; // 안 읽은 메시지 수 카운터
+
     // 서브 매니저 인스턴스
     public fileStorageManager: FileStorageManager;
     public participantManager: ParticipantManager;
@@ -76,6 +82,31 @@ export class SyncEngine {
                     case 'SET_ROLE': this.handleSetRole(msg); break;
                     case 'ON_CONNECTED': this.handleOnConnected(peerId); break;
                     case 'ASSIGN_PEER_ID': this.handleAssignPeerId(msg); break;
+                    case 'CHAT_MESSAGE':
+                        if (msg.chatMessage) {
+                            // 이미 기록이 존재하지 않는 경우에만 푸시 (중복 방어)
+                            const isDuplicate = this.chatHistory.some(h => h.id === msg.chatMessage.id);
+                            if (!isDuplicate) {
+                                this.chatHistory.push(msg.chatMessage);
+                                if (this.isHost) {
+                                    // 다른 참여자들에게만 채팅 중계 (보낸 사람 제외)
+                                    Object.keys(this.participantManager.participants).forEach(pId => {
+                                        if (pId !== 'host' && pId !== peerId) {
+                                            this.sendMessageToPeer(pId, 'CHAT_MESSAGE', { chatMessage: msg.chatMessage });
+                                        }
+                                    });
+                                }
+                                
+                                // 안 읽은 카운트 누적 (채팅 패널이 열려있지 않을 때만)
+                                if (!this.chatPanel) {
+                                    this.unreadChatCount++;
+                                }
+                                
+                                this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+                                this.pushUIUpdate(); // 사이드바 버튼 배지 갱신을 위해 UI 강제 업데이트
+                            }
+                        }
+                        break;
                     case 'INIT_SNAPSHOT': 
                         if (!this.fileStorageManager.isStorageInitialized) {
                             this.fileStorageManager.initializeStorage();
@@ -409,6 +440,9 @@ export class SyncEngine {
      * 현재 상태를 바탕으로 UI 업데이트를 실행합니다.
      */
     public pushUIUpdate() { 
+        // 닉네임 동적 변경 실시간 갱신을 위해 채팅방 업데이트
+        this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+
         const visibleDecos = this.decorationManager.decorations.filter(d => {
             if (d.visibility === 'host') {
                 return this.isHost || d.creatorId === this.myId;
@@ -429,7 +463,8 @@ export class SyncEngine {
             pendingInvites: Array.from(this.participantManager.pendingInvites),
             joinRequests: this.participantManager.joinRequests,
             decorations: visibleDecos,
-            cursorFilter: this.cursorManager.cursorFilter
+            cursorFilter: this.cursorManager.cursorFilter,
+            unreadChatCount: this.unreadChatCount
         });
         this.updateActiveFileSharedContext();
     }
@@ -552,7 +587,7 @@ export class SyncEngine {
         if (this.isHost) {
             const actualPeerId = msg.userId || peerId;
             this.logToUI(`GUEST_LEAVE received from: ${actualPeerId}`);
-            
+
             // 1. 이 게스트가 생성한 데코레이션 완전히 삭제 및 전송
             this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.creatorId !== actualPeerId);
             this.decorationManager.refreshDecorationsInEditors();
@@ -564,6 +599,30 @@ export class SyncEngine {
     }
 
     /**
+     * 실시간 P2P 채팅 메시지를 보냅니다.
+     */
+    public sendChatMessage(text: string) {
+        const cleanText = text.trim();
+        if (!cleanText) return;
+
+        const chatMessage: ChatMessage = {
+            id: this.myId + '-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+            senderId: this.myId,
+            senderName: this.myName || this.myId,
+            text: cleanText,
+            timestamp: Date.now()
+        };
+
+        this.chatHistory.push(chatMessage);
+        
+        // 상대방에게 브로드캐스트
+        this.sendMessage('CHAT_MESSAGE', { chatMessage });
+        
+        // 내 로컬 채팅창 갱신
+        this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+    }
+
+    /**
      * 엔진의 모든 상태를 초기화합니다.
      */
     public reset(skipUIUpdate = false) {
@@ -572,6 +631,13 @@ export class SyncEngine {
         this.cursorManager.reset();
         this.decorationManager.reset();
         this.documentSyncManager.reset();
+        
+        // 채팅 기록 리셋 및 팝업창 닫기
+        this.chatHistory = [];
+        if (this.chatPanel) {
+            this.chatPanel.dispose();
+            this.chatPanel = undefined;
+        }
 
         this.isHost = false; 
         this.isConnected = false; 

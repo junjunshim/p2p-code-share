@@ -335,6 +335,20 @@ export class ParticipantManager {
             if (isParticipant) {
                 const disconnectedName = this.participants[peerId]?.name || '누군가';
                 vscode.window.setStatusBarMessage(`P2P: ${disconnectedName}님이 방을 나갔습니다.`, 3000);
+                
+                // 퇴장 시스템 메시지 기록
+                const systemMsg = {
+                    id: 'sys-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                    senderId: 'system',
+                    senderName: 'System',
+                    text: `${disconnectedName}(퇴장)`,
+                    timestamp: Date.now(),
+                    isSystem: true
+                };
+                this.engine.chatHistory.push(systemMsg);
+                this.engine.sendMessage('CHAT_MESSAGE', { chatMessage: systemMsg });
+                this.engine.chatPanel?.updateHistory(this.engine.chatHistory, this.engine.myId, this.participants);
+
                 delete this.participants[peerId];
                 
                 // 해당 피어의 데코레이션 및 색상 정리

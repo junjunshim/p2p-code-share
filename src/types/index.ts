@@ -69,3 +69,16 @@ export interface FileDecoration {
     endRel?: any;
 }
 
+/**
+ * 실시간 P2P 채팅 메시지 포맷을 정의합니다.
+ */
+export interface ChatMessage {
+    id: string;
+    senderId: string;
+    senderName: string;
+    text: string;
+    timestamp: number;
+    isSystem?: boolean; // 시스템 메시지 (퇴장, 이름 변경 등) 여부
+}
+
+
