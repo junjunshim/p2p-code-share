@@ -17,6 +17,16 @@ import { ChatPanel } from './ui/ChatPanel';
  * @param context VS Code 확장 프로그램 컨텍스트.
  */
 export function activate(context: vscode.ExtensionContext) {
+    // [추가] 익스텐션 활성화 시 마우스 휠 코드 줌 기능 자동으로 활성화
+    try {
+        const config = vscode.workspace.getConfiguration();
+        if (config.get('editor.mouseWheelZoom') !== true) {
+            config.update('editor.mouseWheelZoom', true, vscode.ConfigurationTarget.Global);
+        }
+    } catch (e) {
+        console.error("Failed to update mouseWheelZoom config:", e);
+    }
+
     // UI 제공자 및 핵심 P2P 엔진 초기화
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
