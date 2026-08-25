@@ -401,6 +401,13 @@ export function getSidebarScript(): string {
                     unreadBadge.classList.toggle('hidden', count === 0);
                 }
 
+                // 팔로우 모드 체크박스 및 가시성 제어
+                setVisible('followMeOption', isMeHost);
+                const followMeCheck = document.getElementById('followMeCheck');
+                if (followMeCheck) {
+                    followMeCheck.checked = !!m.isFollowMeMode;
+                }
+
                 renderRequests(m);
                 renderUsers(m);
             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
@@ -802,6 +809,13 @@ export function getSidebarScript(): string {
          */
         function openChat() {
             vscode.postMessage({ type: 'openChat' });
+        }
+
+        /**
+         * 화면 동기화 팔로우 모드를 활성화/비활성화합니다.
+         */
+        function toggleFollowMe(val) {
+            vscode.postMessage({ type: 'setFollowMeMode', enabled: val });
         }
 
         vscode.postMessage({ type: 'ready' });

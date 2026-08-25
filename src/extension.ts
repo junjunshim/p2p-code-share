@@ -51,7 +51,8 @@ export function activate(context: vscode.ExtensionContext) {
                 connectionType: state.connectionType,
                 decorations: state.decorations,
                 cursorFilter: state.cursorFilter,
-                unreadChatCount: state.unreadChatCount
+                unreadChatCount: state.unreadChatCount,
+                isFollowMeMode: state.isFollowMeMode
             });
         }
     });
@@ -196,6 +197,9 @@ export function activate(context: vscode.ExtensionContext) {
     };
     sidebar.onSendChat = (text) => {
         engine.sendChatMessage(text);
+    };
+    sidebar.onSetFollowMeMode = (enabled) => {
+        engine.setFollowMeMode(enabled);
     };
 
     // 시그널링을 위한 SDP 생성 처리

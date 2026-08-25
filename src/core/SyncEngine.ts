@@ -20,6 +20,8 @@ export class SyncEngine {
     public chatHistory: ChatMessage[] = [];
     public chatPanel?: ChatPanel;
     public unreadChatCount = 0; // 안 읽은 메시지 수 카운터
+    public isFollowMeMode = false; // [추가] 화면 동기화(팔로우) 활성화 여부
+
 
     // 서브 매니저 인스턴스
     public fileStorageManager: FileStorageManager;
@@ -105,6 +107,12 @@ export class SyncEngine {
                                 this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
                                 this.pushUIUpdate(); // 사이드바 버튼 배지 갱신을 위해 UI 강제 업데이트
                             }
+                        }
+                        break;
+                    case 'FOLLOW_UPDATE':
+                        // 게스트가 호스트의 화면 위치를 추적하여 동기화
+                        if (!this.isHost) {
+                            await this.handleFollowUpdate(msg.fileName, msg.startLine, msg.endLine);
                         }
                         break;
                     case 'INIT_SNAPSHOT': 
@@ -281,11 +289,41 @@ export class SyncEngine {
     private setupTextListeners() {
         vscode.window.onDidChangeActiveTextEditor(async editor => {
             this.updateActiveFileSharedContext();
-            if (!editor || this.isHost) return;
+            if (!editor) return;
+
+            // [추가] 호스트 활성 탭 전환 시 화면 추적 동기화
+            if (this.isHost && this.isFollowMeMode) {
+                const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+                if (file && editor.visibleRanges.length > 0) {
+                    const range = editor.visibleRanges[0];
+                    this.sendMessage('FOLLOW_UPDATE', {
+                        fileName: file.name,
+                        startLine: range.start.line,
+                        endLine: range.end.line
+                    });
+                }
+            }
+
+            if (this.isHost) return;
             const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
             if (file) {
                 const canEdit = this.participantManager.canIEdit(file.name);
                 await this.fileStorageManager.applyEditorReadonlyState(editor, !canEdit);
+            }
+        });
+
+        // [추가] 호스트 스크롤 변경 시 화면 추적 동기화
+        vscode.window.onDidChangeTextEditorVisibleRanges(e => {
+            if (this.isHost && this.isFollowMeMode) {
+                const file = this.fileStorageManager.sharedFiles.find(f => f.path === e.textEditor.document.uri.fsPath);
+                if (file && e.visibleRanges.length > 0) {
+                    const range = e.visibleRanges[0];
+                    this.sendMessage('FOLLOW_UPDATE', {
+                        fileName: file.name,
+                        startLine: range.start.line,
+                        endLine: range.end.line
+                    });
+                }
             }
         });
 
@@ -464,7 +502,8 @@ export class SyncEngine {
             joinRequests: this.participantManager.joinRequests,
             decorations: visibleDecos,
             cursorFilter: this.cursorManager.cursorFilter,
-            unreadChatCount: this.unreadChatCount
+            unreadChatCount: this.unreadChatCount,
+            isFollowMeMode: this.isFollowMeMode
         });
         this.updateActiveFileSharedContext();
     }
@@ -623,6 +662,66 @@ export class SyncEngine {
     }
 
     /**
+     * 호스트가 화면 동기화를 제어할 수 있도록 스위치를 토글합니다.
+     */
+    public setFollowMeMode(enabled: boolean) {
+        this.isFollowMeMode = enabled;
+        this.logToUI(`Follow Me Mode: ${enabled ? 'Enabled' : 'Disabled'}`);
+        
+        // 켜지는 시점에 현재 에디터 위치 즉시 브로드캐스트
+        if (enabled && this.isHost) {
+            const editor = vscode.window.activeTextEditor;
+            if (editor) {
+                const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+                if (file && editor.visibleRanges.length > 0) {
+                    const range = editor.visibleRanges[0];
+                    this.sendMessage('FOLLOW_UPDATE', {
+                        fileName: file.name,
+                        startLine: range.start.line,
+                        endLine: range.end.line
+                    });
+                }
+            }
+        }
+        this.pushUIUpdate();
+    }
+
+    /**
+     * 게스트가 호스트의 화면 위치 정보를 수신하여 에디터를 강제로 열고 스크롤합니다.
+     */
+    public async handleFollowUpdate(fileName: string, startLine: number, endLine: number) {
+        try {
+            const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
+            if (!file) return;
+
+            // 1. 문서 열기
+            const doc = await vscode.workspace.openTextDocument(file.path);
+            
+            // 2. 현재 보이는 에디터 중에서 해당 문서를 보여주는 에디터 탐색
+            let targetEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
+            
+            if (!targetEditor) {
+                // 열려있지 않다면 에디터 활성화 (preview: false로 새 탭 고정)
+                targetEditor = await vscode.window.showTextDocument(doc, { 
+                    preview: false, 
+                    viewColumn: vscode.ViewColumn.One 
+                });
+            }
+
+            // 3. 스크롤 동기화
+            if (targetEditor) {
+                const startPos = new vscode.Position(startLine, 0);
+                const endPos = new vscode.Position(endLine, 0);
+                const range = new vscode.Range(startPos, endPos);
+                // AtTop 혹은 Default 스크롤 동작 적용
+                targetEditor.revealRange(range, vscode.TextEditorRevealType.AtTop);
+            }
+        } catch (e) {
+            console.error("Failed to apply follow update:", e);
+        }
+    }
+
+    /**
      * 엔진의 모든 상태를 초기화합니다.
      */
     public reset(skipUIUpdate = false) {
@@ -647,6 +746,8 @@ export class SyncEngine {
         this.myId = ''; 
         this.initialName = ''; 
         this.isSetupMode = false; 
+        this.isFollowMeMode = false; 
+
 
         if (!skipUIUpdate) {
             this.pushUIUpdate();

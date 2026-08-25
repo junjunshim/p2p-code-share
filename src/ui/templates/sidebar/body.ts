@@ -106,6 +106,13 @@ function getActiveView(): string {
                             <option value="all">Show All</option>
                         </select>
                     </div>
+                    <div id="followMeOption" class="option-item hidden">
+                        <div class="option-label">Follow Me (Live Sync)</div>
+                        <label class="switch" title="Toggle Follow Me Mode">
+                            <input type="checkbox" id="followMeCheck" onchange="toggleFollowMe(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
                 </div>
 
                 <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">

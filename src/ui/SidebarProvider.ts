@@ -35,6 +35,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onEngineMessage?: (msg: any) => void; // [추가]
     public onSendChat?: (text: string) => void; // [추가] 채팅 기능
     public onOpenChat?: () => void; // [추가] 채팅방 팝업 열기
+    public onSetFollowMeMode?: (enabled: boolean) => void; // [추가] 팔로우 모드 토글
 
     public get webview(): vscode.Webview | undefined {
         return this._view?.webview;
@@ -96,6 +97,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // [추가] 채팅방 팝업 및 메시지 전송
                 case 'openChat': this.onOpenChat?.(); break;
                 case 'sendChat': this.onSendChat?.(msg.text); break;
+                // [추가] 화면 동기화 팔로우 모드 토글
+                case 'setFollowMeMode': this.onSetFollowMeMode?.(msg.enabled); break;
                 // [추가] P2P 엔진 메시지 라우팅
                 case 'sendData':
                 case 'statusUpdate':
