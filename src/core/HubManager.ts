@@ -84,6 +84,14 @@ export class HubManager {
     }
 
     /**
+     * 특정 피어와의 WebRTC 연결을 해제하도록 엔진에 요청합니다.
+     * @param peerId 대상 피어 ID.
+     */
+    public disconnectPeer(peerId: string) {
+        this.sendToEngine({ type: 'disconnectPeer', peerId });
+    }
+
+    /**
      * 연결에 시그널링 SDP를 적용합니다.
      * @param sdp SDP 객체.
      * @param peerId 대상 피어 ID.

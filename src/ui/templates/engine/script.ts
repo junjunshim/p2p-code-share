@@ -314,6 +314,16 @@ export function getEngineScript(
                     pendingSdpMap[m.newId] = pendingSdpMap[m.oldId];
                     delete peers[m.oldId]; delete pendingSdpMap[m.oldId];
                 }
+                if (m.type === 'disconnectPeer') {
+                    const pId = m.peerId;
+                    if (peers[pId]) {
+                        try { peers[pId].destroy(); } catch(e) {}
+                        delete peers[pId];
+                        delete pendingSdpMap[pId];
+                        if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
+                    }
+                    return;
+                }
                 if (m.type === 'addNewPeer') addPeer(m.peerId, m.initiator); 
                 if (m.type === 'signal' && peers[targetId]) peers[targetId].signal(m.sdp); 
                 if (m.type === 'peerData') {

@@ -118,9 +118,8 @@ export class ParticipantManager {
         // 요청 목록에서 제거
         this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
         
-        // 승인 메시지 전송 및 피어 ID 할당
+        // 승인 메시지 전송
         this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
-        this.engine.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
         
         this.engine.pushUIUpdate();
     }
@@ -137,6 +136,9 @@ export class ParticipantManager {
         
         // 거절 메시지 전송
         this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: false, reason: '호스트가 요청을 거절했습니다.' });
+        
+        // WebRTC 피어 연결 해제
+        this.engine.hub.disconnectPeer(peerId);
         
         this.engine.pushUIUpdate();
     }
@@ -317,6 +319,9 @@ export class ParticipantManager {
         // 퇴장 메시지 전송
         this.engine.sendMessageToPeer(peerId, 'KICKED', { reason: '호스트에 의해 방에서 퇴장되었습니다.' });
 
+        // 엔진 레벨에서 WebRTC 피어 연결 해제
+        this.engine.hub.disconnectPeer(peerId);
+
         // 로컬에서 즉시 연결 해제 처리
         this.handlePeerDisconnect(peerId);
     }
@@ -396,9 +401,13 @@ export class ParticipantManager {
                 this.engine.isConnected = true;
                 this.isAutoJoin = false;
                 this.engine.updateStatus('Connected');
+                this.engine.pushUIUpdate();
             } else {
                 vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
                 this.engine.reset();
+                this.engine.hub.dispose();
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
             }
         }
     }
@@ -406,10 +415,20 @@ export class ParticipantManager {
     /**
      * [추가] 강제 퇴장 처리 (게스트 전용)
      */
-    public handleKicked(msg: any) {
+    public async handleKicked(msg: any) {
         if (!this.engine.isHost) {
             vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
+
+            // 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
+            const filesToClean = [...this.engine.fileStorageManager.sharedFiles];
+            for (const file of filesToClean) {
+                await this.engine.fileStorageManager.handleRemoteStop(file.name);
+            }
+
             this.engine.reset();
+            this.engine.hub.dispose();
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
         }
     }
 

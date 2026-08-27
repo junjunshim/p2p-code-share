@@ -166,7 +166,7 @@ export class SyncEngine {
                         this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
                         if (this.isHost) {
                             const isAutoJoining = this.participantManager.joinRequests.some(r => r.peerId === peerId);
-                            if (!isAutoJoining) {
+                            if (!isAutoJoining && !this.roomName) {
                                 this.participantManager.handleGuestJoin(msg, peerId);
                                 this.updateStatus('Connected');
                             }
@@ -270,9 +270,10 @@ export class SyncEngine {
                 this.participantManager.pendingJoinRequest = null;
                 // 호스트에게 요청을 정상 송신했으므로 초기 연결 타임아웃 해제
                 this.participantManager.clearJoinTimeout();
+            } else if (!this.participantManager.isAutoJoin && !this.isConnected) {
+                this.sendMessage('GUEST_JOIN', { name: this.myName }); 
             }
             
-            this.sendMessage('GUEST_JOIN', { name: this.myName }); 
             this.pushUIUpdate();
         }
     }
