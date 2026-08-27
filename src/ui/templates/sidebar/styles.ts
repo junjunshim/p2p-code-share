@@ -482,5 +482,70 @@ export function getSidebarStyles(): string {
             justify-content: center;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
         }
+
+        /* 방 생성 전 설명 아코디언 스타일 */
+        .desc-accordion {
+            margin-top: 14px;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .desc-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-sideBarSectionHeader-background, rgba(255, 255, 255, 0.05));
+            color: var(--vscode-sideBarSectionHeader-foreground, #cccccc);
+            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.1));
+            border-radius: 4px;
+            padding: 8px 10px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .desc-header:hover {
+            background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.1));
+            border-color: var(--vscode-focusBorder, rgba(255, 255, 255, 0.2));
+        }
+        .desc-header .arrow-icon {
+            transition: transform 0.2s ease;
+        }
+        .desc-header.collapsed .arrow-icon {
+            transform: rotate(-90deg);
+        }
+        .desc-content {
+            max-height: 0;
+            overflow: hidden;
+            opacity: 0;
+            transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin-top 0.2s ease;
+            margin-top: 0;
+        }
+        .desc-content.expanded {
+            max-height: 500px;
+            opacity: 1;
+            margin-top: 6px;
+        }
+        .desc-list {
+            list-style-type: disc;
+            padding: 10px 14px 10px 26px;
+            margin: 0;
+            background: var(--vscode-welcomePage-tileBackground, rgba(255, 255, 255, 0.03));
+            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
+            border-radius: 4px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--vscode-descriptionForeground, #a0a0a0);
+        }
+        .desc-list li {
+            margin-bottom: 6px;
+        }
+        .desc-list li:last-child {
+            margin-bottom: 0;
+        }
+        .desc-list strong {
+            color: var(--vscode-foreground, #e0e0e0);
+        }
     `;
 }

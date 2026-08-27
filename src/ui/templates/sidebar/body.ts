@@ -41,6 +41,20 @@ function getSetupView(): string {
                         <span style="display: inline-block; animation: blink 1s infinite;">📡</span> Connecting to server...
                     </div>
                     <button id="btnCancelHost" onclick="goBack()" class="secondary-button">Cancel</button>
+                    <div class="desc-accordion">
+                        <div id="hostDescHeader" class="desc-header collapsed" onclick="toggleHostDesc()">
+                            <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                            <span>Description</span>
+                        </div>
+                        <div id="hostDescContent" class="desc-content">
+                            <ul class="desc-list">
+                                <li><strong>방 이름 중복 주의:</strong> 다른 사용자가 이미 사용 중인 방 이름을 입력하면 자동 연결 기능이 비활성화되며, 수동 SDP 복사 방식으로 연결해야 합니다.</li>
+                                <li><strong>참여자 승인 관리:</strong> 게스트가 방 입장을 요청하면 호스트 승인 후 안전하게 참가자로 등록됩니다.</li>
+                                <li><strong>파일 공유 및 권한 제어:</strong> 호스트는 파일별로 읽기/쓰기 권한을 자유롭게 지정하거나 담당자를 설정할 수 있습니다.</li>
+                                <li><strong>연결 소요 시간:</strong> 네트워크 및 시그널링 서버 상태에 따라 초기 연결에 수 초가 소요될 수 있습니다.</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
                 <div id="guestForm" class="hidden">
                     <p class="room-label">Enter Room Name (to join automatically)</p>

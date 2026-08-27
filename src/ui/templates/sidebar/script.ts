@@ -76,6 +76,14 @@ export function getSidebarScript(): string {
         function showHostForm() { 
             const rnEl = document.getElementById('setupRoomName');
             if (rnEl) rnEl.value = '';
+            
+            const header = document.getElementById('hostDescHeader');
+            const content = document.getElementById('hostDescContent');
+            if (header && content) {
+                content.classList.remove('expanded');
+                header.classList.add('collapsed');
+            }
+
             setVisible('hostForm', true);
             setVisible('startButtons', false);
         }
@@ -91,6 +99,23 @@ export function getSidebarScript(): string {
             setVisible('startButtons', false);
         }
         /**
+         * 방 생성 전 안내 설명 아코디언을 토글합니다.
+         */
+        function toggleHostDesc() {
+            const header = document.getElementById('hostDescHeader');
+            const content = document.getElementById('hostDescContent');
+            if (header && content) {
+                const isExpanded = content.classList.contains('expanded');
+                if (isExpanded) {
+                    content.classList.remove('expanded');
+                    header.classList.add('collapsed');
+                } else {
+                    content.classList.add('expanded');
+                    header.classList.remove('collapsed');
+                }
+            }
+        }
+        /**
          * 입력 폼들과 진행 상태를 기본 상태로 되돌립니다.
          */
         function resetForms() {
@@ -104,6 +129,13 @@ export function getSidebarScript(): string {
             if (setupRn) setupRn.value = '';
             if (joinRn) joinRn.value = '';
             if (joinUn) joinUn.value = '';
+
+            const header = document.getElementById('hostDescHeader');
+            const content = document.getElementById('hostDescContent');
+            if (header && content) {
+                content.classList.remove('expanded');
+                header.classList.add('collapsed');
+            }
 
             ['btnStartHost', 'btnJoinAuto', 'btnJoinManual', 'btnCancelHost', 'btnCancelGuest'].forEach(id => setDisabled(id, false));
             ['hostLoading', 'guestLoading'].forEach(id => setVisible(id, false));
