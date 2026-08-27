@@ -254,8 +254,11 @@ export class SyncEngine {
             this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
             const oldId = this.myId || 'default';
             this.myId = msg.peerId;
-            this.myName = msg.peerId; 
-            this.initialName = this.myId; 
+            const requestedName = (this.participantManager.pendingJoinRequest && this.participantManager.pendingJoinRequest.userName) 
+                ? this.participantManager.pendingJoinRequest.userName 
+                : (this.myName || this.myId);
+            this.myName = requestedName;
+            this.initialName = this.myName; 
             this.fileStorageManager.isStorageInitialized = false; 
             this.fileStorageManager.initializeStorage(); 
             
@@ -264,8 +267,8 @@ export class SyncEngine {
             
             if (this.participantManager.isAutoJoin && this.participantManager.pendingJoinRequest) {
                 this.sendMessage('JOIN_REQUEST', { 
-                    name: this.myId, 
-                    description: this.participantManager.pendingJoinRequest.description 
+                    name: this.myName, 
+                    peerId: this.myId 
                 });
                 this.participantManager.pendingJoinRequest = null;
                 // 호스트에게 요청을 정상 송신했으므로 초기 연결 타임아웃 해제
@@ -587,8 +590,8 @@ export class SyncEngine {
     public inviteGuest(isSilent: boolean = false) {
         this.participantManager.inviteGuest(isSilent);
     }
-    public async sendJoinRequest(roomName: string, description: string) {
-        await this.participantManager.sendJoinRequest(roomName, description);
+    public async sendJoinRequest(roomName: string, userName: string) {
+        await this.participantManager.sendJoinRequest(roomName, userName);
     }
     public approveRequest(peerId: string) {
         this.participantManager.approveRequest(peerId);

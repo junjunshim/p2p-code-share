@@ -16,7 +16,7 @@ import { getSidebarTemplate } from '../ui/templates';
 export class SidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     public onInitPeer?: (initiator: boolean, roomName: string) => void;
-    public onJoinRoom?: (roomName: string, description: string) => void; // [추가]
+    public onJoinRoom?: (roomName: string, userName: string) => void; // [추가]
     public onInviteGuest?: () => void;
     public onReady?: () => void;
     public onSignal?: (sdp: any, peerId?: string) => void;
@@ -67,7 +67,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // 피어 초기화 요청
                 case 'initPeer': this.onInitPeer?.(msg.initiator, msg.roomName); break;
                 // [추가] 방 참여 요청
-                case 'joinRoom': this.onJoinRoom?.(msg.roomName, msg.description); break;
+                case 'joinRoom': this.onJoinRoom?.(msg.roomName, msg.userName); break;
                 // 게스트 초대 동작
                 case 'inviteGuest': this.onInviteGuest?.(); break;
                 // 시그널링 데이터

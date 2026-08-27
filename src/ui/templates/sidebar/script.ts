@@ -51,15 +51,6 @@ export function getSidebarScript(): string {
         }
 
         /**
-         * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
-         */
-        function showHostForm() { 
-            const hf = document.getElementById('hostForm');
-            const sb = document.getElementById('startButtons');
-            if (hf) hf.classList.remove('hidden'); 
-            if (sb) sb.classList.add('hidden'); 
-        }
-        /**
          * DOM 요소의 표시/숨김 상태를 토글하는 헬퍼 함수입니다.
          */
         function setVisible(id, visible) {
@@ -76,27 +67,11 @@ export function getSidebarScript(): string {
         }
 
         /**
-         * 요청 창의 표시 상태를 토글합니다.
-         */
-        function toggleRequests() {
-            showingRequests = !showingRequests;
-            setVisible('roomInfoArea', !showingRequests);
-            setVisible('requestsArea', showingRequests);
-        }
-
-        /**
-         * 게스트의 참가 요청을 승인합니다.
-         */
-        function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
-        /**
-         * 게스트의 참가 요청을 거절합니다.
-         */
-        function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
-
-        /**
          * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
          */
         function showHostForm() { 
+            const rnEl = document.getElementById('setupRoomName');
+            if (rnEl) rnEl.value = '';
             setVisible('hostForm', true);
             setVisible('startButtons', false);
         }
@@ -104,6 +79,10 @@ export function getSidebarScript(): string {
          * 방 참가 폼을 보여주고 시작 버튼을 숨깁니다.
          */
         function showGuestForm() { 
+            const rnEl = document.getElementById('joinRoomName');
+            const unEl = document.getElementById('joinUserName');
+            if (rnEl) rnEl.value = '';
+            if (unEl) unEl.value = '';
             setVisible('guestForm', true);
             setVisible('startButtons', false);
         }
@@ -115,6 +94,13 @@ export function getSidebarScript(): string {
             setVisible('guestForm', false);
             setVisible('startButtons', true);
             
+            const setupRn = document.getElementById('setupRoomName');
+            const joinRn = document.getElementById('joinRoomName');
+            const joinUn = document.getElementById('joinUserName');
+            if (setupRn) setupRn.value = '';
+            if (joinRn) joinRn.value = '';
+            if (joinUn) joinUn.value = '';
+
             ['btnStartHost', 'btnJoinAuto', 'btnJoinManual', 'btnCancelHost', 'btnCancelGuest'].forEach(id => setDisabled(id, false));
             ['hostLoading', 'guestLoading'].forEach(id => setVisible(id, false));
         }
@@ -125,7 +111,7 @@ export function getSidebarScript(): string {
         function init(i) { 
             try {
                 let rn = '';
-                let desc = '';
+                let un = '';
                 if(i) {
                     const rnEl = document.getElementById('setupRoomName');
                     rn = rnEl ? rnEl.value.trim() : '';
@@ -135,16 +121,17 @@ export function getSidebarScript(): string {
                     setVisible('hostLoading', true);
                 } else {
                     const rnEl = document.getElementById('joinRoomName');
-                    const descEl = document.getElementById('joinDescription');
+                    const unEl = document.getElementById('joinUserName');
                     rn = rnEl ? rnEl.value.trim() : '';
-                    desc = descEl ? descEl.value.trim() : '';
+                    un = unEl ? unEl.value.trim() : '';
                     if (!rn) { alert('Please enter the host room name!'); return; }
+                    if (!un) { alert('Please enter your name!'); return; }
                     setDisabled('btnJoinAuto', true);
                     setDisabled('btnJoinManual', true);
                     const jrt = document.getElementById('joiningRoomText');
                     if (jrt) jrt.innerText = '"' + rn + '"';
                     setVisible('guestLoading', true);
-                    vscode.postMessage({ type: 'joinRoom', roomName: rn, description: desc });
+                    vscode.postMessage({ type: 'joinRoom', roomName: rn, userName: un });
                     return; 
                 }
                 const apid = document.getElementById('activePeerId');
@@ -283,7 +270,7 @@ export function getSidebarScript(): string {
                                             '</svg>' +
                                             '<span class="request-name">' + req.name + '</span>' +
                                          '</div>' +
-                                         '<div class="request-desc">' + (req.description || '(No description)') + '</div>' +
+                                         '<div class="request-desc" style="font-size: 11px; opacity: 0.75; margin: 4px 0 6px 0;">ID: ' + req.peerId + '</div>' +
                                          '<div class="request-actions">' +
                                             '<button class="approve-btn" onclick="approve(\\\'' + req.peerId + '\\\')">Approve</button>' +
                                             '<button class="reject-btn" onclick="reject(\\\'' + req.peerId + '\\\')">Reject</button>' +

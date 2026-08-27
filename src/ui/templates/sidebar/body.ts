@@ -45,8 +45,8 @@ function getSetupView(): string {
                 <div id="guestForm" class="hidden">
                     <p class="room-label">Enter Room Name (to join automatically)</p>
                     <input type="text" id="joinRoomName" placeholder="Enter Host's Room Name">
-                    <p class="room-label">Purpose of Join (Description for Host)</p>
-                    <textarea id="joinDescription" placeholder="Hi! I want to help with the UI debugging..."></textarea>
+                    <p class="room-label">Your Name</p>
+                    <input type="text" id="joinUserName" placeholder="Enter your name">
                     <button id="btnJoinAuto" onclick="init(false)" style="background: var(--vscode-statusBarItem-remoteBackground); color: white;">JOIN AUTOMATICALLY</button>
                     <div id="guestLoading" class="hidden" style="text-align: center; font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 10px;">
                         <span style="display: inline-block; animation: blink 1s infinite;">📡 Waiting for Approval </span> <span id="joiningRoomText"></span>

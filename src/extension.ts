@@ -71,10 +71,10 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // [추가] 방 참여 요청 처리
-    sidebar.onJoinRoom = (roomName, description) => {
+    sidebar.onJoinRoom = (roomName, userName) => {
         hub.dispose();
         engine.reset(true);
-        engine.sendJoinRequest(roomName, description);
+        engine.sendJoinRequest(roomName, userName);
     };
 
     // P2P 엔진 메시지 수신 연동

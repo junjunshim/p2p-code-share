@@ -15,7 +15,7 @@ export class ParticipantManager {
     public joinRequests: any[] = [];
     public pendingInvites = new Set<string>();
     public isAutoJoin = false;
-    public pendingJoinRequest: { roomName: string, description: string } | null = null;
+    public pendingJoinRequest: { roomName: string, userName: string } | null = null;
     private joinTimeout?: NodeJS.Timeout;
 
     constructor(private engine: SyncEngine) {}
@@ -67,13 +67,14 @@ export class ParticipantManager {
     /**
      * 방 참여 요청을 보냅니다. (게스트용)
      * @param roomName 방 이름.
-     * @param description 참여 목적 설명.
+     * @param userName 사용자 이름.
      */
-    public async sendJoinRequest(roomName: string, description: string) {
+    public async sendJoinRequest(roomName: string, userName: string) {
         this.engine.roomName = roomName;
+        this.engine.myName = userName || '';
         this.engine.isSetupMode = false;
         this.isAutoJoin = true; // [추가] 자동 참여 모드 설정
-        this.pendingJoinRequest = { roomName, description }; // 요청 큐에 저장
+        this.pendingJoinRequest = { roomName, userName }; // 요청 큐에 저장
         this.engine.pushUIUpdate();
 
         // 15초 내에 연결 단계가 완료되지 않으면 에러 및 리셋 처리
@@ -380,13 +381,13 @@ export class ParticipantManager {
      */
     public handleJoinRequest(msg: any, peerId: string) {
         if (this.engine.isHost) {
+            const guestName = msg.name || peerId;
             this.joinRequests.push({
                 peerId,
-                name: msg.name || peerId,
-                description: msg.description || '',
+                name: guestName,
                 timestamp: Date.now()
             });
-            vscode.window.showInformationMessage(`방 참여 요청: ${msg.name || peerId}`);
+            vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
             this.engine.pushUIUpdate();
         }
     }
