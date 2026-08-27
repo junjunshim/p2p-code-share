@@ -596,6 +596,9 @@ export class SyncEngine {
     public approveRequest(peerId: string) {
         this.participantManager.approveRequest(peerId);
     }
+    public approveAllRequests() {
+        this.participantManager.approveAllRequests();
+    }
     public rejectRequest(peerId: string) {
         this.participantManager.rejectRequest(peerId);
     }

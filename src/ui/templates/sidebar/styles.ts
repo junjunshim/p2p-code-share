@@ -6,15 +6,23 @@
 export function getSidebarStyles(): string {
     return `
         * { box-sizing: border-box; }
-        body { background-color: transparent; font-family: sans-serif; padding: 15px; color: var(--vscode-foreground); line-height: 1.4; }
+        body { 
+            background-color: transparent; 
+            font-family: sans-serif; 
+            padding: 15px; 
+            color: var(--vscode-foreground); 
+            line-height: 1.4; 
+            user-select: none; 
+            -webkit-user-select: none; 
+        }
         .hidden { display: none !important; }
-        button { width: 100%; margin-bottom: 10px; padding: 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; font-weight: 600; font-size: 13px; transition: background 0.2s; }
+        button { width: 100%; margin-bottom: 10px; padding: 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; font-weight: 600; font-size: 13px; transition: background 0.2s; user-select: none; -webkit-user-select: none; }
         button:hover { background: var(--vscode-button-hoverBackground); }
-        .secondary-button { background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-button-background); margin-top: 5px; opacity: 0.8; width: 100%; padding: 10px; cursor: pointer; border-radius: 4px; }
+        .secondary-button { background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-button-background); margin-top: 5px; opacity: 0.8; width: 100%; padding: 10px; cursor: pointer; border-radius: 4px; user-select: none; -webkit-user-select: none; }
         .secondary-button:disabled { opacity: 0.4; cursor: not-allowed; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        textarea { width: 100%; height: 80px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; font-family: monospace; font-size: 11px; }
-        input { width: 100%; padding: 10px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
+        textarea { width: 100%; height: 80px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; font-family: monospace; font-size: 11px; user-select: text; -webkit-user-select: text; }
+        input { width: 100%; padding: 10px; margin-bottom: 12px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; user-select: text; -webkit-user-select: text; }
         .badge { 
             width: 100%;
             justify-content: center;

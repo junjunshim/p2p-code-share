@@ -126,6 +126,23 @@ export class ParticipantManager {
     }
 
     /**
+     * 모든 대기 중인 방 참여 요청을 일괄 승인합니다. (호스트용)
+     */
+    public approveAllRequests() {
+        if (!this.engine.isHost || this.joinRequests.length === 0) return;
+
+        const requestsToApprove = [...this.joinRequests];
+        this.joinRequests = [];
+
+        for (const req of requestsToApprove) {
+            this.handleGuestJoin({ name: req.name }, req.peerId);
+            this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
+        }
+
+        this.engine.pushUIUpdate();
+    }
+
+    /**
      * 방 참여 요청을 거절합니다. (호스트용)
      * @param peerId 거절할 피어 ID.
      */

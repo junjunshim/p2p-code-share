@@ -145,15 +145,20 @@ function getActiveView(): string {
                 <div id="decorations" class="accordion-content expanded"></div>
             </div>
             <div id="requestsArea" class="hidden">
-                <div class="accordion-header">
-                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
-                    <span>Join Requests</span>
-                    <span onclick="toggleRequests()" style="margin-left: auto;cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                            <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
-                        </svg>
-                        Back
-                    </span>
+                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                        <span>Join Requests</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span id="btnApproveAll" class="invite-btn" onclick="approveAll()" title="Approve All Requests" style="font-size: 11px; padding: 2px 6px; background: #28a745; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center;">Approve All</span>
+                        <span onclick="toggleRequests()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                                <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                            </svg>
+                            Back
+                        </span>
+                    </div>
                 </div>
                 <div id="requestsList"></div>
             </div>

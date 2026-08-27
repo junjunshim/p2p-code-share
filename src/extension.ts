@@ -121,6 +121,11 @@ export function activate(context: vscode.ExtensionContext) {
         engine.approveRequest(peerId);
     };
 
+    // [추가] 일괄 승인 처리
+    sidebar.onApproveAllRequests = () => {
+        engine.approveAllRequests();
+    };
+
     // [추가] 거절 처리
     sidebar.onRejectRequest = (peerId) => {
         engine.rejectRequest(peerId);

@@ -32,6 +32,10 @@ export function getSidebarScript(): string {
          */
         function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
         /**
+         * 모든 대기 중인 게스트 참가 요청을 일괄 승인합니다.
+         */
+        function approveAll() { vscode.postMessage({ type: 'approveAllRequests' }); }
+        /**
          * 게스트의 참가 요청을 거절합니다.
          */
         function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
