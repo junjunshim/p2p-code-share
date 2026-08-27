@@ -46,6 +46,14 @@ export function getLanguage(fileName: string): string {
         '.css': 'css',
         '.json': 'json'
     };
-    // 언어를 반환하거나 기본값으로 일반 텍스트를 반환합니다
     return map[ext] || 'plaintext';
+}
+
+export function isPathEqual(p1?: string, p2?: string): boolean {
+    if (!p1 || !p2) return false;
+    return path.normalize(p1).toLowerCase() === path.normalize(p2).toLowerCase();
+}
+
+export function normalizePath(p: string): string {
+    return path.normalize(p).toLowerCase();
 }

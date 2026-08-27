@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import { HubManager } from './HubManager';
 import { SharedFile, P2PMessage, PeerPermission, FileDecoration, ChatMessage } from '../types';
 import { ChatPanel } from '../ui/ChatPanel';
+import { isPathEqual } from '../utils/helpers';
 
 import { FileStorageManager } from './sync/FileStorageManager';
 import { ParticipantManager } from './sync/ParticipantManager';
@@ -39,6 +40,12 @@ export class SyncEngine {
     public isSetupMode = false; 
     public isConnected = false; 
     public connectionType = 'Direct';
+
+    // Typing Lock: 한 쪽이 타이핑 중일 때 상대방 입력 차단
+    // remoteTypingLocked: 원격 사용자가 타이핑 중 → 내 입력 차단
+    private remoteTypingLocked = new Map<string, boolean>();
+    // localTypingUnlockTimers: 내 타이핑 멈추면 300ms 후 TYPING_UNLOCK 전송
+    private localTypingUnlockTimers = new Map<string, NodeJS.Timeout>();
 
     // 기존 속성과의 하위 호환성 매핑 (Getter/Setter)
     public get sharedFiles(): SharedFile[] {
@@ -109,6 +116,32 @@ export class SyncEngine {
                             }
                         }
                         break;
+                    case 'TYPING_LOCK':
+                        // 원격 사용자가 타이핑 시작 → 내 입력 차단 + 에디터 읽기 전용
+                        this.remoteTypingLocked.set(msg.fileName, true);
+                        this.setEditorReadonly(msg.fileName, true);
+                        if (this.isHost) {
+                            Object.keys(this.participantManager.participants).forEach(pId => {
+                                if (pId !== 'host' && pId !== peerId) {
+                                    this.sendMessageToPeer(pId, 'TYPING_LOCK', msg);
+                                }
+                            });
+                        }
+                        break;
+                    case 'TYPING_UNLOCK':
+                        // 원격 사용자가 타이핑 멈춤 → 쓰기 권한이 있는 경우에만 에디터 쓰기 허용
+                        this.remoteTypingLocked.set(msg.fileName, false);
+                        if (this.participantManager.canIEdit(msg.fileName)) {
+                            this.setEditorReadonly(msg.fileName, false);
+                        }
+                        if (this.isHost) {
+                            Object.keys(this.participantManager.participants).forEach(pId => {
+                                if (pId !== 'host' && pId !== peerId) {
+                                    this.sendMessageToPeer(pId, 'TYPING_UNLOCK', msg);
+                                }
+                            });
+                        }
+                        break;
                     case 'FOLLOW_UPDATE':
                         // 게스트가 호스트의 화면 위치를 추적하여 동기화
                         if (!this.isHost) {
@@ -116,14 +149,19 @@ export class SyncEngine {
                         }
                         break;
                     case 'INIT_SNAPSHOT': 
-                        if (!this.fileStorageManager.isStorageInitialized) {
-                            this.fileStorageManager.initializeStorage();
-                        }
-                        await this.documentSyncManager.handleGuestInit(msg); 
+                        await this.fileStorageManager.handleGuestInitSnapshot(msg); 
                         break;
-                    case 'YJS_SYNC_STEP_1': this.documentSyncManager.handleYjsSyncStep1(msg); break;
-                    case 'YJS_SYNC_STEP_2': await this.documentSyncManager.handleYjsSyncStep2(msg); break;
-                    case 'YJS_UPDATE': await this.documentSyncManager.handleYjsUpdate(msg); break;
+                    case 'YJS_UPDATE':
+                        await this.documentSyncManager.handleYjsUpdate(msg);
+                        if (this.isHost) {
+                            // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외)
+                            Object.keys(this.participantManager.participants).forEach(pId => {
+                                if (pId !== 'host' && pId !== peerId) {
+                                    this.sendMessageToPeer(pId, 'YJS_UPDATE', msg);
+                                }
+                            });
+                        }
+                        break;
                     case 'GUEST_JOIN': 
                         this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
                         if (this.isHost) {
@@ -293,7 +331,7 @@ export class SyncEngine {
 
             // [추가] 호스트 활성 탭 전환 시 화면 추적 동기화
             if (this.isHost && this.isFollowMeMode) {
-                const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+                const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
                 if (file && editor.visibleRanges.length > 0) {
                     const range = editor.visibleRanges[0];
                     this.sendMessage('FOLLOW_UPDATE', {
@@ -305,7 +343,7 @@ export class SyncEngine {
             }
 
             if (this.isHost) return;
-            const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
             if (file) {
                 const canEdit = this.participantManager.canIEdit(file.name);
                 await this.fileStorageManager.applyEditorReadonlyState(editor, !canEdit);
@@ -315,7 +353,7 @@ export class SyncEngine {
         // [추가] 호스트 스크롤 변경 시 화면 추적 동기화
         vscode.window.onDidChangeTextEditorVisibleRanges(e => {
             if (this.isHost && this.isFollowMeMode) {
-                const file = this.fileStorageManager.sharedFiles.find(f => f.path === e.textEditor.document.uri.fsPath);
+                const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.textEditor.document.uri.fsPath));
                 if (file && e.visibleRanges.length > 0) {
                     const range = e.visibleRanges[0];
                     this.sendMessage('FOLLOW_UPDATE', {
@@ -328,10 +366,18 @@ export class SyncEngine {
         });
 
         vscode.workspace.onDidChangeTextDocument(e => {
-            const file = this.fileStorageManager.sharedFiles.find(f => f.path === e.document.uri.fsPath);
+            const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.document.uri.fsPath));
             if (!file) return;
 
-            if (this.documentSyncManager.isApplyingRemoteChange || this.fileStorageManager.closingDocuments.has(e.document.uri.fsPath)) return;
+            // 원격 변경 적용 중이거나 닫히는 중인 문서라면 무시 (에코 방지)
+            if (this.documentSyncManager.isApplyingRemote.get(file.name) || this.fileStorageManager.closingDocuments.has(e.document.uri.fsPath)) {
+                return;
+            }
+
+            // 상대방이 타이핑 중이면 내 입력 무시 (Typing Lock)
+            if (this.remoteTypingLocked.get(file.name)) {
+                return;
+            }
 
             // 권한 체크
             if (!this.participantManager.canIEdit(file.name)) {
@@ -339,32 +385,30 @@ export class SyncEngine {
                 return;
             }
 
-            const ydoc = this.documentSyncManager.yDocs.get(file.name);
-            const ytext = this.documentSyncManager.yTexts.get(file.name);
-            if (!ydoc || !ytext) return;
+            // 내가 타이핑 중임을 상대방에게 알림 (Typing Lock 전송)
+            this.sendMessage('TYPING_LOCK', { fileName: file.name });
+
+            // 300ms 동안 추가 입력이 없으면 TYPING_UNLOCK 전송
+            const existingTimer = this.localTypingUnlockTimers.get(file.name);
+            if (existingTimer) clearTimeout(existingTimer);
+            const unlockTimer = setTimeout(() => {
+                this.localTypingUnlockTimers.delete(file.name);
+                this.sendMessage('TYPING_UNLOCK', { fileName: file.name });
+            }, 300);
+            this.localTypingUnlockTimers.set(file.name, unlockTimer);
 
             // 로컬 에디터 변경 내용을 Yjs 문서에 적용
-            ydoc.transact(() => {
-                for (const change of e.contentChanges) {
-                    const startOffset = change.rangeOffset;
-                    const deleteLength = change.rangeLength;
-                    const newText = change.text;
+            this.documentSyncManager.applyLocalChanges(file.name, e.contentChanges);
 
-                    if (deleteLength > 0) {
-                        ytext.delete(startOffset, deleteLength);
-                    }
-                    if (newText.length > 0) {
-                        ytext.insert(startOffset, newText);
-                    }
-                }
-            });
-
+            // 데코레이션 위치 재계산 및 자가 보정 트리거
             this.decorationManager.debouncedRecalculateDecorations(file.name, file.path);
             this.documentSyncManager.triggerSelfCorrection(file.name, file.path);
+            this.fileStorageManager.scheduleDebouncedSave(file.path);
         });
 
+
         vscode.workspace.onWillSaveTextDocument(e => {
-            if (!this.isHost && this.fileStorageManager.sharedFiles.some(f => f.path === e.document.uri.fsPath)) {
+            if (!this.isHost && this.fileStorageManager.sharedFiles.some(f => isPathEqual(f.path, e.document.uri.fsPath))) {
                 vscode.window.setStatusBarMessage("P2P: Changes synced to Host.", 3000);
             }
         });
@@ -513,7 +557,7 @@ export class SyncEngine {
      */
     public updateActiveFileSharedContext() {
         const editor = vscode.window.activeTextEditor;
-        const isShared = editor ? this.fileStorageManager.sharedFiles.some(f => f.path === editor.document.uri.fsPath) : false;
+        const isShared = editor ? this.fileStorageManager.sharedFiles.some(f => isPathEqual(f.path, editor.document.uri.fsPath)) : false;
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isActiveFileShared', isShared);
     }
 
@@ -672,7 +716,7 @@ export class SyncEngine {
         if (enabled && this.isHost) {
             const editor = vscode.window.activeTextEditor;
             if (editor) {
-                const file = this.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+                const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
                 if (file && editor.visibleRanges.length > 0) {
                     const range = editor.visibleRanges[0];
                     this.sendMessage('FOLLOW_UPDATE', {
@@ -698,7 +742,7 @@ export class SyncEngine {
             const doc = await vscode.workspace.openTextDocument(file.path);
             
             // 2. 현재 보이는 에디터 중에서 해당 문서를 보여주는 에디터 탐색
-            let targetEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === file.path);
+            let targetEditor = vscode.window.visibleTextEditors.find(e => isPathEqual(e.document.uri.fsPath, file.path));
             
             if (!targetEditor) {
                 // 열려있지 않다면 에디터 활성화 (preview: false로 새 탭 고정)
@@ -722,6 +766,43 @@ export class SyncEngine {
     }
 
     /**
+     * 타이핑 락 수신 시 에디터를 읽기 전용(또는 쓰기 가능)으로 전환합니다.
+     * VS Code의 세션 단위 readonly 기능을 활용합니다.
+     */
+    private async setEditorReadonly(fileName: string, readonly: boolean) {
+        const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
+        if (!file) return;
+
+        const editor = vscode.window.visibleTextEditors.find(e =>
+            isPathEqual(e.document.uri.fsPath, file.path)
+        );
+        if (!editor) return;
+
+        try {
+            // 대상 에디터를 일시적으로 활성화해야 명령이 적용됨
+            await vscode.window.showTextDocument(editor.document, {
+                viewColumn: editor.viewColumn,
+                preserveFocus: true,  // 포커스는 현재 위치 유지
+                preview: false,
+            });
+
+            if (readonly) {
+                await vscode.commands.executeCommand(
+                    'workbench.action.files.setActiveEditorReadonlyInSession'
+                );
+                vscode.window.setStatusBarMessage(`🔒 다른 사용자가 ${fileName}을(를) 편집 중...`, 60000);
+            } else {
+                await vscode.commands.executeCommand(
+                    'workbench.action.files.resetActiveEditorReadonlyInSession'
+                );
+                vscode.window.setStatusBarMessage(`✏️ ${fileName} 편집 가능`, 2000);
+            }
+        } catch (e) {
+            // 명령이 지원되지 않는 VS Code 버전이라면 무시 (소프트 실패)
+        }
+    }
+
+    /**
      * 엔진의 모든 상태를 초기화합니다.
      */
     public reset(skipUIUpdate = false) {
@@ -730,7 +811,18 @@ export class SyncEngine {
         this.cursorManager.reset();
         this.decorationManager.reset();
         this.documentSyncManager.reset();
-        
+
+        // 타이핑 락 상태 초기화 - 쓰기 권한이 있는 경우에만 에디터 readonly 해제
+        this.localTypingUnlockTimers.forEach(t => clearTimeout(t));
+        this.localTypingUnlockTimers.clear();
+        this.remoteTypingLocked.forEach((locked, fileName) => {
+            if (locked && this.participantManager.canIEdit(fileName)) {
+                this.setEditorReadonly(fileName, false);
+            }
+        });
+        this.remoteTypingLocked.clear();
+
+
         // 채팅 기록 리셋 및 팝업창 닫기
         this.chatHistory = [];
         if (this.chatPanel) {

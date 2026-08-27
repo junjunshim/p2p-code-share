@@ -5,8 +5,10 @@
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as Y from 'yjs';
 import { PeerPermission } from '../../types';
 import { SyncEngine } from '../SyncEngine';
+import { isPathEqual } from '../../utils/helpers';
 
 export class ParticipantManager {
     public participants: { [key: string]: PeerPermission } = {};
@@ -147,14 +149,19 @@ export class ParticipantManager {
             this.participants[peerId] = { name: msg.name, globalCanEdit: false, filePermissions: {} }; 
             this.broadcastUserList(); 
             
-            // [추가] 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 전송
+            // [추가] 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
             this.engine.fileStorageManager.sharedFiles.forEach(f => {
-                const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === f.path);
-                const content = doc ? doc.getText() : fs.readFileSync(f.path, 'utf8');
+                const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
+                const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
+                const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, f.path));
+                const content = ytext ? ytext.toString() : (doc ? doc.getText() : fs.readFileSync(f.path, 'utf8'));
+                const yjsState = ydoc ? Buffer.from(Y.encodeStateAsUpdate(ydoc)).toString('base64') : undefined;
+
                 // 해당 피어에게만 초기 스냅샷 전송 (파일 목록 생성 및 에디터 열기 유도)
                 this.engine.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { 
                     fileName: f.name, 
                     content,
+                    yjsState,
                     assigneeId: f.assigneeId,
                     assigneeName: f.assigneeName
                 });

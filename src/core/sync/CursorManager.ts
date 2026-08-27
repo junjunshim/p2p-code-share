@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import * as Y from 'yjs';
 import { SharedFile } from '../../types';
 import { SyncEngine } from '../SyncEngine';
+import { isPathEqual } from '../../utils/helpers';
 
 export class CursorManager {
     public cursorFilter: 'host' | 'editable' | 'all' = 'host';
@@ -30,7 +31,7 @@ export class CursorManager {
     }
 
     public sendCursorUpdate(editor: vscode.TextEditor) {
-        const file = this.engine.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+        const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
         if (!file) return;
 
         const ydoc = this.engine.documentSyncManager.yDocs.get(file.name);
@@ -42,9 +43,10 @@ export class CursorManager {
 
         try {
             // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성
-            const startIndex = document.offsetAt(selection.start);
-            const endIndex = document.offsetAt(selection.end);
-            const activeIndex = document.offsetAt(selection.active);
+            const docLen = ytext.length;
+            const startIndex = Math.min(Math.max(0, document.offsetAt(selection.start)), docLen);
+            const endIndex = Math.min(Math.max(0, document.offsetAt(selection.end)), docLen);
+            const activeIndex = Math.min(Math.max(0, document.offsetAt(selection.active)), docLen);
 
             const startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
             const endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));
@@ -102,7 +104,7 @@ export class CursorManager {
         const ytext = this.engine.documentSyncManager.yTexts.get(file.name);
         if (!ydoc || !ytext) return;
 
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === file.path && !d.isClosed);
+        const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, file.path) && !d.isClosed);
         if (!doc) return;
 
         // 해당 파일에 있는 모든 원격 피어 필터링 (커서 필터 적용)
@@ -233,7 +235,7 @@ export class CursorManager {
         const cursorRange = [new vscode.Range(activePos, activePos)];
         const selectionRange = [new vscode.Range(startPos, endPos)];
 
-        const editors = vscode.window.visibleTextEditors.filter(e => e.document.uri.fsPath === file.path);
+        const editors = vscode.window.visibleTextEditors.filter(e => isPathEqual(e.document.uri.fsPath, file.path));
         editors.forEach(editor => {
             editor.setDecorations(cursorDeco, cursorRange);
             editor.setDecorations(selectionDeco, selectionRange);
@@ -246,7 +248,7 @@ export class CursorManager {
     public refreshAllDecorations() {
         const processedFiles = new Set<string>();
         vscode.window.visibleTextEditors.forEach(editor => {
-            const file = this.engine.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
             if (file && !processedFiles.has(file.path)) {
                 this.renderCursorsForFile(file);
                 processedFiles.add(file.path);
@@ -254,6 +256,35 @@ export class CursorManager {
         });
 
         this.engine.decorationManager.refreshDecorationsInEditors();
+    }
+
+    /**
+     * 특정 파일의 커서 데코레이션을 모두 제거합니다.
+     */
+    public clearCursorsForFile(fileName: string) {
+        this.remoteCursorStates.forEach((state, peerId) => {
+            if (state.fileName === fileName) {
+                this.clearCursorForPeer(peerId);
+            }
+        });
+    }
+
+    /**
+     * 특정 피어의 커서 데코레이션을 제거합니다.
+     */
+    public clearCursorForPeer(peerId: string) {
+        const cursorDeco = this.remoteCursorDecorations.get(peerId);
+        if (cursorDeco) {
+            cursorDeco.dispose();
+            this.remoteCursorDecorations.delete(peerId);
+        }
+        const selectionDeco = this.remoteSelectionDecorations.get(peerId);
+        if (selectionDeco) {
+            selectionDeco.dispose();
+            this.remoteSelectionDecorations.delete(peerId);
+        }
+        this.remoteCursorStates.delete(peerId);
+        this.remoteCursorDecoTypes.delete(peerId);
     }
 
     /**
@@ -299,7 +330,7 @@ export class CursorManager {
         this.cursorFilter = filter;
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-            const file = this.engine.fileStorageManager.sharedFiles.find(f => f.path === editor.document.uri.fsPath);
+            const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
             if (file) {
                 this.renderCursorsForFile(file);
             }

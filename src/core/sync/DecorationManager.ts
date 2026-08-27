@@ -8,6 +8,7 @@ import * as crypto from 'crypto';
 import * as Y from 'yjs';
 import { FileDecoration } from '../../types';
 import { SyncEngine } from '../SyncEngine';
+import { isPathEqual } from '../../utils/helpers';
 
 export class DecorationManager {
     public decorations: FileDecoration[] = [];
@@ -56,7 +57,7 @@ export class DecorationManager {
         const ytext = this.engine.documentSyncManager.yTexts.get(fileName);
         if (!ydoc || !ytext) return;
 
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath && !d.isClosed);
+        const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
         if (!doc) return;
 
         let isModified = false;
@@ -108,7 +109,7 @@ export class DecorationManager {
         const visibleEditors = vscode.window.visibleTextEditors;
         visibleEditors.forEach(editor => {
             const document = editor.document;
-            const file = this.engine.fileStorageManager.sharedFiles.find(f => f.path === document.uri.fsPath);
+            const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, document.uri.fsPath));
             if (!file) {
                 // 공유 파일이 아닌 경우 데코레이션 제거
                 editor.setDecorations(this.typoDecoType, []);
@@ -202,7 +203,7 @@ export class DecorationManager {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
         const document = editor.document;
-        const file = this.engine.fileStorageManager.sharedFiles.find(f => f.path === document.uri.fsPath);
+        const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, document.uri.fsPath));
         if (!file) {
             vscode.window.showWarningMessage("공유 중인 파일에서만 데코레이션을 추가할 수 있습니다.");
             return;
@@ -240,8 +241,9 @@ export class DecorationManager {
         let endRel: any = undefined;
 
         if (ydoc && ytext) {
-            const startIndex = document.offsetAt(selection.start);
-            const endIndex = document.offsetAt(selection.end);
+            const docLen = ytext.length;
+            const startIndex = Math.min(Math.max(0, document.offsetAt(selection.start)), docLen);
+            const endIndex = Math.min(Math.max(0, document.offsetAt(selection.end)), docLen);
             startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
             endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));
         }
