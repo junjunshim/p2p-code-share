@@ -177,11 +177,20 @@ export class FileStorageManager {
      * 백그라운드에서 디바운스 방식으로 디스크에 저장합니다 (실시간 타이핑 중 I/O 렉 방지).
      */
     public scheduleDebouncedSave(filePath: string) {
+        // 이미 공유 목록에 없는 파일이거나 닫히는 중인 파일은 저장 예약하지 않음
+        if (!this.sharedFiles.some(f => isPathEqual(f.path, filePath)) || this.closingDocuments.has(filePath)) {
+            return;
+        }
+
         const existing = this.debouncedSaveTimers.get(filePath);
         if (existing) clearTimeout(existing);
 
         const timer = setTimeout(async () => {
             this.debouncedSaveTimers.delete(filePath);
+            // 타이머 실행 시점에도 공유 파일 목록에 존재하는지 재검증
+            if (!this.sharedFiles.some(f => isPathEqual(f.path, filePath)) || this.closingDocuments.has(filePath)) {
+                return;
+            }
             const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
             if (doc && doc.isDirty) {
                 try {
@@ -240,30 +249,83 @@ export class FileStorageManager {
      */
     public async handleRemoteStop(fileName: string) {
         const index = this.sharedFiles.findIndex(f => f.name === fileName);
-        if (index === -1) return;
+        const file = index !== -1 ? this.sharedFiles[index] : undefined;
+        const filePath = file?.path || (this.storagePath ? path.join(this.storagePath, fileName) : '');
 
-        const file = this.sharedFiles[index];
+        // 1. 예약된 디바운스 디스크 저장 타이머 및 타이핑 락 즉시 취소
+        if (filePath) {
+            const timer = this.debouncedSaveTimers.get(filePath);
+            if (timer) {
+                clearTimeout(timer);
+                this.debouncedSaveTimers.delete(filePath);
+            }
+        }
 
-        // 게스트의 경우 탭을 닫고 임시 파일 정리
-        if (!this.engine.isHost) {
-            this.closingDocuments.add(file.path);
+        // 에디터의 readonly 상태(타이핑 락 등) 무조건 해제 (호스트 원본 파일이 readonly로 남는 문제 방지)
+        this.engine.remoteTypingLocked.delete(fileName);
+        const lockTimer = this.engine.localTypingUnlockTimers.get(fileName);
+        if (lockTimer) {
+            clearTimeout(lockTimer);
+            this.engine.localTypingUnlockTimers.delete(fileName);
+        }
+        await this.engine.setEditorReadonly(fileName, false, filePath);
+
+        // 2. 메모리 영역(Yjs Doc, 커서, 데코레이션) 즉시 파기 및 정리 (동기식)
+        this.engine.documentSyncManager.destroyYjsDoc(fileName);
+        this.engine.decorationManager.removeDecorationsForFile(fileName);
+        this.engine.cursorManager.clearCursorsForFile(fileName);
+
+        // 3. 공유 파일 목록에서 즉시 제거하여 이후 모든 이벤트 리스너에서 제외
+        if (index !== -1) {
+            this.sharedFiles.splice(index, 1);
+        }
+
+        // 4. 게스트의 경우 열린 에디터 탭 닫기 및 임시 파일 삭제
+        if (!this.engine.isHost && filePath) {
+            this.closingDocuments.add(filePath);
+
+            // 4-1. 열려있는 문서의 dirty 상태 해제 (저장하여 isDirty=false로 만들어 닫을 때 'Save / Don't Save' 팝업 방지)
+            const matchingDocs = vscode.workspace.textDocuments.filter(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
+            for (const doc of matchingDocs) {
+                if (doc.isDirty) {
+                    try {
+                        await doc.save();
+                    } catch (e) {}
+                }
+            }
+
+            // 4-2. 에디터 탭 닫기 (isDirty=false 상태이므로 팝업 없이 즉시 닫힘)
             const tabsToClose = vscode.window.tabGroups.all
                 .flatMap(g => g.tabs)
-                .filter(t => isPathEqual((t.input as any)?.uri?.fsPath, file.path));
+                .filter(t => {
+                    const uri = (t.input as any)?.uri;
+                    return uri && isPathEqual(uri.fsPath, filePath);
+                });
 
             for (const tab of tabsToClose) {
                 try { await vscode.window.tabGroups.close(tab); } catch (e) {}
             }
 
-            if (fs.existsSync(file.path)) {
-                try { fs.unlinkSync(file.path); } catch (e) {}
+            // 4-3. 에디터가 닫힌 후 디스크 임시 파일 완전히 삭제
+            if (fs.existsSync(filePath)) {
+                try {
+                    fs.unlinkSync(filePath);
+                } catch (e) {
+                    try {
+                        fs.rmSync(filePath, { force: true });
+                    } catch (e2) {}
+                }
             }
+
+            if (file?.source && fs.existsSync(file.source)) {
+                try { fs.unlinkSync(file.source); } catch (e) {}
+            }
+
+            setTimeout(() => {
+                this.closingDocuments.delete(filePath);
+            }, 1000);
         }
 
-        this.sharedFiles.splice(index, 1);
-        this.engine.documentSyncManager.destroyYjsDoc(fileName);
-        this.engine.decorationManager.removeDecorationsForFile(fileName);
-        this.engine.cursorManager.clearCursorsForFile(fileName);
         this.engine.pushUIUpdate();
     }
 

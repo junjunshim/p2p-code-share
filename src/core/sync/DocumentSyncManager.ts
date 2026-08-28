@@ -153,6 +153,9 @@ export class DocumentSyncManager {
      * Yjs의 최신 텍스트와 VS Code 에디터의 텍스트를 최소 범위 교체(Surgical Diff)로 동기화합니다.
      */
     private async applyYjsTextToEditor(fileName: string, filePath: string) {
+        // 이미 공유가 중지되었거나 Yjs 문서가 파기된 경우 즉시 중단
+        if (!this.engine.fileStorageManager.sharedFiles.some(f => f.name === fileName)) return;
+
         const ytext = this.yTexts.get(fileName);
         if (!ytext) return;
         const targetContent = ytext.toString();

@@ -43,9 +43,9 @@ export class SyncEngine {
 
     // Typing Lock: 한 쪽이 타이핑 중일 때 상대방 입력 차단
     // remoteTypingLocked: 원격 사용자가 타이핑 중 → 내 입력 차단
-    private remoteTypingLocked = new Map<string, boolean>();
+    public remoteTypingLocked = new Map<string, boolean>();
     // localTypingUnlockTimers: 내 타이핑 멈추면 300ms 후 TYPING_UNLOCK 전송
-    private localTypingUnlockTimers = new Map<string, NodeJS.Timeout>();
+    public localTypingUnlockTimers = new Map<string, NodeJS.Timeout>();
 
     // 기존 속성과의 하위 호환성 매핑 (Getter/Setter)
     public get sharedFiles(): SharedFile[] {
@@ -779,12 +779,13 @@ export class SyncEngine {
      * 타이핑 락 수신 시 에디터를 읽기 전용(또는 쓰기 가능)으로 전환합니다.
      * VS Code의 세션 단위 readonly 기능을 활용합니다.
      */
-    private async setEditorReadonly(fileName: string, readonly: boolean) {
+    public async setEditorReadonly(fileName: string, readonly: boolean, targetPath?: string) {
         const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
-        if (!file) return;
+        const filePath = targetPath || file?.path;
+        if (!filePath) return;
 
         const editor = vscode.window.visibleTextEditors.find(e =>
-            isPathEqual(e.document.uri.fsPath, file.path)
+            isPathEqual(e.document.uri.fsPath, filePath)
         );
         if (!editor) return;
 
@@ -822,13 +823,19 @@ export class SyncEngine {
         this.decorationManager.reset();
         this.documentSyncManager.reset();
 
-        // 타이핑 락 상태 초기화 - 쓰기 권한이 있는 경우에만 에디터 readonly 해제
+        // 타이핑 락 상태 초기화 - 모든 에디터의 readonly 무조건 해제
         this.localTypingUnlockTimers.forEach(t => clearTimeout(t));
         this.localTypingUnlockTimers.clear();
         this.remoteTypingLocked.forEach((locked, fileName) => {
-            if (locked && this.participantManager.canIEdit(fileName)) {
-                this.setEditorReadonly(fileName, false);
-            }
+            this.setEditorReadonly(fileName, false);
+        });
+        this.remoteTypingLocked.clear();
+
+        // 열려있는 모든 visible 에디터의 readonly 상태 리셋
+        vscode.window.visibleTextEditors.forEach(async editor => {
+            try {
+                await vscode.commands.executeCommand('workbench.action.files.resetActiveEditorReadonlyInSession');
+            } catch (e) {}
         });
         this.remoteTypingLocked.clear();
 
