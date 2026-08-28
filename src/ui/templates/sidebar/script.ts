@@ -36,6 +36,10 @@ export function getSidebarScript(): string {
          */
         function approveAll() { vscode.postMessage({ type: 'approveAllRequests' }); }
         /**
+         * 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)합니다.
+         */
+        function revokeAllPermissions() { vscode.postMessage({ type: 'revokeAllPermissions' }); }
+        /**
          * 게스트의 참가 요청을 거절합니다.
          */
         function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
@@ -410,6 +414,7 @@ export function getSidebarScript(): string {
 
                 const isMeHost = m.participants.myId === 'host';
                 setVisible('btnAddUser', isMeHost);
+                setVisible('btnRevokeAll', isMeHost);
 
                 const cursorFilterSelect = document.getElementById('cursorFilterSelect');
                 if (cursorFilterSelect && m.cursorFilter) {

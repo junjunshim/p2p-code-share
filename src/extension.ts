@@ -165,6 +165,11 @@ export function activate(context: vscode.ExtensionContext) {
         engine.setPeerPermission(peerId, permission);
     };
 
+    // [추가] 모든 게스트 쓰기 권한 일괄 해제
+    sidebar.onRevokeAllPermissions = () => {
+        engine.revokeAllWritePermissions();
+    };
+
     // [추가] 파일 담당자 지정 처리
     sidebar.onAssignFileOwner = (fileName, assigneeId) => {
         engine.setFileAssignee(fileName, assigneeId);

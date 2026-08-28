@@ -214,6 +214,50 @@ export class ParticipantManager {
     }
 
     /**
+     * 호스트가 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)합니다.
+     */
+    public revokeAllWritePermissions() {
+        if (!this.engine.isHost) return;
+
+        let hasGuests = false;
+
+        // 1. 모든 게스트의 권한을 읽기 전용으로 초기화
+        Object.keys(this.participants).forEach(peerId => {
+            if (peerId !== 'host') {
+                hasGuests = true;
+                this.participants[peerId] = {
+                    ...this.participants[peerId],
+                    globalCanEdit: false,
+                    filePermissions: {}
+                };
+                this.engine.sendMessageToPeer(peerId, 'SET_PERMISSION', {
+                    permission: this.participants[peerId]
+                });
+            }
+        });
+
+        // 2. 게스트에게 할당된 파일 담당자도 초기화
+        this.engine.fileStorageManager.sharedFiles.forEach(file => {
+            if (file.assigneeId && file.assigneeId !== 'host') {
+                file.assigneeId = undefined;
+                file.assigneeName = undefined;
+                this.engine.sendMessage('FILE_ASSIGNEE_UPDATE', {
+                    fileName: file.name,
+                    assigneeId: undefined,
+                    assigneeName: undefined
+                });
+            }
+        });
+
+        if (hasGuests) {
+            this.broadcastUserList();
+            this.engine.pushUIUpdate();
+            this.engine.cursorManager.refreshAllDecorations();
+            vscode.window.showInformationMessage("모든 학생의 쓰기 권한이 해제(읽기 전용 전환)되었습니다.");
+        }
+    }
+
+    /**
      * 특정 파일의 담당자를 지정하고 브로드캐스트합니다.
      * @param fileName 대상 파일 이름.
      * @param assigneeId 담당자 피어 ID.

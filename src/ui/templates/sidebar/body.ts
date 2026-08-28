@@ -135,6 +135,10 @@ function getActiveView(): string {
                         <span>Connected Users</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
+                        <span id="btnRevokeAll" class="invite-btn hidden" onclick="revokeAllPermissions()" title="Revoke All Edit Permissions (전체 쓰기 권한 해제)" style="font-size: 11px; padding: 2px 6px; background: #e06c75; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
+                            <span>Lock All</span>
+                        </span>
                         <span id="btnShowRequests" class="invite-btn hidden" onclick="toggleRequests()" title="Join Requests" style="display: inline-flex; align-items: center;">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;">
                                 <path d="M8 16a2 2 0 0 0 1.99-2H6a2 2 0 0 0 2 2zm6-5V7.5a6.03 6.03 0 0 0-5-5.91V1a1 1 0 0 0-2 0v.59A6.03 6.03 0 0 0 2 7.5V11l-1.33 1.33A1 1 0 0 0 1 14h14a1 1 0 0 0 .67-1.67L14 11z"/>

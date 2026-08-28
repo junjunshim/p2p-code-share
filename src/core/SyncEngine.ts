@@ -605,6 +605,9 @@ export class SyncEngine {
     public setPeerPermission(peerId: string, permission: PeerPermission) {
         this.participantManager.setPeerPermission(peerId, permission);
     }
+    public revokeAllWritePermissions() {
+        this.participantManager.revokeAllWritePermissions();
+    }
     public setFileAssignee(fileName: string, assigneeId: string) {
         this.participantManager.setFileAssignee(fileName, assigneeId);
     }
