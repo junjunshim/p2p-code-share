@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { SharedFile } from '../../types';
-import { sanitizePath, ensureDirectory, isPathEqual } from '../../utils/helpers';
+import { sanitizePath, ensureDirectory, isPathEqual, normalizeEOL } from '../../utils/helpers';
 import { SyncEngine } from '../SyncEngine';
 
 export class FileStorageManager {
@@ -78,13 +78,14 @@ export class FileStorageManager {
         };
         this.sharedFiles.push(sharedFile);
 
-        // 3. Yjs Doc 생성 및 초기 상태 인코딩
-        const yjsState = this.engine.documentSyncManager.createDocForHost(fileName, document.getText());
+        // 3. Yjs Doc 생성 및 초기 상태 인코딩 (개행 LF로 정규화)
+        const normalizedContent = normalizeEOL(document.getText());
+        const yjsState = this.engine.documentSyncManager.createDocForHost(fileName, normalizedContent);
 
         // 4. 게스트들에게 초기 파일 스냅샷 브로드캐스트
         this.engine.sendMessage('INIT_SNAPSHOT', {
             fileName,
-            content: document.getText(),
+            content: normalizedContent,
             yjsState,
             assigneeId: undefined,
             assigneeName: undefined
@@ -102,9 +103,10 @@ export class FileStorageManager {
         if (!this.storagePath) return;
 
         const filePath = path.join(this.storagePath, msg.fileName);
+        const normalizedContent = normalizeEOL(msg.content || '');
         
-        // 로컬 임시 파일 작성
-        fs.writeFileSync(filePath, msg.content, 'utf8');
+        // 로컬 임시 파일 작성 (LF 개행 유지)
+        fs.writeFileSync(filePath, normalizedContent, 'utf8');
 
         // 공유 파일 목록에 추가 또는 업데이트
         let file = this.sharedFiles.find(f => f.name === msg.fileName);

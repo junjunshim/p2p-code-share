@@ -57,3 +57,10 @@ export function isPathEqual(p1?: string, p2?: string): boolean {
 export function normalizePath(p: string): string {
     return path.normalize(p).toLowerCase();
 }
+
+/**
+ * 줄바꿈을 LF(\n)로 통일하여 플랫폼/에디터 간 오프셋 불일치를 방지합니다.
+ */
+export function normalizeEOL(text: string): string {
+    return text.replace(/\r\n/g, '\n');
+}

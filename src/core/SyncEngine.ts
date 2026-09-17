@@ -117,30 +117,8 @@ export class SyncEngine {
                         }
                         break;
                     case 'TYPING_LOCK':
-                        // 원격 사용자가 타이핑 시작 → 내 입력 차단 + 에디터 읽기 전용
-                        this.remoteTypingLocked.set(msg.fileName, true);
-                        this.setEditorReadonly(msg.fileName, true);
-                        if (this.isHost) {
-                            Object.keys(this.participantManager.participants).forEach(pId => {
-                                if (pId !== 'host' && pId !== peerId) {
-                                    this.sendMessageToPeer(pId, 'TYPING_LOCK', msg);
-                                }
-                            });
-                        }
-                        break;
                     case 'TYPING_UNLOCK':
-                        // 원격 사용자가 타이핑 멈춤 → 쓰기 권한이 있는 경우에만 에디터 쓰기 허용
-                        this.remoteTypingLocked.set(msg.fileName, false);
-                        if (this.participantManager.canIEdit(msg.fileName)) {
-                            this.setEditorReadonly(msg.fileName, false);
-                        }
-                        if (this.isHost) {
-                            Object.keys(this.participantManager.participants).forEach(pId => {
-                                if (pId !== 'host' && pId !== peerId) {
-                                    this.sendMessageToPeer(pId, 'TYPING_UNLOCK', msg);
-                                }
-                            });
-                        }
+                        // 동시 편집 지원을 위해 타이핑 락을 적용하지 않음 (하위 호환성 유지)
                         break;
                     case 'FOLLOW_UPDATE':
                         // 게스트가 호스트의 화면 위치를 추적하여 동기화
@@ -378,31 +356,20 @@ export class SyncEngine {
                 return;
             }
 
-            // 상대방이 타이핑 중이면 내 입력 무시 (Typing Lock)
-            if (this.remoteTypingLocked.get(file.name)) {
-                return;
-            }
-
             // 권한 체크
             if (!this.participantManager.canIEdit(file.name)) {
                 this.logToUI(`Blocked unauthorized edit on ${file.name}`);
                 return;
             }
 
-            // 내가 타이핑 중임을 상대방에게 알림 (Typing Lock 전송)
-            this.sendMessage('TYPING_LOCK', { fileName: file.name });
-
-            // 300ms 동안 추가 입력이 없으면 TYPING_UNLOCK 전송
-            const existingTimer = this.localTypingUnlockTimers.get(file.name);
-            if (existingTimer) clearTimeout(existingTimer);
-            const unlockTimer = setTimeout(() => {
-                this.localTypingUnlockTimers.delete(file.name);
-                this.sendMessage('TYPING_UNLOCK', { fileName: file.name });
-            }, 300);
-            this.localTypingUnlockTimers.set(file.name, unlockTimer);
-
             // 로컬 에디터 변경 내용을 Yjs 문서에 적용
             this.documentSyncManager.applyLocalChanges(file.name, e.contentChanges);
+
+            // 텍스트 변경 직후 내 커서 위치 즉시 전송 (입력으로 인한 커서 전진 동기화)
+            const activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor && isPathEqual(activeEditor.document.uri.fsPath, file.path)) {
+                this.cursorManager.sendCursorUpdate(activeEditor);
+            }
 
             // 데코레이션 위치 재계산 및 자가 보정 트리거
             this.decorationManager.debouncedRecalculateDecorations(file.name, file.path);
@@ -507,6 +474,23 @@ export class SyncEngine {
         }
         return new vscode.Position(line, character);
     }
+
+    /**
+     * Yjs 텍스트와 vscode.Position(line, character)으로부터 정확한 인덱스를 계산합니다.
+     */
+    public getIndexFromPosition(text: string, position: vscode.Position): number {
+        let currentLine = 0;
+        let index = 0;
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (i === position.line) {
+                return index + Math.min(position.character, lines[i].length);
+            }
+            index += lines[i].length + 1; // +1 for '\n'
+        }
+        return Math.min(index, text.length);
+    }
+
 
     /**
      * UI 웹뷰에 로그를 출력합니다.
