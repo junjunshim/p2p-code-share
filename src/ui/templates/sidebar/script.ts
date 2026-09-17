@@ -436,6 +436,14 @@ export function getSidebarScript(): string {
                     followMeCheck.checked = !!m.isFollowMeMode;
                 }
 
+                // 자동 승인 체크박스 및 가시성 제어
+                setVisible('autoApproveOption', isMeHost);
+                const autoApproveCheck = document.getElementById('autoApproveCheck');
+                if (autoApproveCheck) {
+                    const isAutoApprove = (m.isAutoApprove !== undefined) ? m.isAutoApprove : (m.participants && m.participants.isAutoApprove);
+                    autoApproveCheck.checked = !!isAutoApprove;
+                }
+
                 renderRequests(m);
                 renderUsers(m);
             } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
@@ -844,6 +852,13 @@ export function getSidebarScript(): string {
          */
         function toggleFollowMe(val) {
             vscode.postMessage({ type: 'setFollowMeMode', enabled: val });
+        }
+
+        /**
+         * 자동 승인 모드를 활성화/비활성화합니다.
+         */
+        function toggleAutoApprove(val) {
+            vscode.postMessage({ type: 'setAutoApprove', enabled: val });
         }
 
         vscode.postMessage({ type: 'ready' });

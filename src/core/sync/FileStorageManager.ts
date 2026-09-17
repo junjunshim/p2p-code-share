@@ -54,6 +54,13 @@ export class FileStorageManager {
             }
             sourcePath = editor.document.uri.fsPath;
             document = editor.document;
+
+            // 호스트 에디터의 EOL을 LF로 정규화하여 Yjs와의 오프셋 체계 불일치 방지
+            if (document.eol !== vscode.EndOfLine.LF) {
+                await editor.edit(builder => {
+                    builder.setEndOfLine(vscode.EndOfLine.LF);
+                });
+            }
         }
 
         const fileName = path.basename(sourcePath);

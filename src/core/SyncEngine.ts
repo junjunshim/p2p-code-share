@@ -351,7 +351,7 @@ export class SyncEngine {
             const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.document.uri.fsPath));
             if (!file) return;
 
-            // 원격 변경 적용 중이거나 닫히는 중인 문서라면 무시 (에코 방지)
+            // 원격 변경 적용 중이거나 닫히는 중인 문서라면 무시 (에코 폭주 100% 원천 차단)
             if (this.documentSyncManager.isApplyingRemote.get(file.name) || this.fileStorageManager.closingDocuments.has(e.document.uri.fsPath)) {
                 return;
             }
@@ -362,7 +362,7 @@ export class SyncEngine {
                 return;
             }
 
-            // 로컬 에디터 변경 내용을 Yjs 문서에 적용
+            // 로컬 사용자의 변경 내용만 Yjs 문서에 적용
             this.documentSyncManager.applyLocalChanges(file.name, e.contentChanges);
 
             // 텍스트 변경 직후 내 커서 위치 즉시 전송 (입력으로 인한 커서 전진 동기화)
@@ -535,7 +535,8 @@ export class SyncEngine {
             decorations: visibleDecos,
             cursorFilter: this.cursorManager.cursorFilter,
             unreadChatCount: this.unreadChatCount,
-            isFollowMeMode: this.isFollowMeMode
+            isFollowMeMode: this.isFollowMeMode,
+            isAutoApprove: this.participantManager.isAutoApprove
         });
         this.updateActiveFileSharedContext();
     }
@@ -582,6 +583,12 @@ export class SyncEngine {
     }
     public approveAllRequests() {
         this.participantManager.approveAllRequests();
+    }
+    public setAutoApprove(enabled: boolean) {
+        this.participantManager.setAutoApprove(enabled);
+    }
+    public get isAutoApprove(): boolean {
+        return this.participantManager.isAutoApprove;
     }
     public rejectRequest(peerId: string) {
         this.participantManager.rejectRequest(peerId);

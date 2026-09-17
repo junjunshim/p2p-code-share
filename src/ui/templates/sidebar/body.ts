@@ -127,6 +127,13 @@ function getActiveView(): string {
                             <span class="slider"></span>
                         </label>
                     </div>
+                    <div id="autoApproveOption" class="option-item hidden">
+                        <div class="option-label">Auto-Approve Guests</div>
+                        <label class="switch" title="Toggle Auto-Approve Mode">
+                            <input type="checkbox" id="autoApproveCheck" onchange="toggleAutoApprove(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
                 </div>
 
                 <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">

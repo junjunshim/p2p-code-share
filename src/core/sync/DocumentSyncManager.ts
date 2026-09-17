@@ -13,8 +13,11 @@ export class DocumentSyncManager {
     public yDocs = new Map<string, Y.Doc>();
     public yTexts = new Map<string, Y.Text>();
 
-    // 원격 변경 적용 중 에코 방지 플래그 (파일별 단일 실행 컨텍스트용)
+    // 원격 변경 적용 중 에코 100% 차단 플래그
     public isApplyingRemote = new Map<string, boolean>();
+
+    // 에디터 렌더링 버퍼링(배치 디바운스 30ms) 타이머
+    private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
 
     // 에디터 업데이트 순차 처리 큐 (FIFO Promise Queue)
     private editorUpdateQueues = new Map<string, Promise<void>>();
@@ -101,16 +104,30 @@ export class DocumentSyncManager {
         const ytext = this.yTexts.get(fileName);
         if (!ydoc || !ytext) return;
 
-        // 오프셋 위치가 변경되지 않도록 역순 정렬
-        const sortedChanges = [...contentChanges].sort((a, b) => b.rangeOffset - a.rangeOffset);
+        // 뒤쪽 변경사항부터 적용되도록 역순 정렬 (줄 및 문자 위치 기준)
+        const sortedChanges = [...contentChanges].sort((a, b) => {
+            if (b.range.start.line !== a.range.start.line) {
+                return b.range.start.line - a.range.start.line;
+            }
+            return b.range.start.character - a.range.start.character;
+        });
 
         ydoc.transact(() => {
             for (const change of sortedChanges) {
-                if (change.rangeLength > 0) {
-                    ytext.delete(change.rangeOffset, change.rangeLength);
+                // CRLF 환경에서도 Yjs(LF 기준)와 완벽히 일치하는 시작 인덱스 및 삭제 길이 계산
+                const currentContent = ytext.toString();
+                const startIndex = this.engine.getIndexFromPosition(currentContent, change.range.start);
+                const endIndex = this.engine.getIndexFromPosition(currentContent, change.range.end);
+                const deleteLength = Math.max(0, endIndex - startIndex);
+
+                if (deleteLength > 0) {
+                    ytext.delete(startIndex, deleteLength);
                 }
-                if (change.text.length > 0) {
-                    ytext.insert(change.rangeOffset, change.text);
+
+                // 삽입할 텍스트는 LF로 통일하여 삽입
+                const textToInsert = change.text.replace(/\r\n/g, '\n');
+                if (textToInsert.length > 0) {
+                    ytext.insert(startIndex, textToInsert);
                 }
             }
         }, 'local');
@@ -133,20 +150,36 @@ export class DocumentSyncManager {
 
     /**
      * 원격 변경 사항을 에디터에 순차적으로 적용하기 위한 FIFO 큐입니다.
+     * 연속 입력(폭풍 타이핑) 시 에디터 UI 스레드가 마비되지 않도록 30ms 배치 버퍼링을 적용합니다.
      */
     public queueUpdateEditor(fileName: string): Promise<void> {
         const file = this.engine.fileStorageManager.sharedFiles.find(f => f.name === fileName);
         if (!file) return Promise.resolve();
 
-        const prev = this.editorUpdateQueues.get(fileName) || Promise.resolve();
-        const next = prev.then(async () => {
-            await this.applyYjsTextToEditor(fileName, file.path);
-        }).catch(err => {
-            this.engine.logToUI(`queueUpdateEditor error for ${fileName}: ${err}`);
-        });
+        // 기존 대기 중인 렌더링 타이머가 있다면 리셋 (30ms 내 변경사항들을 하나로 배치 압축)
+        const existingTimer = this.renderDebounceTimers.get(fileName);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
 
-        this.editorUpdateQueues.set(fileName, next);
-        return next;
+        return new Promise<void>(resolve => {
+            const timer = setTimeout(() => {
+                this.renderDebounceTimers.delete(fileName);
+
+                const prev = this.editorUpdateQueues.get(fileName) || Promise.resolve();
+                const next = prev.then(async () => {
+                    await this.applyYjsTextToEditor(fileName, file.path);
+                    resolve();
+                }).catch(err => {
+                    this.engine.logToUI(`queueUpdateEditor error for ${fileName}: ${err}`);
+                    resolve();
+                });
+
+                this.editorUpdateQueues.set(fileName, next);
+            }, 30);
+
+            this.renderDebounceTimers.set(fileName, timer);
+        });
     }
 
     /**
@@ -190,7 +223,7 @@ export class DocumentSyncManager {
         const range = new vscode.Range(doc.positionAt(start), doc.positionAt(oldEnd));
         const replaceText = targetContent.slice(start, newEnd);
 
-        // 에코 방지를 위해 현재 파일에 대해 플래그 설정 (0ms 동기식 락)
+        // 에코 무한 루프 완벽 방지를 위해 원격 변경 적용 중 플래그 설정
         this.isApplyingRemote.set(fileName, true);
         try {
             const edit = new vscode.WorkspaceEdit();
@@ -199,9 +232,9 @@ export class DocumentSyncManager {
         } catch (e) {
             this.engine.logToUI(`applyEdit failed for ${fileName}: ${e}`);
         } finally {
-            // applyEdit 직후 즉시 플래그 해제
             this.isApplyingRemote.set(fileName, false);
             this.engine.decorationManager.debouncedRecalculateDecorations(fileName, filePath);
+            this.engine.cursorManager.refreshAllDecorations();
             this.engine.fileStorageManager.scheduleDebouncedSave(filePath);
         }
     }
@@ -240,6 +273,11 @@ export class DocumentSyncManager {
             clearTimeout(timer);
             this.selfCorrectionTimers.delete(fileName);
         }
+        const renderTimer = this.renderDebounceTimers.get(fileName);
+        if (renderTimer) {
+            clearTimeout(renderTimer);
+            this.renderDebounceTimers.delete(fileName);
+        }
         const ydoc = this.yDocs.get(fileName);
         if (ydoc) {
             ydoc.destroy();
@@ -256,6 +294,8 @@ export class DocumentSyncManager {
     public reset() {
         this.selfCorrectionTimers.forEach(t => clearTimeout(t));
         this.selfCorrectionTimers.clear();
+        this.renderDebounceTimers.forEach(t => clearTimeout(t));
+        this.renderDebounceTimers.clear();
         this.yDocs.forEach(d => d.destroy());
         this.yDocs.clear();
         this.yTexts.clear();

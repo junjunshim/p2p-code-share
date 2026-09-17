@@ -42,11 +42,12 @@ export class CursorManager {
         const document = editor.document;
 
         try {
-            // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성
+            // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성 (LF 기준 정확한 인덱스 산출)
+            const yjsContent = ytext.toString();
             const docLen = ytext.length;
-            const startIndex = Math.min(Math.max(0, document.offsetAt(selection.start)), docLen);
-            const endIndex = Math.min(Math.max(0, document.offsetAt(selection.end)), docLen);
-            const activeIndex = Math.min(Math.max(0, document.offsetAt(selection.active)), docLen);
+            const startIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.start)), docLen);
+            const endIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.end)), docLen);
+            const activeIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.active)), docLen);
 
             const startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
             const endRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, endIndex));

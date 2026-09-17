@@ -15,6 +15,7 @@ export class ParticipantManager {
     public joinRequests: any[] = [];
     public pendingInvites = new Set<string>();
     public isAutoJoin = false;
+    public isAutoApprove = false;
     public pendingJoinRequest: { roomName: string, userName: string } | null = null;
     private joinTimeout?: NodeJS.Timeout;
 
@@ -140,6 +141,20 @@ export class ParticipantManager {
         }
 
         this.engine.pushUIUpdate();
+    }
+
+    /**
+     * 자동 승인 모드를 설정합니다. (호스트용)
+     * 활성화 시 대기 중인 모든 요청을 즉시 일괄 승인합니다.
+     */
+    public setAutoApprove(enabled: boolean) {
+        if (!this.engine.isHost) return;
+        this.isAutoApprove = enabled;
+        if (enabled) {
+            this.approveAllRequests();
+        } else {
+            this.engine.pushUIUpdate();
+        }
     }
 
     /**
@@ -444,13 +459,21 @@ export class ParticipantManager {
     public handleJoinRequest(msg: any, peerId: string) {
         if (this.engine.isHost) {
             const guestName = msg.name || peerId;
-            this.joinRequests.push({
-                peerId,
-                name: guestName,
-                timestamp: Date.now()
-            });
-            vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
-            this.engine.pushUIUpdate();
+            if (this.isAutoApprove) {
+                // 자동 승인 활성화 상태인 경우 즉시 승인 처리
+                this.handleGuestJoin({ name: guestName }, peerId);
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+                vscode.window.showInformationMessage(`방 참여 자동 승인: ${guestName} (${peerId})`);
+                this.engine.pushUIUpdate();
+            } else {
+                this.joinRequests.push({
+                    peerId,
+                    name: guestName,
+                    timestamp: Date.now()
+                });
+                vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
+                this.engine.pushUIUpdate();
+            }
         }
     }
 
@@ -519,6 +542,7 @@ export class ParticipantManager {
         this.joinRequests = [];
         this.pendingInvites.clear();
         this.isAutoJoin = false;
+        this.isAutoApprove = false;
         this.pendingJoinRequest = null;
     }
 }
