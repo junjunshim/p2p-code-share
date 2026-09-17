@@ -40,53 +40,32 @@ export function getSidebarStyles(): string {
             border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.1));
             letter-spacing: 0.5px;
         }
-        .online { 
+        .badge.online { 
             background: rgba(46, 60, 71, 0.7); 
             color: #ffffff;
         }
-        .online::after {
+        .badge.online::after {
             content: '';
             display: inline-block;
             width: 8px;
             height: 8px;
             background-color: #3fb950;
             border-radius: 50%;
-            animation: pulse-green 2s infinite;
-            box-shadow: 0 0 8px rgba(63, 185, 80, 0.8);
+            box-shadow: 0 0 6px rgba(63, 185, 80, 0.7);
         }
-        .reconnecting {
+        .badge.reconnecting {
             background: rgba(180, 110, 20, 0.5);
             color: #ffcc66;
             border-color: rgba(255, 180, 50, 0.3);
         }
-        .reconnecting::after {
+        .badge.reconnecting::after {
             content: '';
             display: inline-block;
             width: 8px;
             height: 8px;
             background-color: #ffaa00;
             border-radius: 50%;
-            animation: pulse-yellow 1.5s infinite;
-            box-shadow: 0 0 8px rgba(255, 170, 0, 0.8);
-        }
-        @keyframes pulse-yellow {
-            0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 170, 0, 0.7); }
-            70% { transform: scale(1.1); box-shadow: 0 0 0 5px rgba(255, 170, 0, 0); }
-            100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 170, 0, 0); }
-        }
-        @keyframes pulse-green {
-            0% {
-                transform: scale(0.9);
-                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.7);
-            }
-            70% {
-                transform: scale(1.1);
-                box-shadow: 0 0 0 5px rgba(63, 185, 80, 0);
-            }
-            100% {
-                transform: scale(0.9);
-                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
-            }
+            box-shadow: 0 0 6px rgba(255, 170, 0, 0.7);
         }
         .room-info { 
             padding: 10px 12px; 
@@ -101,7 +80,9 @@ export function getSidebarStyles(): string {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 8px 10px;
+            height: 36px;
+            box-sizing: border-box;
+            padding: 0 10px;
             background: var(--vscode-welcomePage-tileBackground, rgba(255, 255, 255, 0.03));
             border: 1px solid var(--vscode-widget-border, var(--vscode-divider));
             border-radius: 4px;
@@ -143,6 +124,11 @@ export function getSidebarStyles(): string {
             border-color: var(--vscode-list-hoverBorder, transparent);
         }
         .user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); display: flex; align-items: center; }
+        .user-avatar-wrapper {
+            position: relative;
+            flex-shrink: 0;
+            display: inline-flex;
+        }
         .user-avatar {
             width: 24px;
             height: 24px;
@@ -157,6 +143,24 @@ export function getSidebarStyles(): string {
             text-transform: uppercase;
             flex-shrink: 0;
             border: 1px solid rgba(255,255,255,0.1);
+        }
+        .user-status-dot {
+            position: absolute;
+            bottom: -1px;
+            right: -1px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            border: 1.5px solid var(--vscode-sideBar-background, #1e1e1e);
+            box-sizing: content-box;
+        }
+        .user-status-dot.connected {
+            background-color: #3fb950;
+            box-shadow: 0 0 4px rgba(63, 185, 80, 0.7);
+        }
+        .user-status-dot.reconnecting {
+            background-color: #ffaa00;
+            box-shadow: 0 0 4px rgba(255, 170, 0, 0.7);
         }
         .badge-area { display: flex; justify-content: center; flex-shrink: 0; }
         .action-area { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

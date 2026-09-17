@@ -204,6 +204,17 @@ export class SyncEngine {
                     case 'GUEST_LEAVE':
                         this.handleGuestLeave(msg, peerId);
                         break;
+                    case 'PING':
+                        if (!this.isHost) {
+                            this.sendMessage('PONG', { peerId: this.myId, timestamp: msg.timestamp });
+                        }
+                        break;
+                    case 'PONG':
+                        if (this.isHost) {
+                            const senderId = msg.peerId || peerId;
+                            this.participantManager.handlePong(senderId);
+                        }
+                        break;
                 }
             } catch (e) {}
         };
@@ -431,6 +442,7 @@ export class SyncEngine {
             if (this.roomName && this.roomName !== 'Untitled Room') {
                 this.participantManager.inviteGuest(true);
             }
+            this.participantManager.startPingCheck();
         } else { 
             this.isSetupMode = (this.roomName && this.roomName !== 'Untitled Room') ? false : true; 
             this.hub.createHub(false, this.roomName, 'default'); 
@@ -538,6 +550,7 @@ export class SyncEngine {
             pendingInvites: Array.from(this.participantManager.pendingInvites),
             joinRequests: this.participantManager.joinRequests,
             decorations: visibleDecos,
+            showDecorations: this.decorationManager.showDecorations,
             cursorFilter: this.cursorManager.cursorFilter,
             unreadChatCount: this.unreadChatCount,
             isFollowMeMode: this.isFollowMeMode,
@@ -626,6 +639,9 @@ export class SyncEngine {
     public setCursorFilter(filter: 'host' | 'editable' | 'all') {
         this.cursorManager.setCursorFilter(filter);
     }
+    public setShowDecorations(show: boolean) {
+        this.decorationManager.setShowDecorations(show);
+    }
     public async addDecorationFlow() {
         await this.decorationManager.addDecorationFlow();
     }
@@ -658,16 +674,27 @@ export class SyncEngine {
                 vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
             }
         } else {
-            // 3. 게스트인 경우 호스트에게 퇴장 알림 전송
+            // 3. 게스트인 경우 퇴장 확인 창 표시
+            const answer = await vscode.window.showWarningMessage(
+                "방에서 나가시겠습니까? 공유 중인 로컬 파일이 닫히고 연결이 종료됩니다.",
+                { modal: true },
+                "Yes"
+            );
+            if (answer !== "Yes") return;
+
+            // 호스트에게 퇴장 알림 전송
             this.sendMessage('GUEST_LEAVE', { userId: this.myId });
 
-            // 4. 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
+            // 4. 재연결 타이머 및 유예 상태 즉시 종료
+            this.participantManager.stopGuestReconnectGracePeriod();
+
+            // 5. 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
             const filesToClean = [...this.fileStorageManager.sharedFiles];
             for (const file of filesToClean) {
                 await this.fileStorageManager.handleRemoteStop(file.name);
             }
 
-            // 5. 연결 초기화 및 세션 영구 삭제
+            // 6. 연결 초기화 및 세션 영구 삭제
             await this.sessionRecoveryManager.clearSession();
             this.reset();
             this.hub.dispose();

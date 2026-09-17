@@ -24,6 +24,11 @@ export class ParticipantManager {
     private reconnectRetryTimer?: NodeJS.Timeout;
     private reconnectDeadlineTimer?: NodeJS.Timeout;
 
+    // 실시간 연결 상태 모니터링 (Ping-Pong) 및 재연결 대기 관리
+    private pingTimer?: NodeJS.Timeout;
+    public lastPongTimes = new Map<string, number>();
+    public reconnectStartTimes = new Map<string, number>();
+
     constructor(private engine: SyncEngine) {}
 
     /**
@@ -204,12 +209,16 @@ export class ParticipantManager {
             // 2. 세션 복원 시 기존에 부여되어 있던 참가자 권한 또는 이전 피어 ID의 권한 승계
             const existingPermission = this.participants[peerId] || (oldPeerId ? this.participants[oldPeerId] : undefined);
             this.participants[peerId] = existingPermission 
-                ? { ...existingPermission, name: guestName }
-                : { name: guestName, globalCanEdit: false, filePermissions: {} };
+                ? { ...existingPermission, name: guestName, connectionStatus: 'connected' }
+                : { name: guestName, globalCanEdit: false, filePermissions: {}, connectionStatus: 'connected' };
+            this.lastPongTimes.set(peerId, Date.now());
+            this.reconnectStartTimes.delete(peerId);
 
             // 3. 중복 생성 방지를 위해 이전 피어 ID 정보 정리
             if (oldPeerId && oldPeerId !== peerId) {
                 delete this.participants[oldPeerId];
+                this.lastPongTimes.delete(oldPeerId);
+                this.reconnectStartTimes.delete(oldPeerId);
                 this.engine.cursorManager.clearPeerCursor(oldPeerId);
 
                 // 공유 파일의 담당자 ID를 새 피어 ID로 갱신
@@ -492,6 +501,8 @@ export class ParticipantManager {
                 this.engine.chatPanel?.updateHistory(this.engine.chatHistory, this.engine.myId, this.participants);
 
                 delete this.participants[peerId];
+                this.lastPongTimes.delete(peerId);
+                this.reconnectStartTimes.delete(peerId);
                 
                 // 해당 피어의 데코레이션 및 색상 정리
                 this.engine.cursorManager.clearPeerCursor(peerId);
@@ -686,7 +697,94 @@ export class ParticipantManager {
         }
     }
 
+    /**
+     * 호스트가 게스트들의 실시간 연결 상태를 주기적으로 확인하기 위해 Ping 타이머를 시작합니다.
+     */
+    public startPingCheck() {
+        this.stopPingCheck();
+        if (!this.engine.isHost) return;
+
+        // 4초마다 모든 게스트에게 PING 전송 및 PONG 타임아웃(8초) 검사
+        this.pingTimer = setInterval(() => {
+            if (!this.engine.isHost) return;
+
+            const now = Date.now();
+            let hasStatusChanged = false;
+
+            Object.entries(this.participants).forEach(([peerId, perm]) => {
+                if (peerId === 'host' || peerId === 'default') {
+                    if (perm.connectionStatus !== 'connected') {
+                        perm.connectionStatus = 'connected';
+                        hasStatusChanged = true;
+                    }
+                    return;
+                }
+
+                // 게스트에게 PING 전송
+                this.engine.sendMessageToPeer(peerId, 'PING', { timestamp: now });
+
+                // PONG 응답 시간 검사 (마지막 응답으로부터 8초 초과 시 reconnecting/노란색으로 표시)
+                const lastPong = this.lastPongTimes.get(peerId);
+                const isAlive = lastPong !== undefined && (now - lastPong <= 8000);
+                const currentStatus = isAlive ? 'connected' : 'reconnecting';
+
+                if (currentStatus === 'reconnecting') {
+                    // 재연결 대기 시작 시점 기록
+                    if (!this.reconnectStartTimes.has(peerId)) {
+                        this.reconnectStartTimes.set(peerId, now);
+                    }
+                    const reconnectStarted = this.reconnectStartTimes.get(peerId) || now;
+                    // 게스트 재연결 유예 시간(30초) 초과 시 참가자 명단에서 완전히 정리
+                    if (now - reconnectStarted >= 30000) {
+                        this.engine.logToUI(`Guest reconnect timeout exceeded (30s) for: ${perm.name} (${peerId})`);
+                        this.handlePeerDisconnect(peerId);
+                        return;
+                    }
+                } else {
+                    this.reconnectStartTimes.delete(peerId);
+                }
+
+                if (perm.connectionStatus !== currentStatus) {
+                    perm.connectionStatus = currentStatus;
+                    hasStatusChanged = true;
+                }
+            });
+
+            if (hasStatusChanged) {
+                this.broadcastUserList();
+            }
+        }, 4000);
+    }
+
+    /**
+     * Ping 타이머를 중지합니다.
+     */
+    public stopPingCheck() {
+        if (this.pingTimer) {
+            clearInterval(this.pingTimer);
+            this.pingTimer = undefined;
+        }
+    }
+
+    /**
+     * 게스트로부터 PONG 응답을 수신했을 때 호출됩니다. (호스트 전용)
+     */
+    public handlePong(peerId: string) {
+        if (!this.engine.isHost) return;
+        this.lastPongTimes.set(peerId, Date.now());
+        this.reconnectStartTimes.delete(peerId);
+
+        const perm = this.participants[peerId];
+        if (perm && perm.connectionStatus !== 'connected') {
+            perm.connectionStatus = 'connected';
+            this.broadcastUserList();
+        }
+    }
+
     public reset() {
+        this.stopPingCheck();
+        this.lastPongTimes.clear();
+        this.reconnectStartTimes.clear();
         this.stopGuestReconnectGracePeriod();
         this.clearJoinTimeout();
         this.participants = {};

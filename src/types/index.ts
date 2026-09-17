@@ -26,6 +26,7 @@ export interface PeerPermission {
     name: string;
     globalCanEdit: boolean;
     filePermissions: { [fileName: string]: boolean };
+    connectionStatus?: 'connected' | 'reconnecting';
 }
 
 /**

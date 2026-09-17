@@ -10,7 +10,7 @@ import { SyncEngine } from '../SyncEngine';
 import { isPathEqual } from '../../utils/helpers';
 
 export class CursorManager {
-    public cursorFilter: 'host' | 'editable' | 'all' = 'host';
+    public cursorFilter: 'host' | 'editable' | 'all' = 'editable';
     private remoteCursorDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteSelectionDecorations = new Map<string, vscode.TextEditorDecorationType>();
     private remoteCursorStates = new Map<string, any>();

@@ -52,9 +52,17 @@ export function getSidebarScript(): string {
         }
 
         /**
+         * 데코레이션 표시 온오프 토글 요청을 보냅니다.
+         */
+        function toggleShowDecorations(checked) {
+            vscode.postMessage({ type: 'toggleShowDecorations', show: checked });
+        }
+
+        /**
          * 방에서 나가는 요청을 보냅니다.
          */
         function leaveRoom() {
+            setVisible('reconnectingBanner', false);
             vscode.postMessage({ type: 'leaveRoom' });
         }
 
@@ -126,6 +134,7 @@ export function getSidebarScript(): string {
             setVisible('hostForm', false);
             setVisible('guestForm', false);
             setVisible('startButtons', true);
+            setVisible('reconnectingBanner', false);
             
             const setupRn = document.getElementById('setupRoomName');
             const joinRn = document.getElementById('joinRoomName');
@@ -346,7 +355,29 @@ export function getSidebarScript(): string {
                 const canEdit = data.globalCanEdit;
 
                 const initials = name ? name.substring(0, 2) : '??';
-                const avatarHTML = '<div class="user-avatar">' + initials + '</div>';
+                
+                // 연결 상태 (호스트 화면에서만 표시: 기본값은 connected, 게스트는 data.connectionStatus 기준)
+                let statusDotHTML = '';
+                if (isMeHost) {
+                    let statusClass = 'connected';
+                    let statusTitle = 'Connected';
+                    if (isHost || isMe) {
+                        statusClass = 'connected';
+                        statusTitle = 'Connected';
+                    } else if (data.connectionStatus === 'reconnecting') {
+                        statusClass = 'reconnecting';
+                        statusTitle = 'Reconnecting... (No ping response)';
+                    } else {
+                        statusClass = 'connected';
+                        statusTitle = 'Connected';
+                    }
+                    statusDotHTML = '<span class="user-status-dot ' + statusClass + '" title="' + statusTitle + '"></span>';
+                }
+
+                const avatarHTML = '<div class="user-avatar-wrapper">' + 
+                                       '<div class="user-avatar">' + initials + '</div>' + 
+                                       statusDotHTML + 
+                                   '</div>';
 
                 // 본인의 경우 이름 오른쪽에 연필 아이콘
                 let editBtnHTML = '';
@@ -373,10 +404,6 @@ export function getSidebarScript(): string {
                     if (!isMe) {
                         if (isMeHost) {
                             controlButtonsHTML += pHTML;
-                            // 손 모양 아이콘 버튼
-                            controlButtonsHTML += '<button class="user-action-btn" title="Edit Permission Status" style="margin-left: 6px;">' +
-                                '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M14 6.5a2.5 2.5 0 0 0-5 0v3.08l-.83-.44a1.5 1.5 0 0 0-2 2.05l2.45 3.39A2.5 2.5 0 0 0 10.64 16h2.24a3 3 0 0 0 3-3V9a2.5 2.5 0 0 0-2.5-2.5zM8 4a2 2 0 1 1 4 0v2.5H8V4z"/></svg>' +
-                            '</button>';
                             
                             // 강퇴 버튼 (마이너스 원형 아이콘)
                             controlButtonsHTML += '<button class="user-action-btn kick-btn" onclick="kick(\\\'' + id + '\\\')" title="Kick" style="margin-left: 6px;">' +
@@ -422,7 +449,7 @@ export function getSidebarScript(): string {
 
                 const isMeHost = m.participants.myId === 'host';
                 setVisible('btnAddUser', isMeHost);
-                setVisible('btnRevokeAll', isMeHost);
+                setVisible('revokeAllOption', isMeHost);
 
                 const cursorFilterSelect = document.getElementById('cursorFilterSelect');
                 if (cursorFilterSelect && m.cursorFilter) {
@@ -450,6 +477,12 @@ export function getSidebarScript(): string {
                 if (autoApproveCheck) {
                     const isAutoApprove = (m.isAutoApprove !== undefined) ? m.isAutoApprove : (m.participants && m.participants.isAutoApprove);
                     autoApproveCheck.checked = !!isAutoApprove;
+                }
+
+                // 데코레이션 표시 토글 상태 동기화
+                const showDecoCheck = document.getElementById('showDecoCheck');
+                if (showDecoCheck && m.showDecorations !== undefined) {
+                    showDecoCheck.checked = !!m.showDecorations;
                 }
 
                 renderRequests(m);

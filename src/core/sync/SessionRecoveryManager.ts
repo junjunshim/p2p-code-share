@@ -29,6 +29,7 @@ export interface PersistentSessionData {
     isAutoApprove: boolean;
     isFollowMeMode: boolean;
     cursorFilter: 'host' | 'editable' | 'all';
+    showDecorations?: boolean;
     participants: { [key: string]: PeerPermission };
     sharedFiles: PersistentFileSnapshot[];
     decorations: FileDecoration[];
@@ -121,6 +122,7 @@ export class SessionRecoveryManager {
             isAutoApprove: this.engine.isAutoApprove,
             isFollowMeMode: this.engine.isFollowMeMode,
             cursorFilter: this.engine.cursorManager.cursorFilter,
+            showDecorations: this.engine.decorationManager.showDecorations,
             participants: this.engine.participantManager.participants,
             sharedFiles: fileSnapshots,
             decorations: this.engine.decorationManager.decorations,
@@ -185,8 +187,24 @@ export class SessionRecoveryManager {
         this.engine.myId = session.myId;
         this.engine.isFollowMeMode = session.isFollowMeMode;
         this.engine.cursorManager.cursorFilter = session.cursorFilter;
+        if (session.showDecorations !== undefined) {
+            this.engine.decorationManager.showDecorations = session.showDecorations;
+        }
         this.engine.chatHistory = session.chatHistory || [];
-        this.engine.participantManager.participants = session.participants || {};
+        const restoredParticipants = session.participants || {};
+        // 호스트 복원 시 호스트 본인은 'connected', 게스트들은 아직 재연결 전이므로 'reconnecting'으로 초기화
+        const recoveryTime = Date.now();
+        if (session.isHost) {
+            Object.keys(restoredParticipants).forEach(id => {
+                if (id === 'host') {
+                    restoredParticipants[id].connectionStatus = 'connected';
+                } else {
+                    restoredParticipants[id].connectionStatus = 'reconnecting';
+                    this.engine.participantManager.reconnectStartTimes.set(id, recoveryTime);
+                }
+            });
+        }
+        this.engine.participantManager.participants = restoredParticipants;
         this.engine.participantManager.isAutoApprove = session.isAutoApprove ?? true;
 
         if (session.isHost) {
@@ -231,6 +249,7 @@ export class SessionRecoveryManager {
             this.engine.hub.createHub(true, this.engine.roomName, 'none');
 
             this.startHeartbeat();
+            this.engine.participantManager.startPingCheck();
             this.engine.pushUIUpdate();
             vscode.window.showInformationMessage(`"${session.roomName}" P2P 방 세션이 새 창으로 복원되었습니다.`);
         } else {

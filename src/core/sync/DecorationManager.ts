@@ -12,6 +12,7 @@ import { isPathEqual } from '../../utils/helpers';
 
 export class DecorationManager {
     public decorations: FileDecoration[] = [];
+    public showDecorations: boolean = true;
     private decorationRecalculateTimers = new Map<string, NodeJS.Timeout>();
 
     private typoDecoType = vscode.window.createTextEditorDecorationType({
@@ -110,8 +111,8 @@ export class DecorationManager {
         visibleEditors.forEach(editor => {
             const document = editor.document;
             const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, document.uri.fsPath));
-            if (!file) {
-                // 공유 파일이 아닌 경우 데코레이션 제거
+            if (!file || !this.showDecorations) {
+                // 공유 파일이 아니거나 데코레이션 표시가 꺼져있는 경우 에디터에서 제거
                 editor.setDecorations(this.typoDecoType, []);
                 editor.setDecorations(this.grammarDecoType, []);
                 editor.setDecorations(this.logicalDecoType, []);
@@ -332,8 +333,15 @@ export class DecorationManager {
         this.refreshDecorationsInEditors();
     }
 
+    public setShowDecorations(show: boolean) {
+        this.showDecorations = show;
+        this.refreshDecorationsInEditors();
+        this.engine.pushUIUpdate();
+    }
+
     public reset() {
         this.decorations = [];
+        this.showDecorations = true;
         this.decorationRecalculateTimers.forEach(t => clearTimeout(t));
         this.decorationRecalculateTimers.clear();
         this.refreshDecorationsInEditors();

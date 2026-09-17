@@ -8,6 +8,10 @@ export function getSidebarBody(): string {
         ${getLoadingView()}
         <div id="mainContent" class="hidden">
             <div id="badge" class="badge">OFFLINE</div>
+            <div id="reconnectingBanner" class="hidden" style="margin-top: -10px; margin-bottom: 14px; padding: 6px 10px; background: rgba(255, 170, 0, 0.15); border: 1px solid rgba(255, 170, 0, 0.4); border-radius: 4px; font-size: 11px; color: #ffcc66; display: flex; align-items: center; justify-content: center; gap: 6px; text-align: center;">
+                <span>⏳</span>
+                <span>호스트 작업 공간 전환 중... 재연결 대기 중</span>
+            </div>
             ${getSetupView()}
             ${getConnAreaView()}
             ${getActiveView()}
@@ -101,10 +105,6 @@ function getActiveView(): string {
                     <div class="room-info" style="margin-bottom: 8px;">
                         <div class="room-label">Room Name:</div>
                         <div id="dispRoomName" class="room-value"></div>
-                        <div id="reconnectingBanner" class="hidden" style="margin-top: 8px; padding: 6px 8px; background: rgba(255, 170, 0, 0.15); border: 1px solid rgba(255, 170, 0, 0.4); border-radius: 4px; font-size: 11px; color: #ffcc66; display: flex; align-items: center; gap: 6px;">
-                            <span style="animation: blink 1s infinite;">⏳</span>
-                            <span>호스트 작업 공간 전환 중... 재연결 대기 중</span>
-                        </div>
                     </div>
                     <button id="btnOpenChat" onclick="openChat()" style="margin-bottom: 4px; position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;">
                         <span>💬 Open Chat Room</span>
@@ -120,7 +120,7 @@ function getActiveView(): string {
                         <div class="option-label">Cursor Filter</div>
                         <select id="cursorFilterSelect" class="option-select" onchange="changeCursorFilter(this.value)">
                             <option value="host">Host Only</option>
-                            <option value="editable">Editable Only</option>
+                            <option value="editable" selected>Editable Only</option>
                             <option value="all">Show All</option>
                         </select>
                     </div>
@@ -138,6 +138,13 @@ function getActiveView(): string {
                             <span class="slider"></span>
                         </label>
                     </div>
+                    <div id="revokeAllOption" class="option-item hidden">
+                        <div class="option-label">Edit Permissions</div>
+                        <button id="btnRevokeAll" onclick="revokeAllPermissions()" title="Revoke All Edit Permissions (전체 쓰기 권한 해제)" style="width: 80px; height: 22px; margin: 0; box-sizing: border-box; font-size: 11px; padding: 0 6px; background: #e06c75; color: white; border: none; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex-shrink: 0; line-height: 1;">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
+                            <span>Lock All</span>
+                        </button>
+                    </div>
                 </div>
 
                 <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -146,10 +153,6 @@ function getActiveView(): string {
                         <span>Connected Users</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <span id="btnRevokeAll" class="invite-btn hidden" onclick="revokeAllPermissions()" title="Revoke All Edit Permissions (전체 쓰기 권한 해제)" style="font-size: 11px; padding: 2px 6px; background: #e06c75; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
-                            <span>Lock All</span>
-                        </span>
                         <span id="btnShowRequests" class="invite-btn hidden" onclick="toggleRequests()" title="Join Requests" style="display: inline-flex; align-items: center;">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;">
                                 <path d="M8 16a2 2 0 0 0 1.99-2H6a2 2 0 0 0 2 2zm6-5V7.5a6.03 6.03 0 0 0-5-5.91V1a1 1 0 0 0-2 0v.59A6.03 6.03 0 0 0 2 7.5V11l-1.33 1.33A1 1 0 0 0 1 14h14a1 1 0 0 0 .67-1.67L14 11z"/>
@@ -167,9 +170,15 @@ function getActiveView(): string {
                 </div>
                 <div id="files" class="accordion-content expanded"></div>
 
-                <div class="accordion-header">
-                    <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
-                    <span>Decorations (Reviews)</span>
+                <div class="accordion-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
+                        <span>Decorations (Reviews)</span>
+                    </div>
+                    <label class="switch invite-btn" title="Toggle Decorations Display (데코레이션 표시 On/Off)" style="margin: 0;" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="showDecoCheck" checked onchange="toggleShowDecorations(this.checked)">
+                        <span class="slider"></span>
+                    </label>
                 </div>
                 <div id="decorations" class="accordion-content expanded"></div>
             </div>
@@ -179,15 +188,19 @@ function getActiveView(): string {
                         <svg class="arrow-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>
                         <span>Join Requests</span>
                     </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <span id="btnApproveAll" class="invite-btn" onclick="approveAll()" title="Approve All Requests" style="font-size: 11px; padding: 2px 6px; background: #28a745; color: white; border-radius: 3px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center;">Approve All</span>
-                        <span onclick="toggleRequests()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                                <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
-                            </svg>
-                            Back
-                        </span>
-                    </div>
+                    <span onclick="toggleRequests()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: bold; color: var(--vscode-textLink-foreground);">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                        </svg>
+                        Back
+                    </span>
+                </div>
+                <div id="requestsActionBar" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; margin-bottom: 8px;">
+                    <span style="font-size: 11px; color: var(--vscode-descriptionForeground);">Pending Requests</span>
+                    <button id="btnApproveAll" onclick="approveAll()" title="Approve All Requests" style="width: auto; height: 24px; margin: 0; padding: 0 10px; background: #28a745; color: white; border: none; border-radius: 3px; font-weight: bold; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>
+                        Approve All
+                    </button>
                 </div>
                 <div id="requestsList"></div>
             </div>

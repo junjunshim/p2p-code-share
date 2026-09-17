@@ -194,6 +194,9 @@ export function activate(context: vscode.ExtensionContext) {
     sidebar.onJumpToDecoration = (fileName, line, char) => {
         engine.jumpToDecoration(fileName, line, char);
     };
+    sidebar.onToggleShowDecorations = (show) => {
+        engine.setShowDecorations(show);
+    };
     sidebar.onChangeCursorFilter = (filter) => {
         engine.setCursorFilter(filter);
     };

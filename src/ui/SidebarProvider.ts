@@ -39,6 +39,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onOpenChat?: () => void; // [추가] 채팅방 팝업 열기
     public onSetFollowMeMode?: (enabled: boolean) => void; // [추가] 팔로우 모드 토글
     public onSetAutoApprove?: (enabled: boolean) => void; // [추가] 자동 승인 토글
+    public onToggleShowDecorations?: (show: boolean) => void; // [추가] 데코레이션 표시 토글
 
     public get webview(): vscode.Webview | undefined {
         return this._view?.webview;
@@ -97,6 +98,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // [추가] 데코레이션 관련
                 case 'deleteDecoration': this.onDeleteDecoration?.(msg.id); break;
                 case 'jumpToDecoration': this.onJumpToDecoration?.(msg.fileName, msg.line, msg.char); break;
+                case 'toggleShowDecorations': this.onToggleShowDecorations?.(msg.show); break;
                 case 'changeCursorFilter': this.onChangeCursorFilter?.(msg.filter); break;
                 case 'leaveRoom': this.onLeaveRoom?.(); break;
                 // [추가] 채팅방 팝업 및 메시지 전송
