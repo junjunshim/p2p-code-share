@@ -101,6 +101,10 @@ function getActiveView(): string {
                     <div class="room-info" style="margin-bottom: 8px;">
                         <div class="room-label">Room Name:</div>
                         <div id="dispRoomName" class="room-value"></div>
+                        <div id="reconnectingBanner" class="hidden" style="margin-top: 8px; padding: 6px 8px; background: rgba(255, 170, 0, 0.15); border: 1px solid rgba(255, 170, 0, 0.4); border-radius: 4px; font-size: 11px; color: #ffcc66; display: flex; align-items: center; gap: 6px;">
+                            <span style="animation: blink 1s infinite;">⏳</span>
+                            <span>호스트 작업 공간 전환 중... 재연결 대기 중</span>
+                        </div>
                     </div>
                     <button id="btnOpenChat" onclick="openChat()" style="margin-bottom: 4px; position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;">
                         <span>💬 Open Chat Room</span>

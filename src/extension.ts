@@ -30,6 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
     // UI 제공자 및 핵심 P2P 엔진 초기화
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
+    activeHub = hub;
     const engine = new SyncEngine(hub, context, (state) => {
         // P2P 연결 상태에 따라 VS Code 컨텍스트 상태 업데이트
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
@@ -53,10 +54,12 @@ export function activate(context: vscode.ExtensionContext) {
                 cursorFilter: state.cursorFilter,
                 unreadChatCount: state.unreadChatCount,
                 isFollowMeMode: state.isFollowMeMode,
-                isAutoApprove: state.isAutoApprove
+                isAutoApprove: state.isAutoApprove,
+                isReconnecting: state.isReconnecting
             });
         }
     });
+    activeEngine = engine;
 
     // 사이드바로부터 피어 초기화 요청 처리
     sidebar.onInitPeer = (initiator, roomName) => {
@@ -99,12 +102,19 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
-    // 사이드바가 준비되면 초기 UI 동기화 실행
-    sidebar.onReady = () => {
+    // 사이드바가 준비되면 초기 UI 동기화 및 이전 세션 자동 복원 검사
+    sidebar.onReady = async () => {
         if (sidebar.webview) {
             hub.setWebview(sidebar.webview);
         }
-        engine.pushUIUpdate();
+
+        // 새 창이 열렸을 때 이전 창에서 넘어온 세션이 있는지 확인 (Reload Window / Open Folder 대응)
+        const session = engine.sessionRecoveryManager.getRecoverableSession();
+        if (session) {
+            await engine.sessionRecoveryManager.restoreSession(session);
+        } else {
+            engine.pushUIUpdate();
+        }
     };
 
     // 게스트 초대 프로세스 시작
@@ -136,13 +146,14 @@ export function activate(context: vscode.ExtensionContext) {
     sidebar.onSignal = (sdp, peerId) => hub.applySignal(sdp, peerId || 'default');
     
     // 취소 처리 및 엔진 상태 초기화
-    sidebar.onCancel = (data?: any) => {
+    sidebar.onCancel = async (data?: any) => {
         if (engine.isConnected && engine.isHost && engine.isSetupMode) {
             // 설정 모드 종료
             engine.isSetupMode = false;
             engine.pushUIUpdate();
         } else {
-            // 연결 해제 및 엔진 초기화
+            // 연결 해제 및 세션 완전 삭제
+            await engine.sessionRecoveryManager.clearSession();
             hub.dispose();
             engine.reset();
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
@@ -229,13 +240,23 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 방 이름 선점 성공 시 화면 전환
     hub.onRoomNameSuccess = () => {
+        engine.sessionRecoveryManager.isRestoringSession = false;
+        engine.sessionRecoveryManager.restoreRetryCount = 0;
         engine.isConnected = true;
+        engine.sessionRecoveryManager.startHeartbeat();
         engine.pushUIUpdate();
     };
 
     // 방 이름 중복 또는 서버 에러 처리
     hub.onRoomNameError = (errorType: string) => {
         if (!engine.isHost) {
+            // 게스트가 호스트 재연결 유예 기간(Grace Period) 중인 경우:
+            // 호스트 창이 아직 서버에 안 떴거나 일시적으로 서버 연결 중일 수 있으므로 즉시 에러 팝업을 띄우거나 reset()하지 않음
+            if (engine.participantManager.isReconnecting) {
+                engine.logToUI(`Guest reconnect probe (${errorType}): Host room not ready yet, will retry...`);
+                return;
+            }
+
             let msg = "호스트 연결에 실패했습니다.";
             if (errorType === 'unavailable') {
                 msg = "호스트가 오프라인이거나 존재하지 않는 방 이름입니다.";
@@ -248,6 +269,23 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        // 호스트인 경우: 이전 창의 소켓이 서버에서 정리되는 중일 수 있으므로(고스트 ID),
+        // 세션 복구 중이라면 팝업을 띄우지 않고 1초 간격으로 최대 4회 조용히 재시도
+        if (engine.sessionRecoveryManager.isRestoringSession && errorType === 'duplicate') {
+            if (engine.sessionRecoveryManager.restoreRetryCount < 4) {
+                engine.sessionRecoveryManager.restoreRetryCount++;
+                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in 1.5s (${engine.sessionRecoveryManager.restoreRetryCount}/4)...`);
+                setTimeout(() => {
+                    if (engine.sessionRecoveryManager.isRestoringSession) {
+                        hub.dispose();
+                        hub.createHub(true, engine.roomName, 'none');
+                    }
+                }, 1500);
+                return;
+            }
+        }
+
+        engine.sessionRecoveryManager.isRestoringSession = false;
         let msg = "";
         if (errorType === 'duplicate') {
             msg = "이미 사용 중인 방 이름입니다. 자동 연결 기능이 비활성화됩니다.";
@@ -273,12 +311,17 @@ export function activate(context: vscode.ExtensionContext) {
             hub.onDidReceiveData?.(JSON.stringify({ type: 'ON_CONNECTED' }), peerId);
         } else if (status === 'Disconnected') {
             // 피어 연결 해제 처리
-            if (peerId === 'all') {
-                engine.reset();
-                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
-                vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
-            } else {
+            if (!engine.isHost) {
+                // 게스트는 peerId가 'all'이든 개별이든 유예 기간 로직(startGuestReconnectGracePeriod)을 태움
                 engine.handlePeerDisconnect(peerId);
+            } else {
+                if (peerId === 'all') {
+                    engine.reset();
+                    vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+                    vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
+                } else {
+                    engine.handlePeerDisconnect(peerId);
+                }
             }
         }
     };
@@ -298,7 +341,21 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
+let activeHub: HubManager | undefined;
+let activeEngine: SyncEngine | undefined;
+
 /**
  * 확장 프로그램을 비활성화합니다.
+ * 창 종료(Reload Window / Open Folder) 직전 최신 세션을 저장하고 소켓을 명시적으로 정리합니다.
  */
-export function deactivate() {}
+export function deactivate() {
+    try {
+        if (activeEngine && activeEngine.isConnected) {
+            // 동기적으로 하트비트 타임스탬프 갱신
+            activeEngine.sessionRecoveryManager.saveSession();
+        }
+        if (activeHub) {
+            activeHub.dispose();
+        }
+    } catch (e) {}
+}

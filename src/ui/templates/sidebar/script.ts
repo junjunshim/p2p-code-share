@@ -278,13 +278,18 @@ export function getSidebarScript(): string {
         function updateBadge(m) {
             const b = document.getElementById('badge');
             if (b) {
-                if (m.isConnected) {
+                const isReconnecting = m.isReconnecting || (m.participants && m.participants.isReconnecting);
+                if (isReconnecting) {
+                    b.innerText = 'RECONNECTING...';
+                    b.className = 'badge reconnecting';
+                } else if (m.isConnected) {
                     const isMeHost = m.participants && m.participants.myId === 'host';
                     b.innerText = (!isMeHost && m.connectionType === 'TURN') ? 'CONNECTED (TURN)' : 'CONNECTED';
+                    b.className = 'badge online';
                 } else {
                     b.innerText = 'OFFLINE';
+                    b.className = 'badge';
                 }
-                b.className = 'badge ' + (m.isConnected ? 'online' : '');
             }
         }
 
@@ -405,12 +410,15 @@ export function getSidebarScript(): string {
                 const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
                 const roleDisp = document.getElementById('roleTextDisp');
                 if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
-            } else if (m.isConnected) {
-                // 2. 연결 완료 모드 (참가자 및 파일 목록)
+            } else if (m.isConnected || m.isReconnecting || (m.participants && m.participants.isReconnecting)) {
+                // 2. 연결 완료 모드 또는 호스트 재연결 유예 모드 (참가자 및 파일 목록 유지)
                 setVisible('roleSelection', false);
                 setVisible('connArea', false);
                 setVisible('active', true);
                 if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
+
+                const isReconnecting = m.isReconnecting || (m.participants && m.participants.isReconnecting);
+                setVisible('reconnectingBanner', !!isReconnecting);
 
                 const isMeHost = m.participants.myId === 'host';
                 setVisible('btnAddUser', isMeHost);

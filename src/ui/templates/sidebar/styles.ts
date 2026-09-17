@@ -54,6 +54,26 @@ export function getSidebarStyles(): string {
             animation: pulse-green 2s infinite;
             box-shadow: 0 0 8px rgba(63, 185, 80, 0.8);
         }
+        .reconnecting {
+            background: rgba(180, 110, 20, 0.5);
+            color: #ffcc66;
+            border-color: rgba(255, 180, 50, 0.3);
+        }
+        .reconnecting::after {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #ffaa00;
+            border-radius: 50%;
+            animation: pulse-yellow 1.5s infinite;
+            box-shadow: 0 0 8px rgba(255, 170, 0, 0.8);
+        }
+        @keyframes pulse-yellow {
+            0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 170, 0, 0.7); }
+            70% { transform: scale(1.1); box-shadow: 0 0 0 5px rgba(255, 170, 0, 0); }
+            100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 170, 0, 0); }
+        }
         @keyframes pulse-green {
             0% {
                 transform: scale(0.9);

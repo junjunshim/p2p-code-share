@@ -15,6 +15,7 @@ import { ParticipantManager } from './sync/ParticipantManager';
 import { CursorManager } from './sync/CursorManager';
 import { DecorationManager } from './sync/DecorationManager';
 import { DocumentSyncManager } from './sync/DocumentSyncManager';
+import { SessionRecoveryManager } from './sync/SessionRecoveryManager';
 
 export class SyncEngine {
     // 채팅 관련 속성
@@ -30,6 +31,7 @@ export class SyncEngine {
     public cursorManager: CursorManager;
     public decorationManager: DecorationManager;
     public documentSyncManager: DocumentSyncManager;
+    public sessionRecoveryManager: SessionRecoveryManager;
 
     // 공통 상태 변수
     public isHost = false; 
@@ -72,6 +74,7 @@ export class SyncEngine {
         this.cursorManager = new CursorManager(this);
         this.decorationManager = new DecorationManager(this);
         this.documentSyncManager = new DocumentSyncManager(this);
+        this.sessionRecoveryManager = new SessionRecoveryManager(this, this.context);
 
         // 초기 이벤트 핸들러 및 리스너 설정
         this.setupHandlers();
@@ -175,6 +178,7 @@ export class SyncEngine {
                         break;
                     case 'JOIN_REQUEST': this.participantManager.handleJoinRequest(msg, peerId); break;
                     case 'JOIN_RESPONSE': this.participantManager.handleJoinResponse(msg); break;
+                    case 'ROOM_CLOSED': this.participantManager.handleRoomClosed(msg); break;
                     case 'KICKED': this.participantManager.handleKicked(msg); break;
                     case 'SET_PERMISSION': await this.participantManager.handleSetPermission(msg); break;
                     case 'ADD_DECORATION':
@@ -246,7 +250,8 @@ export class SyncEngine {
             if (this.participantManager.isAutoJoin && this.participantManager.pendingJoinRequest) {
                 this.sendMessage('JOIN_REQUEST', { 
                     name: this.myName, 
-                    peerId: this.myId 
+                    peerId: this.myId,
+                    previousPeerId: this.participantManager.pendingJoinRequest.previousPeerId
                 });
                 this.participantManager.pendingJoinRequest = null;
                 // 호스트에게 요청을 정상 송신했으므로 초기 연결 타임아웃 해제
@@ -536,7 +541,8 @@ export class SyncEngine {
             cursorFilter: this.cursorManager.cursorFilter,
             unreadChatCount: this.unreadChatCount,
             isFollowMeMode: this.isFollowMeMode,
-            isAutoApprove: this.participantManager.isAutoApprove
+            isAutoApprove: this.participantManager.isAutoApprove,
+            isReconnecting: this.participantManager.isReconnecting
         });
         this.updateActiveFileSharedContext();
     }
@@ -641,6 +647,11 @@ export class SyncEngine {
                 "Yes"
             );
             if (answer === "Yes") {
+                // 게스트들에게 방 종료 메시지를 명시적으로 브로드캐스트하여 재연결 루프에 빠지지 않도록 함
+                this.sendMessage('ROOM_CLOSED', { reason: '호스트가 방을 종료했습니다.' });
+                await new Promise(r => setTimeout(r, 100)); // 메시지 전송 버퍼 여유 확보
+
+                await this.sessionRecoveryManager.clearSession();
                 this.reset();
                 this.hub.dispose();
                 vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
@@ -656,7 +667,8 @@ export class SyncEngine {
                 await this.fileStorageManager.handleRemoteStop(file.name);
             }
 
-            // 5. 연결 초기화 및 종료
+            // 5. 연결 초기화 및 세션 영구 삭제
+            await this.sessionRecoveryManager.clearSession();
             this.reset();
             this.hub.dispose();
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
