@@ -90,6 +90,8 @@ export class ParticipantManager {
         this.engine.isSetupMode = false;
         this.isAutoJoin = true; // [추가] 자동 참여 모드 설정
         this.pendingJoinRequest = { roomName, userName, previousPeerId }; // 요청 큐에 저장
+        // 게스트가 새로운 방에 입장할 때 기존에 남아있던 타 방 임시 디렉터리들을 선제적으로 정리
+        this.engine.fileStorageManager.cleanOldRoomStorages(roomName);
         this.engine.pushUIUpdate();
 
         // 20초 내에 연결 단계가 완료되지 않으면 에러 및 리셋 처리 (재연결 유예 중인 경우는 30초 유예 타이머가 별도 관리하므로 제외)

@@ -20,11 +20,48 @@ export class FileStorageManager {
     constructor(private engine: SyncEngine) {}
 
     /**
+     * 현재 방을 제외한 이전 임시 방 스토리지 디렉터리들을 안전하게 삭제합니다 (게스트 전용).
+     */
+    public cleanOldRoomStorages(currentRoomName?: string) {
+        if (this.engine.isHost) return;
+
+        try {
+            const baseStorage = this.engine.context.globalStorageUri.fsPath;
+            if (!fs.existsSync(baseStorage)) return;
+
+            const currentSanitized = currentRoomName ? sanitizePath(currentRoomName) : (this.engine.roomName ? sanitizePath(this.engine.roomName) : '');
+
+            const entries = fs.readdirSync(baseStorage, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    // 현재 참여하는 방의 폴더가 아니면 이전 방의 임시 폴더이므로 정리
+                    if (currentSanitized && entry.name === currentSanitized) {
+                        continue;
+                    }
+                    const targetDir = path.join(baseStorage, entry.name);
+                    try {
+                        fs.rmSync(targetDir, { recursive: true, force: true });
+                    } catch (e) {
+                        // 권한이나 사용 중 등으로 삭제 실패 시 다음 기회로 패스
+                    }
+                }
+            }
+        } catch (e) {
+            // 정리 중 오류가 발생해도 P2P 연결 흐름에 지장을 주지 않도록 방어
+        }
+    }
+
+    /**
      * 공유 파일 저장을 위한 저장소를 초기화합니다.
      */
     public initializeStorage() {
         if (this.isStorageInitialized) return;
         if (!this.engine.isHost && (!this.engine.myId || this.engine.myId === 'default' || !this.engine.roomName || this.engine.roomName === 'Untitled Room')) return;
+
+        // 게스트의 경우 새로운 방에 입장할 때 다른 방의 기존 임시 폴더들을 정리
+        if (!this.engine.isHost && this.engine.roomName) {
+            this.cleanOldRoomStorages(this.engine.roomName);
+        }
 
         // 기기 내 충돌 방지를 위해 myId/roomName 기반 폴더 생성
         const folderName = this.engine.isHost ? 'host' : (this.engine.myId || 'guest');
