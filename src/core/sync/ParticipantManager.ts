@@ -21,8 +21,13 @@ export class ParticipantManager {
 
     // 게스트 재연결 유예 기간(Grace Period) 관련 속성
     public isReconnecting = false;
+    private isProbeInFlight = false;
     private reconnectRetryTimer?: NodeJS.Timeout;
     private reconnectDeadlineTimer?: NodeJS.Timeout;
+
+    // 게스트 방 입장 승인 요청(JOIN_REQUEST) ACK 및 재시도 타이머
+    private joinRequestRetryTimer?: NodeJS.Timeout;
+    private isJoinRequestAckReceived = false;
 
     // 실시간 연결 상태 모니터링 (Ping-Pong) 및 재연결 대기 관리
     private pingTimer?: NodeJS.Timeout;
@@ -119,6 +124,64 @@ export class ParticipantManager {
         if (this.joinTimeout) {
             clearTimeout(this.joinTimeout);
             this.joinTimeout = undefined;
+        }
+    }
+
+    /**
+     * ACK 확인 기반으로 호스트에게 방 참여 요청(JOIN_REQUEST)을 발송하고,
+     * ACK가 올 때까지 주기적으로 재전송합니다. (게스트 전용)
+     */
+    public startJoinRequestWithAck(reqData: { name: string, peerId: string, previousPeerId?: string }) {
+        this.stopJoinRequestRetry();
+        this.isJoinRequestAckReceived = false;
+
+        let attempts = 0;
+        const maxAttempts = 5;
+
+        const sendAndSchedule = () => {
+            if (this.isJoinRequestAckReceived || this.engine.isConnected || !this.isAutoJoin) {
+                this.stopJoinRequestRetry();
+                return;
+            }
+
+            attempts++;
+            this.engine.logToUI(`Sending JOIN_REQUEST to host (attempt ${attempts}/${maxAttempts})...`);
+            vscode.window.setStatusBarMessage(`호스트에게 참여 요청 전달 중... (${attempts}/${maxAttempts})`, 2500);
+
+            this.engine.sendMessage('JOIN_REQUEST', reqData);
+
+            if (attempts < maxAttempts) {
+                this.joinRequestRetryTimer = setTimeout(sendAndSchedule, 1800);
+            } else {
+                this.engine.logToUI(`Max JOIN_REQUEST attempts reached (${maxAttempts}). Waiting for host response...`);
+            }
+        };
+
+        sendAndSchedule();
+    }
+
+    /**
+     * 호스트로부터 참여 요청 접수 확인(ACK)을 수신했을 때 호출됩니다. (게스트 전용)
+     */
+    public handleJoinRequestAck(msg: any) {
+        if (this.engine.isHost) return;
+        this.isJoinRequestAckReceived = true;
+        this.stopJoinRequestRetry();
+        this.clearJoinTimeout();
+
+        this.engine.logToUI(`JOIN_REQUEST_ACK received: Host successfully received join request.`);
+        vscode.window.setStatusBarMessage(`호스트가 요청을 확인했습니다. 승인을 기다리는 중...`, 5000);
+        this.engine.updateStatus('Waiting...');
+        this.engine.pushUIUpdate();
+    }
+
+    /**
+     * 참여 요청 재전송 타이머를 중지합니다.
+     */
+    public stopJoinRequestRetry() {
+        if (this.joinRequestRetryTimer) {
+            clearTimeout(this.joinRequestRetryTimer);
+            this.joinRequestRetryTimer = undefined;
         }
     }
 
@@ -453,8 +516,18 @@ export class ParticipantManager {
      * 특정 피어를 강제로 퇴장시킵니다. (호스트 전용)
      * @param peerId 퇴장시킬 피어 ID.
      */
-    public kickPeer(peerId: string) {
+    public async kickPeer(peerId: string) {
         if (!this.engine.isHost) return;
+
+        const targetUser = this.participants[peerId];
+        const targetName = targetUser?.name || peerId;
+
+        const answer = await vscode.window.showWarningMessage(
+            `"${targetName}" 사용자를 정말 강제 퇴장시키겠습니까?`,
+            { modal: true },
+            "강제 퇴장"
+        );
+        if (answer !== "강제 퇴장") return;
 
         // 퇴장 메시지 전송
         this.engine.sendMessageToPeer(peerId, 'KICKED', { reason: '호스트에 의해 방에서 퇴장되었습니다.' });
@@ -464,6 +537,7 @@ export class ParticipantManager {
 
         // 로컬에서 즉시 연결 해제 처리
         this.handlePeerDisconnect(peerId);
+        vscode.window.showInformationMessage(`"${targetName}" 사용자를 방에서 퇴장시켰습니다.`);
     }
 
     /**
@@ -525,6 +599,10 @@ export class ParticipantManager {
         if (this.engine.isHost) {
             const guestName = msg.name || peerId;
             const previousPeerId = msg.previousPeerId;
+
+            // 0. 게스트에게 요청이 정상 도착했음을 알리는 ACK 즉시 회신 (게스트 재전송 중지 유도)
+            this.engine.sendMessageToPeer(peerId, 'JOIN_REQUEST_ACK', { received: true });
+
             const existingParticipant = this.participants[peerId] || 
                 (previousPeerId && this.participants[previousPeerId]) || 
                 Object.values(this.participants).find(p => p.name === guestName);
@@ -540,13 +618,24 @@ export class ParticipantManager {
                 }
                 this.engine.pushUIUpdate();
             } else {
-                this.joinRequests.push({
-                    peerId,
-                    name: guestName,
-                    previousPeerId,
-                    timestamp: Date.now()
-                });
-                vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
+                // 이미 대기 중인 요청이 있다면 정보만 갱신(중복 알림 및 중복 리스트 방지)
+                const existingIndex = this.joinRequests.findIndex(req => req.peerId === peerId);
+                if (existingIndex >= 0) {
+                    this.joinRequests[existingIndex] = {
+                        peerId,
+                        name: guestName,
+                        previousPeerId,
+                        timestamp: Date.now()
+                    };
+                } else {
+                    this.joinRequests.push({
+                        peerId,
+                        name: guestName,
+                        previousPeerId,
+                        timestamp: Date.now()
+                    });
+                    vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
+                }
                 this.engine.pushUIUpdate();
             }
         }
@@ -557,6 +646,7 @@ export class ParticipantManager {
      */
     public async handleJoinResponse(msg: any) {
         if (!this.engine.isHost) {
+            this.stopJoinRequestRetry();
             if (msg.approved) {
                 this.stopGuestReconnectGracePeriod();
                 this.engine.isConnected = true;
@@ -585,11 +675,8 @@ export class ParticipantManager {
             this.stopGuestReconnectGracePeriod();
             vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
 
-            // 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
-            const filesToClean = [...this.engine.fileStorageManager.sharedFiles];
-            for (const file of filesToClean) {
-                await this.engine.fileStorageManager.handleRemoteStop(file.name);
-            }
+            // 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 임시 파일/폴더 전체 삭제)
+            await this.engine.fileStorageManager.clearLocalStorage();
 
             await this.engine.sessionRecoveryManager.clearSession();
             this.engine.reset();
@@ -607,11 +694,8 @@ export class ParticipantManager {
             this.stopGuestReconnectGracePeriod();
             vscode.window.showInformationMessage(msg.reason || "호스트가 방을 종료했습니다.");
 
-            // 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
-            const filesToClean = [...this.engine.fileStorageManager.sharedFiles];
-            for (const file of filesToClean) {
-                await this.engine.fileStorageManager.handleRemoteStop(file.name);
-            }
+            // 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 임시 파일/폴더 전체 삭제)
+            await this.engine.fileStorageManager.clearLocalStorage();
 
             await this.engine.sessionRecoveryManager.clearSession();
             this.engine.reset();
@@ -659,29 +743,74 @@ export class ParticipantManager {
 
         // 2. 30초 전체 타임아웃 타이머 설정
         if (this.reconnectDeadlineTimer) clearTimeout(this.reconnectDeadlineTimer);
-        this.reconnectDeadlineTimer = setTimeout(() => {
+        this.reconnectDeadlineTimer = setTimeout(async () => {
             this.engine.logToUI(`Host reconnection timeout exceeded (30s).`);
             vscode.window.showErrorMessage("호스트가 세션을 종료했거나 재연결 제한 시간(30초)을 초과했습니다.");
             this.stopGuestReconnectGracePeriod();
+
+            // 로컬 임시 파일/폴더 삭제 및 세션 영구 정리
+            await this.engine.fileStorageManager.clearLocalStorage();
+            await this.engine.sessionRecoveryManager.clearSession();
+
             this.engine.reset();
+            this.engine.hub.dispose();
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
         }, 30000);
 
-        // 3. 2초 간격으로 PeerJS 호스트에게 재연결(노크) 시도
+        // 3. 간격을 두고 호스트에게 재연결(노크) 시도 및 상태 메시지 갱신
         const savedRoomName = this.engine.roomName;
         const savedName = this.engine.myName;
         const savedId = this.engine.myId;
+        const startTime = Date.now();
+        this.isProbeInFlight = false;
 
         const tryReconnect = () => {
             if (!this.isReconnecting) return;
-            this.engine.logToUI(`Attempting to reconnect to host room "${savedRoomName}"...`);
+            const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+            const remainingSec = Math.max(0, 30 - elapsedSec);
+            vscode.window.setStatusBarMessage(`🔒 호스트 작업 공간 전환 중... 재연결 대기 (${remainingSec}초 남음)`, 3000);
+
+            // 이미 연결 핸드셰이크가 진행 중이면 소켓을 파괴하지 않고 진행 완료를 기다림
+            if (this.isProbeInFlight) {
+                this.engine.logToUI(`Reconnection probe already in progress (${elapsedSec}s elapsed), waiting...`);
+                this.reconnectRetryTimer = setTimeout(tryReconnect, 2500);
+                return;
+            }
+
+            this.engine.logToUI(`Attempting to reconnect to host room "${savedRoomName}" (${elapsedSec}s elapsed)...`);
+            this.isProbeInFlight = true;
             this.engine.hub.dispose();
             this.sendJoinRequest(savedRoomName, savedName, savedId);
 
-            this.reconnectRetryTimer = setTimeout(tryReconnect, 3000);
+            // 각 시도마다 WebRTC 및 WebSocket이 완료될 수 있도록 최소 2.5초~3초 확보
+            const nextInterval = elapsedSec < 10 ? 2500 : 3000;
+            this.reconnectRetryTimer = setTimeout(tryReconnect, nextInterval);
         };
 
-        // 1초 뒤 첫 재시도
-        this.reconnectRetryTimer = setTimeout(tryReconnect, 1000);
+        // 800ms 뒤 첫 재시도 (호스트 소켓 준비 시간 감안)
+        this.reconnectRetryTimer = setTimeout(tryReconnect, 800);
+    }
+
+    /**
+     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출
+     */
+    public onGuestReconnectProbeFailed() {
+        if (!this.isReconnecting) return;
+        this.isProbeInFlight = false;
+        if (this.reconnectRetryTimer) {
+            clearTimeout(this.reconnectRetryTimer);
+        }
+        // 실패 시 1.5초 후 즉시 다음 재시도 트리거
+        this.reconnectRetryTimer = setTimeout(() => {
+            if (this.isReconnecting) {
+                const savedRoomName = this.engine.roomName;
+                const savedName = this.engine.myName;
+                const savedId = this.engine.myId;
+                this.engine.hub.dispose();
+                this.sendJoinRequest(savedRoomName, savedName, savedId);
+            }
+        }, 1500);
     }
 
     /**
@@ -689,6 +818,7 @@ export class ParticipantManager {
      */
     public stopGuestReconnectGracePeriod() {
         this.isReconnecting = false;
+        this.isProbeInFlight = false;
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
             this.reconnectRetryTimer = undefined;
@@ -788,7 +918,9 @@ export class ParticipantManager {
         this.lastPongTimes.clear();
         this.reconnectStartTimes.clear();
         this.stopGuestReconnectGracePeriod();
+        this.stopJoinRequestRetry();
         this.clearJoinTimeout();
+        this.isJoinRequestAckReceived = false;
         this.participants = {};
         this.joinRequests = [];
         this.pendingInvites.clear();

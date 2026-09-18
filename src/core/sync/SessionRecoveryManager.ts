@@ -246,6 +246,7 @@ export class SessionRecoveryManager {
             // PeerJS 방 재개설 (재연결 플래그 설정)
             this.engine.isSetupMode = false;
             this.engine.isConnected = true;
+            this.engine.isSignalingConnected = false; // 시그널링 서버 연결 완료(roomNameSuccess) 전까지 대기 상태
             this.engine.hub.createHub(true, this.engine.roomName, 'none');
 
             this.startHeartbeat();

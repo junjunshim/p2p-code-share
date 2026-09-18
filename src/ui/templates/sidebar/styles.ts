@@ -76,6 +76,52 @@ export function getSidebarStyles(): string {
         }
         .room-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
         .room-value { font-weight: bold; font-size: 18px; color: var(--vscode-foreground); margin-top: 4px; }
+        .server-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 12px;
+            letter-spacing: 0.3px;
+        }
+        .server-status-badge.connected {
+            background: rgba(63, 185, 80, 0.15);
+            color: #3fb950;
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        .server-status-badge.connected .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #3fb950;
+            box-shadow: 0 0 4px rgba(63, 185, 80, 0.8);
+        }
+        .server-status-badge.connecting {
+            background: rgba(255, 170, 0, 0.15);
+            color: #ffaa00;
+            border: 1px solid rgba(255, 170, 0, 0.3);
+        }
+        .server-status-badge.connecting .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #ffaa00;
+            box-shadow: 0 0 4px rgba(255, 170, 0, 0.8);
+            animation: blink 1.2s infinite;
+        }
+        .server-status-badge.error {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        .server-status-badge.error .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #f85149;
+        }
         .option-item {
             display: flex;
             align-items: center;

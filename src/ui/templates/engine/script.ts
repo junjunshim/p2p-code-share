@@ -259,6 +259,7 @@ export function getEngineScript(
                                 log('Sending SDP offer to guest...');
                                 conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
                             } else {
+                                log('No SDP offer ready yet. Requesting invite slot from host...');
                                 vscode.postMessage({ type: 'requireInvite' });
                             }
                         } else if (data.type === 'SDP') {

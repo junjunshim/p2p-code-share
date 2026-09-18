@@ -55,7 +55,8 @@ export function activate(context: vscode.ExtensionContext) {
                 unreadChatCount: state.unreadChatCount,
                 isFollowMeMode: state.isFollowMeMode,
                 isAutoApprove: state.isAutoApprove,
-                isReconnecting: state.isReconnecting
+                isReconnecting: state.isReconnecting,
+                isSignalingConnected: state.isSignalingConnected
             });
         }
     });
@@ -241,22 +242,31 @@ export function activate(context: vscode.ExtensionContext) {
         engine.inviteGuest(true);
     };
 
-    // 방 이름 선점 성공 시 화면 전환
+    // 방 이름 선점 성공 시 화면 전환 및 게스트 수락 대기열(Invite Slot) 자동 생성
     hub.onRoomNameSuccess = () => {
         engine.sessionRecoveryManager.isRestoringSession = false;
         engine.sessionRecoveryManager.restoreRetryCount = 0;
         engine.isConnected = true;
+        engine.isSignalingConnected = true; // [추가] 시그널링 서버 연결 완료
         engine.sessionRecoveryManager.startHeartbeat();
+
+        // 호스트인 경우 게스트의 REQ_OFFER에 즉시 응답할 수 있도록 대기 중인 초대 슬롯 생성
+        if (engine.isHost) {
+            engine.participantManager.inviteGuest(true);
+        }
+
         engine.pushUIUpdate();
     };
 
     // 방 이름 중복 또는 서버 에러 처리
     hub.onRoomNameError = (errorType: string) => {
+        engine.isSignalingConnected = false;
         if (!engine.isHost) {
             // 게스트가 호스트 재연결 유예 기간(Grace Period) 중인 경우:
             // 호스트 창이 아직 서버에 안 떴거나 일시적으로 서버 연결 중일 수 있으므로 즉시 에러 팝업을 띄우거나 reset()하지 않음
             if (engine.participantManager.isReconnecting) {
                 engine.logToUI(`Guest reconnect probe (${errorType}): Host room not ready yet, will retry...`);
+                engine.participantManager.onGuestReconnectProbeFailed();
                 return;
             }
 
@@ -273,17 +283,17 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 호스트인 경우: 이전 창의 소켓이 서버에서 정리되는 중일 수 있으므로(고스트 ID),
-        // 세션 복구 중이라면 팝업을 띄우지 않고 1초 간격으로 최대 4회 조용히 재시도
+        // 세션 복구 중이라면 팝업을 띄우지 않고 0.8초 간격으로 최대 6회 조용히 재시도
         if (engine.sessionRecoveryManager.isRestoringSession && errorType === 'duplicate') {
-            if (engine.sessionRecoveryManager.restoreRetryCount < 4) {
+            if (engine.sessionRecoveryManager.restoreRetryCount < 6) {
                 engine.sessionRecoveryManager.restoreRetryCount++;
-                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in 1.5s (${engine.sessionRecoveryManager.restoreRetryCount}/4)...`);
+                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in 800ms (${engine.sessionRecoveryManager.restoreRetryCount}/6)...`);
                 setTimeout(() => {
                     if (engine.sessionRecoveryManager.isRestoringSession) {
                         hub.dispose();
                         hub.createHub(true, engine.roomName, 'none');
                     }
-                }, 1500);
+                }, 800);
                 return;
             }
         }

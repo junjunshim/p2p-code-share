@@ -451,6 +451,26 @@ export function getSidebarScript(): string {
                 setVisible('btnAddUser', isMeHost);
                 setVisible('revokeAllOption', isMeHost);
 
+                // 시그널링 서버 연결 상태 배지 업데이트 (호스트 전용 표시, 게스트에서는 숨김)
+                const sigBadge = document.getElementById('signalingStatusBadge');
+                const sigText = document.getElementById('signalingStatusText');
+                if (sigBadge && sigText) {
+                    if (!isMeHost) {
+                        sigBadge.style.display = 'none';
+                    } else {
+                        sigBadge.style.display = 'inline-flex';
+                        if (m.isSignalingConnected) {
+                            sigBadge.className = 'server-status-badge connected';
+                            sigText.innerText = 'Server: Ready';
+                            sigBadge.title = '시그널링 서버에 성공적으로 등록되어 게스트 접속 대기 중입니다.';
+                        } else {
+                            sigBadge.className = 'server-status-badge connecting';
+                            sigText.innerText = 'Server: Connecting...';
+                            sigBadge.title = '시그널링 서버에 방 ID 등록 및 연결을 시도하고 있습니다.';
+                        }
+                    }
+                }
+
                 const cursorFilterSelect = document.getElementById('cursorFilterSelect');
                 if (cursorFilterSelect && m.cursorFilter) {
                     cursorFilterSelect.value = m.cursorFilter;

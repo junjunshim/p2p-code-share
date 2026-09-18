@@ -103,7 +103,13 @@ function getActiveView(): string {
                 </div>
                 <div class="accordion-content expanded">
                     <div class="room-info" style="margin-bottom: 8px;">
-                        <div class="room-label">Room Name:</div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="room-label">Room Name:</div>
+                            <div id="signalingStatusBadge" class="server-status-badge connecting">
+                                <span class="status-dot"></span>
+                                <span id="signalingStatusText">Server: Connecting...</span>
+                            </div>
+                        </div>
                         <div id="dispRoomName" class="room-value"></div>
                     </div>
                     <button id="btnOpenChat" onclick="openChat()" style="margin-bottom: 4px; position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;">

@@ -41,6 +41,7 @@ export class SyncEngine {
     public roomName = ''; 
     public isSetupMode = false; 
     public isConnected = false; 
+    public isSignalingConnected = false; // [추가] 시그널링 서버 연결 완료 여부
     public connectionType = 'Direct';
 
     // Typing Lock: 한 쪽이 타이핑 중일 때 상대방 입력 차단
@@ -177,6 +178,7 @@ export class SyncEngine {
                         if (this.isHost) this.broadcastCursor(msg, senderId);
                         break;
                     case 'JOIN_REQUEST': this.participantManager.handleJoinRequest(msg, peerId); break;
+                    case 'JOIN_REQUEST_ACK': this.participantManager.handleJoinRequestAck(msg); break;
                     case 'JOIN_RESPONSE': this.participantManager.handleJoinResponse(msg); break;
                     case 'ROOM_CLOSED': this.participantManager.handleRoomClosed(msg); break;
                     case 'KICKED': this.participantManager.handleKicked(msg); break;
@@ -259,14 +261,13 @@ export class SyncEngine {
             this.sendMessage('updatePeerId', { oldId, newId: this.myId });
             
             if (this.participantManager.isAutoJoin && this.participantManager.pendingJoinRequest) {
-                this.sendMessage('JOIN_REQUEST', { 
-                    name: this.myName, 
-                    peerId: this.myId,
-                    previousPeerId: this.participantManager.pendingJoinRequest.previousPeerId
-                });
+                const req = this.participantManager.pendingJoinRequest;
                 this.participantManager.pendingJoinRequest = null;
-                // 호스트에게 요청을 정상 송신했으므로 초기 연결 타임아웃 해제
-                this.participantManager.clearJoinTimeout();
+                this.participantManager.startJoinRequestWithAck({
+                    name: this.myName,
+                    peerId: this.myId,
+                    previousPeerId: req.previousPeerId
+                });
             } else if (!this.participantManager.isAutoJoin && !this.isConnected) {
                 this.sendMessage('GUEST_JOIN', { name: this.myName }); 
             }
@@ -546,6 +547,7 @@ export class SyncEngine {
             files: this.fileStorageManager.sharedFiles, 
             isSetupMode: this.isSetupMode, 
             isConnected: this.isConnected,
+            isSignalingConnected: this.isSignalingConnected,
             connectionType: this.connectionType,
             pendingInvites: Array.from(this.participantManager.pendingInvites),
             joinRequests: this.participantManager.joinRequests,
@@ -624,8 +626,8 @@ export class SyncEngine {
     public changeMyName(newName: string) {
         this.participantManager.changeMyName(newName);
     }
-    public kickPeer(peerId: string) {
-        this.participantManager.kickPeer(peerId);
+    public async kickPeer(peerId: string) {
+        await this.participantManager.kickPeer(peerId);
     }
     public handlePeerDisconnect(peerId: string) {
         this.participantManager.handlePeerDisconnect(peerId);
@@ -688,11 +690,8 @@ export class SyncEngine {
             // 4. 재연결 타이머 및 유예 상태 즉시 종료
             this.participantManager.stopGuestReconnectGracePeriod();
 
-            // 5. 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 파일 삭제)
-            const filesToClean = [...this.fileStorageManager.sharedFiles];
-            for (const file of filesToClean) {
-                await this.fileStorageManager.handleRemoteStop(file.name);
-            }
+            // 5. 로컬 사본 파일들을 완전히 제거 (에디터 닫기 및 디스크 임시 파일/폴더 전체 삭제)
+            await this.fileStorageManager.clearLocalStorage();
 
             // 6. 연결 초기화 및 세션 영구 삭제
             await this.sessionRecoveryManager.clearSession();
@@ -879,6 +878,7 @@ export class SyncEngine {
 
         this.isHost = false; 
         this.isConnected = false; 
+        this.isSignalingConnected = false;
         this.connectionType = 'Direct';
         this.roomName = ''; 
         this.myName = ''; 

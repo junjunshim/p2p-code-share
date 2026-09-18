@@ -52,6 +52,36 @@ export class FileStorageManager {
     }
 
     /**
+     * 게스트가 퇴장하거나 강퇴당했을 때 현재 방의 임시 스토리지 전체를 깨끗하게 삭제합니다.
+     */
+    public async clearLocalStorage() {
+        if (this.engine.isHost) return;
+
+        // 1. 열려있는 모든 공유 파일 에디터 탭 닫기 및 파일별 정리
+        const filesToClean = [...this.sharedFiles];
+        for (const file of filesToClean) {
+            await this.handleRemoteStop(file.name);
+        }
+
+        // 2. 현재 방 및 사용자 스토리지 디렉터리 통째로 삭제
+        try {
+            if (this.storagePath && fs.existsSync(this.storagePath)) {
+                fs.rmSync(this.storagePath, { recursive: true, force: true });
+            }
+
+            // 상위의 방 폴더(방 이름 폴더)도 비어있거나 남아있으면 삭제 시도
+            if (this.engine.roomName) {
+                const roomDir = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName));
+                if (fs.existsSync(roomDir)) {
+                    fs.rmSync(roomDir, { recursive: true, force: true });
+                }
+            }
+        } catch (e) {
+            // 파일 락 등의 이유로 즉시 삭제 실패 시에도 익스텐션 정지에 영향 없도록 무시
+        }
+    }
+
+    /**
      * 공유 파일 저장을 위한 저장소를 초기화합니다.
      */
     public initializeStorage() {
