@@ -10,34 +10,73 @@ import { PeerPermission } from '../../types';
 import { SyncEngine } from '../SyncEngine';
 import { isPathEqual, normalizeEOL } from '../../utils/helpers';
 
+/**
+ * ParticipantManager 클래스.
+ * 방 참가자(게스트)의 목록 관리, 권한 제어(읽기/쓰기, 파일 담당자 지정),
+ * 방 참여 승인/거절(수동 및 자동 승인), 초대 생성, 사용자 이름 변경, 강제 퇴장(Kick),
+ * 실시간 Ping-Pong 연결 모니터링 및 네트워크 단절 시 30초 재연결 유예(Grace Period) 처리를 전담합니다.
+ */
 export class ParticipantManager {
+    /** 피어 ID별 권한 및 상태 정보 맵 */
     public participants: { [key: string]: PeerPermission } = {};
+
+    /** 호스트가 수신하여 대기 중인 게스트 방 참여 요청 목록 */
     public joinRequests: any[] = [];
+
+    /** 초대 링크 생성 시 발급된 대기 중인 초대 피어 ID 세트 */
     public pendingInvites = new Set<string>();
+
+    /** 게스트가 방 참여를 시도 중인지 여부 플래그 */
     public isAutoJoin = false;
+
+    /** 새 참가자 참여 시 즉시 승인할지 여부 플래그 (호스트 전용) */
     public isAutoApprove = false;
+
+    /** 게스트 연결 준비 완료 시 자동 발송할 대기 중인 참여 요청 정보 */
     public pendingJoinRequest: { roomName: string, userName: string, previousPeerId?: string } | null = null;
+
+    /** 게스트 방 입장 시도 전체 제한시간(20초) 타이머 */
     private joinTimeout?: NodeJS.Timeout;
 
-    // 게스트 재연결 유예 기간(Grace Period) 관련 속성
+    /** 게스트 네트워크 일시 단절 시 30초 재연결 유예 모드 활성화 여부 플래그 */
     public isReconnecting = false;
+
+    /** 현재 재연결 시도(프로브)가 진행 중인지 여부 플래그 */
     private isProbeInFlight = false;
+
+    /** 게스트 재연결 재시도 주기 타이머 */
     private reconnectRetryTimer?: NodeJS.Timeout;
+
+    /** 게스트 재연결 최종 데드라인(30초) 타이머 */
     private reconnectDeadlineTimer?: NodeJS.Timeout;
 
-    // 게스트 방 입장 승인 요청(JOIN_REQUEST) ACK 및 재시도 타이머
+    /** 게스트 방 입장 승인 요청(JOIN_REQUEST) 주기적 재전송 타이머 */
     private joinRequestRetryTimer?: NodeJS.Timeout;
+
+    /** 호스트로부터 JOIN_REQUEST_ACK를 수신했는지 여부 플래그 */
     private isJoinRequestAckReceived = false;
 
-    // 실시간 연결 상태 모니터링 (Ping-Pong) 및 재연결 대기 관리
+    /** 피어들의 생존 여부를 주기적으로 확인하는 PING 타이머 */
     private pingTimer?: NodeJS.Timeout;
+
+    /** 피어 ID별 가장 최근 PONG 수신 에포크 밀리초 타임스탬프 맵 */
     public lastPongTimes = new Map<string, number>();
+
+    /** 피어 ID별 재연결 대기 상태가 시작된 시점의 타임스탬프 맵 */
     public reconnectStartTimes = new Map<string, number>();
 
+    /**
+     * ParticipantManager 인스턴스를 생성합니다.
+     * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
+     */
     constructor(private engine: SyncEngine) {}
 
     /**
-     * 특정 피어가 특정 파일에 대한 편집 권한이 있는지 확인합니다.
+     * 특정 피어가 특정 파일에 대한 쓰기/편집 권한이 있는지 확인합니다.
+     * 파일에 단독 담당자(Assignee)가 지정되어 있는 경우 담당자만 편집 가능합니다.
+     * @param peerId 확인할 피어 ID.
+     * @param fileName 대상 파일 이름.
+     * @returns 편집 가능하면 true, 그렇지 않으면 false.
      */
     public canPeerEdit(peerId: string, fileName: string): boolean {
         if (peerId === 'host') return true;
@@ -54,46 +93,47 @@ export class ParticipantManager {
     }
 
     /**
-     * 현재 사용자가 특정 파일에 대한 편집 권한이 있는지 확인합니다.
-     * @param fileName 확인 대상 파일 이름.
+     * 현재 로컬 사용자가 특정 파일에 대한 쓰기/편집 권한이 있는지 확인합니다.
+     * @param fileName 확인할 파일 이름.
+     * @returns 편집 가능하면 true, 그렇지 않으면 false.
      */
     public canIEdit(fileName: string): boolean {
-        // 호스트는 항상 가능
+        // 호스트는 항상 모든 파일에 대한 완전한 권한을 가짐
         if (this.engine.isHost) return true;
         
-        // 내 ID 또는 기본 ID로 데이터 찾기
+        // 내 ID 또는 기본 ID로 데이터 검색
         const myData = this.participants[this.engine.myId] || this.participants['default'];
         
         if (!myData) return false; // 기본 권한 없음
         
-        // 파일 담당자 지정 체크
+        // 파일에 담당자가 지정되어 있는 경우 본인 일치 여부 검사
         const file = this.engine.fileStorageManager.sharedFiles.find(f => f.name === fileName);
         if (file && file.assigneeId) {
-            // 담당자가 지정되어 있으면, 내 ID가 담당자 ID여야만 편집 가능
             return file.assigneeId === this.engine.myId;
         }
         
-        // 1. 전체 권한이 있으면 통과
+        // 1. 전체 편집 권한이 부여되어 있는 경우 통과
         if (myData.globalCanEdit) return true;
         
-        // 2. 파일별 권한 확인
+        // 2. 파일별 개별 권한 확인
         return myData.filePermissions[fileName] === true;
     }
 
     /**
-     * 방 참여 요청을 보냅니다. (게스트용)
-     * @param roomName 방 이름.
-     * @param userName 사용자 이름.
-     * @param previousPeerId 재연결 시 기존 피어 ID (세션 복원용).
+     * 지정한 방 이름으로 호스트에게 방 참여 요청을 전송하고 WebRTC 연결을 초기화합니다 (게스트용).
+     * @param roomName 참여할 방 이름.
+     * @param userName 사용자 닉네임.
+     * @param previousPeerId 세션 복원 시 사용될 이전 피어 ID (선택 사항).
+     * @returns {Promise<void>}
      */
-    public async sendJoinRequest(roomName: string, userName: string, previousPeerId?: string) {
+    public async sendJoinRequest(roomName: string, userName: string, previousPeerId?: string): Promise<void> {
         this.engine.roomName = roomName;
         this.engine.myName = userName || '';
         if (previousPeerId) {
             this.engine.myId = previousPeerId;
         }
         this.engine.isSetupMode = false;
-        this.isAutoJoin = true; // [추가] 자동 참여 모드 설정
+        this.isAutoJoin = true; // 자동 참여 모드 설정
         this.pendingJoinRequest = { roomName, userName, previousPeerId }; // 요청 큐에 저장
         // 게스트가 새로운 방에 입장할 때 기존에 남아있던 타 방 임시 디렉터리들을 선제적으로 정리
         this.engine.fileStorageManager.cleanOldRoomStorages(roomName);
@@ -118,9 +158,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 연결 요청 제한시간을 정리합니다.
+     * 게스트 방 입장 대기 제한시간 타이머를 정리합니다.
+     * @returns {void}
      */
-    public clearJoinTimeout() {
+    public clearJoinTimeout(): void {
         if (this.joinTimeout) {
             clearTimeout(this.joinTimeout);
             this.joinTimeout = undefined;
@@ -129,9 +170,11 @@ export class ParticipantManager {
 
     /**
      * ACK 확인 기반으로 호스트에게 방 참여 요청(JOIN_REQUEST)을 발송하고,
-     * ACK가 올 때까지 주기적으로 재전송합니다. (게스트 전용)
+     * ACK가 올 때까지 주기적으로 재전송합니다 (게스트 전용).
+     * @param reqData 요청 데이터 (사용자 이름, 피어 ID, 이전 피어 ID).
+     * @returns {void}
      */
-    public startJoinRequestWithAck(reqData: { name: string, peerId: string, previousPeerId?: string }) {
+    public startJoinRequestWithAck(reqData: { name: string, peerId: string, previousPeerId?: string }): void {
         this.stopJoinRequestRetry();
         this.isJoinRequestAckReceived = false;
 
@@ -161,9 +204,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트로부터 참여 요청 접수 확인(ACK)을 수신했을 때 호출됩니다. (게스트 전용)
+     * 호스트로부터 참여 요청 접수 확인(ACK)을 수신했을 때 호출됩니다 (게스트 전용).
+     * @param msg 수신된 ACK 메시지 객체.
+     * @returns {void}
      */
-    public handleJoinRequestAck(msg: any) {
+    public handleJoinRequestAck(msg: any): void {
         if (this.engine.isHost) return;
         this.isJoinRequestAckReceived = true;
         this.stopJoinRequestRetry();
@@ -177,8 +222,9 @@ export class ParticipantManager {
 
     /**
      * 참여 요청 재전송 타이머를 중지합니다.
+     * @returns {void}
      */
-    public stopJoinRequestRetry() {
+    public stopJoinRequestRetry(): void {
         if (this.joinRequestRetryTimer) {
             clearTimeout(this.joinRequestRetryTimer);
             this.joinRequestRetryTimer = undefined;
@@ -186,13 +232,14 @@ export class ParticipantManager {
     }
 
     /**
-     * 방 참여 요청을 승인합니다. (호스트용)
+     * 대기 중인 게스트의 방 참여 요청을 승인합니다 (호스트 전용).
      * @param peerId 승인할 피어 ID.
+     * @returns {void}
      */
-    public approveRequest(peerId: string) {
+    public approveRequest(peerId: string): void {
         if (!this.engine.isHost) return;
         
-        // [수정] 승인 시 게스트를 참가자로 추가
+        // 승인 시 게스트를 참가자로 추가
         const request = this.joinRequests.find(req => req.peerId === peerId);
         if (request) {
             this.handleGuestJoin({ name: request.name, previousPeerId: request.previousPeerId }, peerId);
@@ -208,9 +255,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 모든 대기 중인 방 참여 요청을 일괄 승인합니다. (호스트용)
+     * 대기 중인 모든 게스트의 방 참여 요청을 일괄 승인합니다 (호스트 전용).
+     * @returns {void}
      */
-    public approveAllRequests() {
+    public approveAllRequests(): void {
         if (!this.engine.isHost || this.joinRequests.length === 0) return;
 
         const requestsToApprove = [...this.joinRequests];
@@ -225,10 +273,12 @@ export class ParticipantManager {
     }
 
     /**
-     * 자동 승인 모드를 설정합니다. (호스트용)
-     * 활성화 시 대기 중인 모든 요청을 즉시 일괄 승인합니다.
+     * 자동 승인 모드를 설정합니다 (호스트 전용).
+     * 활성화 시 현재 대기 중인 모든 요청을 즉시 일괄 승인합니다.
+     * @param enabled 자동 승인 활성화 여부.
+     * @returns {void}
      */
-    public setAutoApprove(enabled: boolean) {
+    public setAutoApprove(enabled: boolean): void {
         if (!this.engine.isHost) return;
         this.isAutoApprove = enabled;
         if (enabled) {
@@ -239,10 +289,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 방 참여 요청을 거절합니다. (호스트용)
+     * 특정 게스트의 방 참여 요청을 거절하고 연결을 종료합니다 (호스트 전용).
      * @param peerId 거절할 피어 ID.
+     * @returns {void}
      */
-    public rejectRequest(peerId: string) {
+    public rejectRequest(peerId: string): void {
         if (!this.engine.isHost) return;
         
         // 요청 목록에서 제거
@@ -258,9 +309,13 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트가 게스트의 참여를 처리합니다.
+     * 호스트가 방에 참여한 게스트를 참가자 명단에 등록하고 최신 공유 파일 스냅샷과 데코레이션을 전송합니다.
+     * 창 새로고침 등으로 재연결된 게스트인 경우 이전 피어 ID의 권한과 파일 담당자 상태를 승계합니다.
+     * @param msg 게스트 참여 메시지 (사용자 이름, 이전 피어 ID 등).
+     * @param peerId 신규 접속한 게스트의 피어 ID.
+     * @returns {void}
      */
-    public handleGuestJoin(msg: any, peerId: string) {
+    public handleGuestJoin(msg: any, peerId: string): void {
         if (this.engine.isHost) { 
             const guestName = msg.name || peerId;
             const previousPeerId = msg.previousPeerId;
@@ -309,7 +364,7 @@ export class ParticipantManager {
 
             this.broadcastUserList(); 
             
-            // [추가] 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
+            // 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
             this.engine.fileStorageManager.sharedFiles.forEach(f => {
                 const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
                 const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
@@ -335,11 +390,12 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트가 특정 피어의 권한을 설정합니다.
+     * 호스트가 특정 피어의 권한을 설정하고 해당 피어 및 전체 참가자에게 알립니다.
      * @param peerId 대상 피어 ID.
      * @param permission 설정할 권한 객체.
+     * @returns {void}
      */
-    public setPeerPermission(peerId: string, permission: PeerPermission) {
+    public setPeerPermission(peerId: string, permission: PeerPermission): void {
         if (!this.engine.isHost) return;
 
         // participants 목록 업데이트
@@ -355,9 +411,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트가 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)합니다.
+     * 호스트가 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)하고 파일 담당자 지정을 초기화합니다.
+     * @returns {void}
      */
-    public revokeAllWritePermissions() {
+    public revokeAllWritePermissions(): void {
         if (!this.engine.isHost) return;
 
         let hasGuests = false;
@@ -399,11 +456,12 @@ export class ParticipantManager {
     }
 
     /**
-     * 특정 파일의 담당자를 지정하고 브로드캐스트합니다.
+     * 특정 파일의 단독 편집 담당자를 지정하거나 해제하고 모든 피어에게 브로드캐스트합니다.
      * @param fileName 대상 파일 이름.
-     * @param assigneeId 담당자 피어 ID.
+     * @param assigneeId 담당자로 지정할 피어 ID (빈 문자열일 경우 해제).
+     * @returns {void}
      */
-    public setFileAssignee(fileName: string, assigneeId: string) {
+    public setFileAssignee(fileName: string, assigneeId: string): void {
         if (!this.engine.isHost) return;
 
         const file = this.engine.fileStorageManager.sharedFiles.find(f => f.name === fileName);
@@ -433,10 +491,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 게스트를 초대합니다.
-     * @param isSilent true일 경우 UI를 초대 화면으로 전환하지 않고 배경에서 생성합니다.
+     * 새로운 게스트를 위한 임시 초대 세션을 생성하고 허브 연결을 초기화합니다.
+     * @param isSilent true일 경우 UI를 초대 화면으로 전환하지 않고 배경에서 생성합니다 (기본값: false).
+     * @returns {void}
      */
-    public inviteGuest(isSilent: boolean = false) {
+    public inviteGuest(isSilent: boolean = false): void {
         if (!this.engine.isHost) return;
         // 새로운 피어 ID 생성
         const newPeerId = 'guest_' + Date.now();
@@ -451,10 +510,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 사용자 이름을 변경합니다.
-     * @param newName 새로운 사용자 이름.
+     * 현재 로컬 사용자의 표시 이름을 변경하고 중복 검사 및 피어 브로드캐스트를 수행합니다.
+     * @param newName 새로 설정할 닉네임.
+     * @returns {void}
      */
-    public changeMyName(newName: string) {
+    public changeMyName(newName: string): void {
         const trimmedNewName = newName.trim();
         if (!trimmedNewName) return;
 
@@ -499,9 +559,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 참가자 명단을 모든 피어에게 브로드캐스트합니다.
+     * 참가자 명단과 최신 방 이름을 모든 피어에게 브로드캐스트합니다 (호스트 전용).
+     * @returns {void}
      */
-    public broadcastUserList() {
+    public broadcastUserList(): void {
         if (this.engine.isHost) {
             // 'default' ID를 제외한 참가자 목록 생성
             const filteredParticipants = { ...this.participants };
@@ -513,10 +574,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 특정 피어를 강제로 퇴장시킵니다. (호스트 전용)
+     * 특정 피어를 강제로 방에서 퇴장시키고 WebRTC 연결을 종료합니다 (호스트 전용).
      * @param peerId 퇴장시킬 피어 ID.
+     * @returns {Promise<void>}
      */
-    public async kickPeer(peerId: string) {
+    public async kickPeer(peerId: string): Promise<void> {
         if (!this.engine.isHost) return;
 
         const targetUser = this.participants[peerId];
@@ -542,9 +604,11 @@ export class ParticipantManager {
 
     /**
      * 피어 연결 해제 이벤트를 처리합니다.
+     * 게스트의 경우 호스트 단절 시 30초 유예 모드로 진입하며, 호스트의 경우 해당 피어를 명단에서 제거합니다.
      * @param peerId 연결이 해제된 피어 ID.
+     * @returns {void}
      */
-    public handlePeerDisconnect(peerId: string) {
+    public handlePeerDisconnect(peerId: string): void {
         if (!this.engine.isHost) {
             // 게스트일 경우: 호스트와의 일시적 단절(호스트 창 전환 등)을 감지하고 30초 재연결 유예 모드로 진입
             if (peerId === 'default' || peerId === 'all') { 
@@ -593,9 +657,12 @@ export class ParticipantManager {
     }
 
     /**
-     * [추가] 방 참여 요청 처리 (호스트 전용)
+     * 게스트로부터 방 참여 요청을 수신했을 때 ACK를 전송하고 자동 승인 또는 요청 대기열에 추가합니다 (호스트 전용).
+     * @param msg 수신된 참여 요청 메시지 (이름, 이전 피어 ID 등).
+     * @param peerId 요청한 게스트 피어 ID.
+     * @returns {void}
      */
-    public handleJoinRequest(msg: any, peerId: string) {
+    public handleJoinRequest(msg: any, peerId: string): void {
         if (this.engine.isHost) {
             const guestName = msg.name || peerId;
             const previousPeerId = msg.previousPeerId;
@@ -642,9 +709,11 @@ export class ParticipantManager {
     }
 
     /**
-     * [추가] 방 참여 응답 처리 (게스트 전용)
+     * 호스트로부터 방 참여 승인/거절 응답을 수신하여 세션을 연결하거나 리셋합니다 (게스트 전용).
+     * @param msg 수신된 승인/거절 메시지 객체.
+     * @returns {Promise<void>}
      */
-    public async handleJoinResponse(msg: any) {
+    public async handleJoinResponse(msg: any): Promise<void> {
         if (!this.engine.isHost) {
             this.stopJoinRequestRetry();
             if (msg.approved) {
@@ -668,9 +737,11 @@ export class ParticipantManager {
     }
 
     /**
-     * [추가] 강제 퇴장 처리 (게스트 전용)
+     * 호스트로부터 강제 퇴장(KICKED) 메시지를 수신했을 때 임시 파일을 삭제하고 세션을 정리합니다 (게스트 전용).
+     * @param msg 수신된 강제 퇴장 메시지 객체.
+     * @returns {Promise<void>}
      */
-    public async handleKicked(msg: any) {
+    public async handleKicked(msg: any): Promise<void> {
         if (!this.engine.isHost) {
             this.stopGuestReconnectGracePeriod();
             vscode.window.showErrorMessage(`퇴장되었습니다: ${msg.reason}`);
@@ -687,9 +758,11 @@ export class ParticipantManager {
     }
 
     /**
-     * [추가] 호스트의 방 종료(Leave) 처리 (게스트 전용)
+     * 호스트의 방 종료(ROOM_CLOSED) 메시지를 수신했을 때 임시 파일을 정리하고 세션을 종료합니다 (게스트 전용).
+     * @param msg 수신된 방 종료 메시지 객체.
+     * @returns {Promise<void>}
      */
-    public async handleRoomClosed(msg: any) {
+    public async handleRoomClosed(msg: any): Promise<void> {
         if (!this.engine.isHost) {
             this.stopGuestReconnectGracePeriod();
             vscode.window.showInformationMessage(msg.reason || "호스트가 방을 종료했습니다.");
@@ -706,9 +779,11 @@ export class ParticipantManager {
     }
 
     /**
-     * [추가] 호스트로부터 권한 변경 메시지 수신 (게스트 전용)
+     * 호스트로부터 권한 변경(SET_PERMISSION) 메시지를 수신하여 에디터 읽기 전용 모드를 재설정합니다 (게스트 전용).
+     * @param msg 수신된 권한 객체를 담은 메시지.
+     * @returns {Promise<void>}
      */
-    public async handleSetPermission(msg: any) {
+    public async handleSetPermission(msg: any): Promise<void> {
         if (!this.engine.isHost) {
             const p = msg.permission as PeerPermission;
             this.participants[this.engine.myId] = {
@@ -724,9 +799,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트 연결 단절 시 30초 동안 에디터를 잠그고 조용히 재접속을 시도하는 유예 기간을 시작합니다.
+     * 호스트 일시 단절 감지 시 30초 동안 에디터를 잠그고 조용히 재접속을 시도하는 유예 기간(Grace Period)을 시작합니다 (게스트 전용).
+     * @returns {Promise<void>}
      */
-    public async startGuestReconnectGracePeriod() {
+    public async startGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = true;
         this.engine.isConnected = false;
         this.engine.updateStatus('Reconnecting...');
@@ -793,9 +869,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출
+     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출되어 1.5초 후 다음 시도를 트리거합니다.
+     * @returns {void}
      */
-    public onGuestReconnectProbeFailed() {
+    public onGuestReconnectProbeFailed(): void {
         if (!this.isReconnecting) return;
         this.isProbeInFlight = false;
         if (this.reconnectRetryTimer) {
@@ -814,9 +891,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 재연결 성공 또는 실패 시 유예 타이머 및 상태를 정리합니다.
+     * 재연결 성공 또는 최종 타임아웃 시 유예 타이머 및 관련 상태를 정리합니다.
+     * @returns {void}
      */
-    public stopGuestReconnectGracePeriod() {
+    public stopGuestReconnectGracePeriod(): void {
         this.isReconnecting = false;
         this.isProbeInFlight = false;
         if (this.reconnectRetryTimer) {
@@ -831,8 +909,10 @@ export class ParticipantManager {
 
     /**
      * 호스트가 게스트들의 실시간 연결 상태를 주기적으로 확인하기 위해 Ping 타이머를 시작합니다.
+     * 8초 이상 응답이 없으면 'reconnecting'으로 표시하고, 30초 초과 시 연결을 종료합니다.
+     * @returns {void}
      */
-    public startPingCheck() {
+    public startPingCheck(): void {
         this.stopPingCheck();
         if (!this.engine.isHost) return;
 
@@ -889,9 +969,10 @@ export class ParticipantManager {
     }
 
     /**
-     * Ping 타이머를 중지합니다.
+     * 실행 중인 Ping 타이머를 중지합니다.
+     * @returns {void}
      */
-    public stopPingCheck() {
+    public stopPingCheck(): void {
         if (this.pingTimer) {
             clearInterval(this.pingTimer);
             this.pingTimer = undefined;
@@ -899,9 +980,11 @@ export class ParticipantManager {
     }
 
     /**
-     * 게스트로부터 PONG 응답을 수신했을 때 호출됩니다. (호스트 전용)
+     * 게스트로부터 PONG 응답을 수신했을 때 호출되어 연결 상태를 'connected'로 갱신합니다 (호스트 전용).
+     * @param peerId 응답을 보낸 게스트 피어 ID.
+     * @returns {void}
      */
-    public handlePong(peerId: string) {
+    public handlePong(peerId: string): void {
         if (!this.engine.isHost) return;
         this.lastPongTimes.set(peerId, Date.now());
         this.reconnectStartTimes.delete(peerId);
@@ -913,7 +996,11 @@ export class ParticipantManager {
         }
     }
 
-    public reset() {
+    /**
+     * ParticipantManager의 모든 타이머, 참가자 명단, 요청 대기열 및 연결 상태를 초기화합니다.
+     * @returns {void}
+     */
+    public reset(): void {
         this.stopPingCheck();
         this.lastPongTimes.clear();
         this.reconnectStartTimes.clear();

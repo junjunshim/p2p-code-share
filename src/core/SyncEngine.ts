@@ -17,59 +17,117 @@ import { DecorationManager } from './sync/DecorationManager';
 import { DocumentSyncManager } from './sync/DocumentSyncManager';
 import { SessionRecoveryManager } from './sync/SessionRecoveryManager';
 
+/**
+ * SyncEngine 클래스.
+ * P2P 파일 공유 및 실시간 코드 협업의 중앙 오케스트레이터(Orchestrator) 엔진입니다.
+ * 하위 매니저(FileStorageManager, ParticipantManager, CursorManager, DecorationManager,
+ * DocumentSyncManager, SessionRecoveryManager)를 총괄 제어하며, WebRTC 메시지 라우팅,
+ * 화면 동기화(Follow Me), 실시간 채팅 및 에디터 이벤트 처리를 중계합니다.
+ */
 export class SyncEngine {
-    // 채팅 관련 속성
+    /** 세션 내 누적된 전체 채팅 메시지 이력 */
     public chatHistory: ChatMessage[] = [];
+
+    /** 실시간 채팅 Webview 패널 인스턴스 참조 */
     public chatPanel?: ChatPanel;
-    public unreadChatCount = 0; // 안 읽은 메시지 수 카운터
-    public isFollowMeMode = false; // [추가] 화면 동기화(팔로우) 활성화 여부
 
+    /** 사용자가 아직 확인하지 않은 안 읽은 채팅 메시지 수 카운터 */
+    public unreadChatCount = 0;
 
-    // 서브 매니저 인스턴스
+    /** 호스트 화면 스크롤/탭 전환을 게스트가 실시간으로 추종하는 팔로우 모드 활성화 여부 */
+    public isFollowMeMode = false;
+
+    /** 공유 파일 목록 및 로컬 스토리지 I/O를 전담하는 매니저 */
     public fileStorageManager: FileStorageManager;
+
+    /** 방 참여자, 승인 대기열, 권한 및 핑퐁 상태를 전담하는 매니저 */
     public participantManager: ParticipantManager;
+
+    /** 피어별 커서/선택영역 동기화 및 렌더링을 전담하는 매니저 */
     public cursorManager: CursorManager;
+
+    /** 인라인 피드백 데코레이션(오타, 문법, 메모 등)을 전담하는 매니저 */
     public decorationManager: DecorationManager;
+
+    /** Yjs CRDT 문서 상태 및 에디터 텍스트 동기화를 전담하는 매니저 */
     public documentSyncManager: DocumentSyncManager;
+
+    /** 창 새로고침/작업공간 전환 시 세션 영속화 및 자동 복구를 전담하는 매니저 */
     public sessionRecoveryManager: SessionRecoveryManager;
 
-    // 공통 상태 변수
-    public isHost = false; 
+    /** 현재 사용자가 세션의 호스트(Host)인지 여부 플래그 */
+    public isHost = false;
+
+    /** 현재 사용자의 표시 닉네임 */
     public myName = '';
-    public myId = ''; 
+
+    /** 현재 사용자의 고유 피어 ID (호스트: 'host', 게스트: 고유 ID) */
+    public myId = '';
+
+    /** 세션 시작 시 지정되었던 초기 닉네임 */
     public initialName = '';
-    public roomName = ''; 
-    public isSetupMode = false; 
-    public isConnected = false; 
-    public isSignalingConnected = false; // [추가] 시그널링 서버 연결 완료 여부
+
+    /** 참여 중인 P2P 방 이름 */
+    public roomName = '';
+
+    /** 방 생성/참여 설정 단계(초대 대기 등)에 있는지 여부 플래그 */
+    public isSetupMode = false;
+
+    /** P2P 데이터 채널이 성공적으로 연결되었는지 여부 플래그 */
+    public isConnected = false;
+
+    /** 시그널링 서버와의 WebSocket 연결이 완료되었는지 여부 플래그 */
+    public isSignalingConnected = false;
+
+    /** 연결 유형 문자열 ('Direct' | 'TURN') */
     public connectionType = 'Direct';
 
-    // Typing Lock: 한 쪽이 타이핑 중일 때 상대방 입력 차단
-    // remoteTypingLocked: 원격 사용자가 타이핑 중 → 내 입력 차단
+    /** 원격 사용자의 타이핑으로 인해 내 에디터 입력을 잠그는 플래그 맵 */
     public remoteTypingLocked = new Map<string, boolean>();
-    // localTypingUnlockTimers: 내 타이핑 멈추면 300ms 후 TYPING_UNLOCK 전송
+
+    /** 내 타이핑 종료 후 잠금 해제 메시지(TYPING_UNLOCK)를 발송하기 위한 타이머 맵 */
     public localTypingUnlockTimers = new Map<string, NodeJS.Timeout>();
 
-    // 기존 속성과의 하위 호환성 매핑 (Getter/Setter)
+    /**
+     * 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임).
+     */
     public get sharedFiles(): SharedFile[] {
         return this.fileStorageManager.sharedFiles;
     }
+
+    /**
+     * 현재 세션의 참가자 권한 목록을 반환합니다 (ParticipantManager 위임).
+     */
     public get participants(): { [key: string]: PeerPermission } {
         return this.participantManager.participants;
     }
+
+    /**
+     * 현재 등록된 데코레이션 목록을 반환합니다 (DecorationManager 위임).
+     */
     public get decorations(): FileDecoration[] {
         return this.decorationManager.decorations;
     }
+
+    /**
+     * 현재 설정된 커서 필터링 모드를 반환합니다 (CursorManager 위임).
+     */
     public get cursorFilter(): 'host' | 'editable' | 'all' {
         return this.cursorManager.cursorFilter;
     }
 
+    /**
+     * SyncEngine 인스턴스를 생성하고 모든 서브 매니저와 이벤트 리스너를 초기화합니다.
+     * @param hub WebRTC P2P 통신을 중계하는 HubManager 인스턴스.
+     * @param context VS Code 확장 컨텍스트.
+     * @param updateUI 사이드바 Webview UI 갱신을 트리거하는 콜백 함수.
+     */
     constructor(
         public hub: HubManager,
         public context: vscode.ExtensionContext,
         private updateUI: (state: any) => void
     ) {
-        // 매니저 초기화
+        // 서브 매니저 인스턴스 생성 및 주입
         this.fileStorageManager = new FileStorageManager(this);
         this.participantManager = new ParticipantManager(this);
         this.cursorManager = new CursorManager(this);
@@ -328,7 +386,7 @@ export class SyncEngine {
             this.updateActiveFileSharedContext();
             if (!editor) return;
 
-            // [추가] 호스트 활성 탭 전환 시 화면 추적 동기화
+            // 호스트 활성 탭 전환 시 화면 추적 동기화
             if (this.isHost && this.isFollowMeMode) {
                 const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
                 if (file && editor.visibleRanges.length > 0) {
@@ -349,7 +407,7 @@ export class SyncEngine {
             }
         });
 
-        // [추가] 호스트 스크롤 변경 시 화면 추적 동기화
+        // 호스트 스크롤 변경 시 화면 추적 동기화
         vscode.window.onDidChangeTextEditorVisibleRanges(e => {
             if (this.isHost && this.isFollowMeMode) {
                 const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.textEditor.document.uri.fsPath));
@@ -583,75 +641,202 @@ export class SyncEngine {
         this.hub.sendToEngine({ type: 'status', status: finalStatus });
     }
 
-    // Proxy 호출 연결
-    public async shareActiveFile(targetUri?: vscode.Uri) {
+    // 서브 매니저 기능 위임(Proxy) 메서드 모음
+
+    /**
+     * 현재 활성화된 에디터의 파일 또는 지정된 URI의 파일을 공유 시작합니다.
+     * @param targetUri 공유할 대상 파일 URI (선택 사항).
+     * @returns {Promise<void>}
+     */
+    public async shareActiveFile(targetUri?: vscode.Uri): Promise<void> {
         await this.fileStorageManager.shareActiveFile(targetUri);
     }
-    public async stopSharing() {
+
+    /**
+     * 현재 활성화된 에디터 파일의 공유를 중지합니다.
+     * @returns {Promise<void>}
+     */
+    public async stopSharing(): Promise<void> {
         await this.fileStorageManager.stopSharing();
     }
-    public async stopSharingByName(fileName: string) {
+
+    /**
+     * 특정 파일명의 공유를 중지합니다 (호스트 전용).
+     * @param fileName 공유를 중지할 파일 이름.
+     * @returns {Promise<void>}
+     */
+    public async stopSharingByName(fileName: string): Promise<void> {
         await this.fileStorageManager.stopSharingByName(fileName);
     }
-    public inviteGuest(isSilent: boolean = false) {
+
+    /**
+     * 새로운 게스트 초대를 위한 피어 세션을 생성합니다 (호스트 전용).
+     * @param isSilent UI 전환 없이 조용히 생성할지 여부.
+     * @returns {void}
+     */
+    public inviteGuest(isSilent: boolean = false): void {
         this.participantManager.inviteGuest(isSilent);
     }
-    public async sendJoinRequest(roomName: string, userName: string) {
+
+    /**
+     * 지정한 방 이름으로 호스트에게 방 참여 요청을 전송합니다 (게스트 전용).
+     * @param roomName 참여할 방 이름.
+     * @param userName 사용자 닉네임.
+     * @returns {Promise<void>}
+     */
+    public async sendJoinRequest(roomName: string, userName: string): Promise<void> {
         await this.participantManager.sendJoinRequest(roomName, userName);
     }
-    public approveRequest(peerId: string) {
+
+    /**
+     * 대기 중인 게스트의 방 참여 요청을 승인합니다 (호스트 전용).
+     * @param peerId 승인할 피어 ID.
+     * @returns {void}
+     */
+    public approveRequest(peerId: string): void {
         this.participantManager.approveRequest(peerId);
     }
-    public approveAllRequests() {
+
+    /**
+     * 대기 중인 모든 게스트의 방 참여 요청을 일괄 승인합니다 (호스트 전용).
+     * @returns {void}
+     */
+    public approveAllRequests(): void {
         this.participantManager.approveAllRequests();
     }
-    public setAutoApprove(enabled: boolean) {
+
+    /**
+     * 자동 승인 모드를 활성화 또는 비활성화합니다 (호스트 전용).
+     * @param enabled 자동 승인 활성화 여부.
+     * @returns {void}
+     */
+    public setAutoApprove(enabled: boolean): void {
         this.participantManager.setAutoApprove(enabled);
     }
+
+    /**
+     * 자동 승인 모드 활성화 여부를 조회합니다.
+     */
     public get isAutoApprove(): boolean {
         return this.participantManager.isAutoApprove;
     }
-    public rejectRequest(peerId: string) {
+
+    /**
+     * 특정 게스트의 방 참여 요청을 거절합니다 (호스트 전용).
+     * @param peerId 거절할 피어 ID.
+     * @returns {void}
+     */
+    public rejectRequest(peerId: string): void {
         this.participantManager.rejectRequest(peerId);
     }
-    public setPeerPermission(peerId: string, permission: PeerPermission) {
+
+    /**
+     * 특정 게스트의 파일 접근 권한을 설정합니다 (호스트 전용).
+     * @param peerId 대상 피어 ID.
+     * @param permission 설정할 권한 객체.
+     * @returns {void}
+     */
+    public setPeerPermission(peerId: string, permission: PeerPermission): void {
         this.participantManager.setPeerPermission(peerId, permission);
     }
-    public revokeAllWritePermissions() {
+
+    /**
+     * 모든 게스트의 쓰기 권한을 일괄 해제하여 읽기 전용으로 전환합니다 (호스트 전용).
+     * @returns {void}
+     */
+    public revokeAllWritePermissions(): void {
         this.participantManager.revokeAllWritePermissions();
     }
-    public setFileAssignee(fileName: string, assigneeId: string) {
+
+    /**
+     * 특정 파일의 전담 편집 담당자를 지정합니다 (호스트 전용).
+     * @param fileName 대상 파일 이름.
+     * @param assigneeId 담당자 피어 ID.
+     * @returns {void}
+     */
+    public setFileAssignee(fileName: string, assigneeId: string): void {
         this.participantManager.setFileAssignee(fileName, assigneeId);
     }
-    public changeMyName(newName: string) {
+
+    /**
+     * 로컬 사용자의 닉네임을 변경하고 모든 피어에게 알립니다.
+     * @param newName 새로 설정할 닉네임.
+     * @returns {void}
+     */
+    public changeMyName(newName: string): void {
         this.participantManager.changeMyName(newName);
     }
-    public async kickPeer(peerId: string) {
+
+    /**
+     * 특정 피어를 방에서 강제 퇴장시킵니다 (호스트 전용).
+     * @param peerId 퇴장시킬 피어 ID.
+     * @returns {Promise<void>}
+     */
+    public async kickPeer(peerId: string): Promise<void> {
         await this.participantManager.kickPeer(peerId);
     }
-    public handlePeerDisconnect(peerId: string) {
+
+    /**
+     * 피어 연결 단절 이벤트를 처리합니다.
+     * @param peerId 연결이 끊어진 피어 ID.
+     * @returns {void}
+     */
+    public handlePeerDisconnect(peerId: string): void {
         this.participantManager.handlePeerDisconnect(peerId);
     }
-    public deleteDecoration(id: string) {
+
+    /**
+     * 특정 데코레이션을 삭제합니다.
+     * @param id 삭제할 데코레이션 고유 ID.
+     * @returns {void}
+     */
+    public deleteDecoration(id: string): void {
         this.decorationManager.deleteDecoration(id);
     }
-    public jumpToDecoration(fileName: string, line: number, char: number) {
+
+    /**
+     * 특정 데코레이션의 에디터 라인 및 문자 위치로 이동합니다.
+     * @param fileName 파일 이름.
+     * @param line 라인 번호.
+     * @param char 문자 컬럼 번호.
+     * @returns {void}
+     */
+    public jumpToDecoration(fileName: string, line: number, char: number): void {
         this.decorationManager.jumpToDecoration(fileName, line, char);
     }
-    public setCursorFilter(filter: 'host' | 'editable' | 'all') {
+
+    /**
+     * 에디터에 표시할 커서 대상을 필터링합니다.
+     * @param filter 커서 필터 모드 ('host' | 'editable' | 'all').
+     * @returns {void}
+     */
+    public setCursorFilter(filter: 'host' | 'editable' | 'all'): void {
         this.cursorManager.setCursorFilter(filter);
     }
-    public setShowDecorations(show: boolean) {
+
+    /**
+     * 에디터 데코레이션 표시 여부를 설정합니다.
+     * @param show 데코레이션 표시 여부.
+     * @returns {void}
+     */
+    public setShowDecorations(show: boolean): void {
         this.decorationManager.setShowDecorations(show);
     }
-    public async addDecorationFlow() {
+
+    /**
+     * 에디터 선택 영역에 대한 새 데코레이션 추가 플로우를 실행합니다.
+     * @returns {Promise<void>}
+     */
+    public async addDecorationFlow(): Promise<void> {
         await this.decorationManager.addDecorationFlow();
     }
 
     /**
      * 방 나가기(퇴장) 플로우를 처리합니다.
+     * 호스트는 공유 파일 중지 검사 및 방 종료 통지를 수행하고, 게스트는 로컬 임시 파일을 완전히 삭제하고 세션을 정리합니다.
+     * @returns {Promise<void>}
      */
-    public async leaveRoomFlow() {
+    public async leaveRoomFlow(): Promise<void> {
         if (this.isHost) {
             // 1. 호스트인 경우 공유 중인 파일이 있는지 확인
             if (this.fileStorageManager.sharedFiles.length > 0) {
@@ -703,9 +888,12 @@ export class SyncEngine {
     }
 
     /**
-     * 게스트가 방을 퇴장할 때 호스트가 수신하여 해당 게스트 리소스(커서, 데코레이션)를 정리합니다.
+     * 게스트가 방을 퇴장할 때 호스트가 수신하여 해당 게스트의 리소스(커서, 데코레이션, 참가자 목록)를 정리합니다.
+     * @param msg 게스트 퇴장 메시지.
+     * @param peerId 퇴장한 피어 ID.
+     * @returns {void}
      */
-    private handleGuestLeave(msg: any, peerId: string) {
+    private handleGuestLeave(msg: any, peerId: string): void {
         if (this.isHost) {
             const actualPeerId = msg.userId || peerId;
             this.logToUI(`GUEST_LEAVE received from: ${actualPeerId}`);
@@ -721,9 +909,11 @@ export class SyncEngine {
     }
 
     /**
-     * 실시간 P2P 채팅 메시지를 보냅니다.
+     * 실시간 P2P 채팅 메시지를 생성하고 피어들에게 브로드캐스트합니다.
+     * @param text 전송할 채팅 텍스트.
+     * @returns {void}
      */
-    public sendChatMessage(text: string) {
+    public sendChatMessage(text: string): void {
         const cleanText = text.trim();
         if (!cleanText) return;
 
@@ -745,9 +935,11 @@ export class SyncEngine {
     }
 
     /**
-     * 호스트가 화면 동기화를 제어할 수 있도록 스위치를 토글합니다.
+     * 호스트가 화면 동기화(팔로우 모드)를 켜거나 끄고 현재 뷰포트 위치를 즉시 동기화합니다.
+     * @param enabled 활성화 여부.
+     * @returns {void}
      */
-    public setFollowMeMode(enabled: boolean) {
+    public setFollowMeMode(enabled: boolean): void {
         this.isFollowMeMode = enabled;
         this.logToUI(`Follow Me Mode: ${enabled ? 'Enabled' : 'Disabled'}`);
         
@@ -770,9 +962,13 @@ export class SyncEngine {
     }
 
     /**
-     * 게스트가 호스트의 화면 위치 정보를 수신하여 에디터를 강제로 열고 스크롤합니다.
+     * 게스트가 호스트의 화면 위치 정보를 수신하여 해당 파일을 열고 동일한 스크롤 라인 위치로 이동합니다.
+     * @param fileName 대상 파일 이름.
+     * @param startLine 호스트 화면의 시작 라인 번호.
+     * @param endLine 호스트 화면의 끝 라인 번호.
+     * @returns {Promise<void>}
      */
-    public async handleFollowUpdate(fileName: string, startLine: number, endLine: number) {
+    public async handleFollowUpdate(fileName: string, startLine: number, endLine: number): Promise<void> {
         try {
             const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
             if (!file) return;
@@ -796,7 +992,7 @@ export class SyncEngine {
                 const startPos = new vscode.Position(startLine, 0);
                 const endPos = new vscode.Position(endLine, 0);
                 const range = new vscode.Range(startPos, endPos);
-                // AtTop 혹은 Default 스크롤 동작 적용
+                // 화면 상단 기준 스크롤 정렬
                 targetEditor.revealRange(range, vscode.TextEditorRevealType.AtTop);
             }
         } catch (e) {
@@ -805,10 +1001,13 @@ export class SyncEngine {
     }
 
     /**
-     * 타이핑 락 수신 시 에디터를 읽기 전용(또는 쓰기 가능)으로 전환합니다.
-     * VS Code의 세션 단위 readonly 기능을 활용합니다.
+     * VS Code 세션 단위 기능을 활용하여 에디터를 읽기 전용 또는 쓰기 가능으로 전환합니다.
+     * @param fileName 대상 파일 이름.
+     * @param readonly 읽기 전용 모드 적용 여부.
+     * @param targetPath 파일 절대 경로 (선택 사항).
+     * @returns {Promise<void>}
      */
-    public async setEditorReadonly(fileName: string, readonly: boolean, targetPath?: string) {
+    public async setEditorReadonly(fileName: string, readonly: boolean, targetPath?: string): Promise<void> {
         const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
         const filePath = targetPath || file?.path;
         if (!filePath) return;
@@ -838,14 +1037,16 @@ export class SyncEngine {
                 vscode.window.setStatusBarMessage(`✏️ ${fileName} 편집 가능`, 2000);
             }
         } catch (e) {
-            // 명령이 지원되지 않는 VS Code 버전이라면 무시 (소프트 실패)
+            // 명령이 지원되지 않는 VS Code 환경 예외 무시
         }
     }
 
     /**
-     * 엔진의 모든 상태를 초기화합니다.
+     * SyncEngine의 모든 서브 매니저와 타이머, 연결 상태 변수를 초기화합니다.
+     * @param skipUIUpdate UI 갱신 생략 여부 (기본값: false).
+     * @returns {void}
      */
-    public reset(skipUIUpdate = false) {
+    public reset(skipUIUpdate = false): void {
         this.fileStorageManager.reset();
         this.participantManager.reset();
         this.cursorManager.reset();
@@ -868,7 +1069,6 @@ export class SyncEngine {
         });
         this.remoteTypingLocked.clear();
 
-
         // 채팅 기록 리셋 및 팝업창 닫기
         this.chatHistory = [];
         if (this.chatPanel) {
@@ -886,7 +1086,6 @@ export class SyncEngine {
         this.initialName = ''; 
         this.isSetupMode = false; 
         this.isFollowMeMode = false; 
-
 
         if (!skipUIUpdate) {
             this.pushUIUpdate();

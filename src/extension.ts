@@ -17,7 +17,7 @@ import { ChatPanel } from './ui/ChatPanel';
  * @param context VS Code 확장 프로그램 컨텍스트.
  */
 export function activate(context: vscode.ExtensionContext) {
-    // [추가] 익스텐션 활성화 시 마우스 휠 코드 줌 기능 자동으로 활성화
+    // 확장 프로그램 활성화 시 에디터 마우스 휠 코드 줌 기능 자동 활성화
     try {
         const config = vscode.workspace.getConfiguration();
         if (config.get('editor.mouseWheelZoom') !== true) {
@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
         
         // 상태 업데이트를 사이드바에 알림
         if (state.type === 'log') {
-            // [수정] 로그는 엔진 웹뷰(getEngineTemplate)로만 전송
+            // 엔진 웹뷰(getEngineTemplate)로 로그 전송
             hub.sendToEngine({ type: 'log', message: state.message });
         } else {
             sidebar.postMessage({
@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext) {
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
-    // [추가] 방 참여 요청 처리
+    // 방 참여 요청 처리 (게스트의 참가 요청 전송)
     sidebar.onJoinRoom = (roomName, userName) => {
         hub.dispose();
         engine.reset(true);
@@ -128,17 +128,17 @@ export function activate(context: vscode.ExtensionContext) {
         engine.stopSharingByName(fileName);
     };
 
-    // [추가] 승인 처리
+    // 호스트: 게스트의 참여 요청 개별 승인 처리
     sidebar.onApproveRequest = (peerId) => {
         engine.approveRequest(peerId);
     };
 
-    // [추가] 일괄 승인 처리
+    // 호스트: 대기 중인 모든 게스트 참여 요청 일괄 승인 처리
     sidebar.onApproveAllRequests = () => {
         engine.approveAllRequests();
     };
 
-    // [추가] 거절 처리
+    // 호스트: 게스트의 참여 요청 거절 처리
     sidebar.onRejectRequest = (peerId) => {
         engine.rejectRequest(peerId);
     };
@@ -168,27 +168,27 @@ export function activate(context: vscode.ExtensionContext) {
         if (n) engine.changeMyName(n);
     };
 
-    // [추가] 강퇴 처리
+    // 호스트: 특정 참가자 강제 퇴장(강퇴) 처리
     sidebar.onKick = (peerId) => {
         engine.kickPeer(peerId);
     };
 
-    // [추가] 권한 제어 처리
+    // 호스트: 피어별 쓰기 권한 제어 처리 (readOnly / readWrite)
     sidebar.onSetPermission = (peerId, permission) => {
         engine.setPeerPermission(peerId, permission);
     };
 
-    // [추가] 모든 게스트 쓰기 권한 일괄 해제
+    // 호스트: 모든 게스트 쓰기 권한 일괄 해제
     sidebar.onRevokeAllPermissions = () => {
         engine.revokeAllWritePermissions();
     };
 
-    // [추가] 파일 담당자 지정 처리
+    // 호스트: 공유 파일별 전담 수정자(담당자) 지정 처리
     sidebar.onAssignFileOwner = (fileName, assigneeId) => {
         engine.setFileAssignee(fileName, assigneeId);
     };
 
-    // [추가] 데코레이션 처리
+    // 코드 리뷰 데코레이션(하이라이트/메모) 삭제 처리
     sidebar.onDeleteDecoration = (id) => {
         engine.deleteDecoration(id);
     };
@@ -247,7 +247,7 @@ export function activate(context: vscode.ExtensionContext) {
         engine.sessionRecoveryManager.isRestoringSession = false;
         engine.sessionRecoveryManager.restoreRetryCount = 0;
         engine.isConnected = true;
-        engine.isSignalingConnected = true; // [추가] 시그널링 서버 연결 완료
+        engine.isSignalingConnected = true; // 시그널링 서버 연결 완료 상태 플래그 설정
         engine.sessionRecoveryManager.startHeartbeat();
 
         // 호스트인 경우 게스트의 REQ_OFFER에 즉시 응답할 수 있도록 대기 중인 초대 슬롯 생성

@@ -10,50 +10,79 @@ import { FileDecoration } from '../../types';
 import { SyncEngine } from '../SyncEngine';
 import { isPathEqual } from '../../utils/helpers';
 
+/**
+ * DecorationManager 클래스.
+ * 공유 중인 코드 상의 인라인 피드백(오타, 문법 오류, 논리 오류, 기타 메모, 하이라이트 등) 데코레이션을 생성,
+ * 삭제, 동기화하며, 문서 내용 변경 시 Yjs 상대 위치를 기반으로 에디터 상의 절대 좌표를 재계산하여 렌더링합니다.
+ */
 export class DecorationManager {
+    /** 현재 등록되어 있는 전체 데코레이션 목록 */
     public decorations: FileDecoration[] = [];
+
+    /** 에디터에 데코레이션을 표시할지 여부 플래그 */
     public showDecorations: boolean = true;
+
+    /** 파일별 좌표 재계산 지연 실행(디바운스)을 위한 타이머 맵 */
     private decorationRecalculateTimers = new Map<string, NodeJS.Timeout>();
 
+    /** Typo(오타) 데코레이션 스타일 정의 (빨간색 물결 밑줄) */
     private typoDecoType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 0, 0, 0.12)',
         textDecoration: 'underline wavy rgba(255, 0, 0, 0.7)'
     });
+
+    /** Grammar(문법 오류) 데코레이션 스타일 정의 (주황색 물결 밑줄) */
     private grammarDecoType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(240, 173, 78, 0.12)',
         textDecoration: 'underline wavy rgba(240, 173, 78, 0.7)'
     });
+
+    /** Logical(논리 오류) 데코레이션 스타일 정의 (다홍색 물결 밑줄) */
     private logicalDecoType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(217, 83, 79, 0.12)',
         textDecoration: 'underline wavy rgba(217, 83, 79, 0.7)'
     });
+
+    /** Other(기타 의견) 데코레이션 스타일 정의 (하늘색 실선 밑줄) */
     private otherDecoType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(91, 192, 222, 0.12)',
         textDecoration: 'underline solid rgba(91, 192, 222, 0.5)'
     });
+
+    /** Highlight(강조) 데코레이션 스타일 정의 (연두색 배경) */
     private highlightDecoType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(92, 184, 92, 0.22)'
     });
 
+    /**
+     * DecorationManager 인스턴스를 생성합니다.
+     * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
+     */
     constructor(private engine: SyncEngine) {}
 
     /**
-     * 데코레이션 위치 재계산을 디바운싱 처리합니다.
+     * 빈번한 텍스트 편집 시 데코레이션 위치 재계산 부하를 줄이기 위해 디바운싱(200ms) 처리합니다.
+     * @param fileName 대상 파일 이름.
+     * @param filePath 로컬 파일 절대 경로.
+     * @returns {void}
      */
-    public debouncedRecalculateDecorations(fileName: string, filePath: string) {
+    public debouncedRecalculateDecorations(fileName: string, filePath: string): void {
         const timer = this.decorationRecalculateTimers.get(fileName);
         if (timer) clearTimeout(timer);
 
         const newTimer = setTimeout(() => {
             this.recalculateDecorationsPositions(fileName, filePath);
-        }, 200); // 200ms debounce
+        }, 200); // 200ms 디바운스
         this.decorationRecalculateTimers.set(fileName, newTimer);
     }
 
     /**
-     * Yjs 상대 위치를 이용해 데코레이션(리뷰)들의 현재 절대 에디터 좌표를 역산하여 갱신합니다.
+     * Yjs 상대 위치(RelativePosition)를 이용해 문서 변경 후 데코레이션들의 현재 에디터 절대 좌표를 역산하여 갱신합니다.
+     * @param fileName 대상 파일 이름.
+     * @param filePath 로컬 파일 절대 경로.
+     * @returns {void}
      */
-    public recalculateDecorationsPositions(fileName: string, filePath: string) {
+    public recalculateDecorationsPositions(fileName: string, filePath: string): void {
         const ydoc = this.engine.documentSyncManager.yDocs.get(fileName);
         const ytext = this.engine.documentSyncManager.yTexts.get(fileName);
         if (!ydoc || !ytext) return;
@@ -93,6 +122,7 @@ export class DecorationManager {
             }
         });
 
+        // 좌표 보정이 발생한 경우 화면 렌더링을 갱신하고 호스트인 경우 참가자들에게 브로드캐스트
         if (isModified) {
             this.refreshDecorationsInEditors();
             this.engine.pushUIUpdate();
@@ -100,19 +130,21 @@ export class DecorationManager {
                 this.broadcastDecorations();
             }
         }
-        this.engine.cursorManager.refreshAllDecorations(); // 데코레이션 보정 여부와 관계없이 상대방 사용자 커서들도 실시간 역산하여 새로 칠함
+        // 상대방 사용자 커서들도 실시간 역산하여 에디터에 다시 렌더링
+        this.engine.cursorManager.refreshAllDecorations();
     }
 
     /**
-     * 에디터에 데코레이션을 렌더링합니다.
+     * 현재 열려 있는 에디터 상에 데코레이션 배지 및 호버 툴팁을 렌더링합니다.
+     * @returns {void}
      */
-    public refreshDecorationsInEditors() {
+    public refreshDecorationsInEditors(): void {
         const visibleEditors = vscode.window.visibleTextEditors;
         visibleEditors.forEach(editor => {
             const document = editor.document;
             const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, document.uri.fsPath));
             if (!file || !this.showDecorations) {
-                // 공유 파일이 아니거나 데코레이션 표시가 꺼져있는 경우 에디터에서 제거
+                // 공유 파일이 아니거나 데코레이션 표시가 비활성화된 경우 모든 데코레이션 제거
                 editor.setDecorations(this.typoDecoType, []);
                 editor.setDecorations(this.grammarDecoType, []);
                 editor.setDecorations(this.logicalDecoType, []);
@@ -125,7 +157,7 @@ export class DecorationManager {
             const editorFontSize = editorConfig.get<number>('fontSize') || 14;
             const badgeFontSize = Math.max(9, Math.round(editorFontSize * 0.8));
 
-            // 본인에게 보이는 데코레이션 필터링
+            // 본인이 볼 수 있는 권한의 데코레이션 필터링 (Host 전용인 경우 Host 또는 작성자만 열람 가능)
             const fileDecos = this.decorations.filter(d => d.fileName === file.name);
             const visibleDecos = fileDecos.filter(d => {
                 if (d.visibility === 'host') {
@@ -161,7 +193,7 @@ export class DecorationManager {
                     hoverMarkdown.appendMarkdown(`**메모:** ${d.memo}\n\n`);
                 }
 
-                // 삭제 권한이 있는 경우 툴팁에 삭제 버튼 추가
+                // 호스트이거나 작성자 본인인 경우 호버 메시지에 인라인 삭제 버튼 제공
                 const canDelete = this.engine.isHost || d.creatorId === this.engine.myId;
                 if (canDelete) {
                     const deleteCommandUri = vscode.Uri.parse(`command:p2p-code-share.deleteDecoration?${encodeURIComponent(JSON.stringify(d.id))}`);
@@ -198,9 +230,10 @@ export class DecorationManager {
     }
 
     /**
-     * 우클릭 메뉴를 통해 데코레이션을 추가하는 플로우입니다.
+     * 사용자 에디터 상에서 선택된 영역에 대해 새 데코레이션을 생성하는 대화형 입력 플로우를 수행합니다.
+     * @returns {Promise<void>}
      */
-    public async addDecorationFlow() {
+    public async addDecorationFlow(): Promise<void> {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
         const document = editor.document;
@@ -212,6 +245,7 @@ export class DecorationManager {
 
         const selection = editor.selection;
 
+        // 데코레이션 종류 선택
         const typePick = await vscode.window.showQuickPick([
             { label: 'Typo (오타)', value: 'Typo' },
             { label: 'Grammar Error (문법 오류)', value: 'Grammar' },
@@ -222,6 +256,7 @@ export class DecorationManager {
 
         if (!typePick) return;
 
+        // 공개 범위 선택
         const visibilityPick = await vscode.window.showQuickPick([
             { label: 'Everyone (모두에게 보이기)', value: 'everyone' },
             { label: 'Host only (host에게만 보이기)', value: 'host' }
@@ -229,6 +264,7 @@ export class DecorationManager {
 
         if (!visibilityPick) return;
 
+        // 메모 내용 입력
         const memo = await vscode.window.showInputBox({
             prompt: '메모 내용을 입력하세요',
             placeHolder: '여기에 메모 내용을 입력할 수 있습니다.'
@@ -241,6 +277,7 @@ export class DecorationManager {
         let startRel: any = undefined;
         let endRel: any = undefined;
 
+        // Yjs 상대 위치 계산 (문서 편집 후에도 위치를 유지하기 위함)
         if (ydoc && ytext) {
             const docLen = ytext.length;
             const startIndex = Math.min(Math.max(0, document.offsetAt(selection.start)), docLen);
@@ -277,9 +314,12 @@ export class DecorationManager {
     }
 
     /**
-     * 지정된 ID의 데코레이션을 삭제합니다.
+     * 특정 ID를 가진 데코레이션을 삭제합니다.
+     * 게스트의 경우 자신이 생성한 데코레이션에 대해서만 삭제 요청을 보낼 수 있습니다.
+     * @param id 삭제할 데코레이션 고유 ID.
+     * @returns {void}
      */
-    public deleteDecoration(id: string) {
+    public deleteDecoration(id: string): void {
         if (this.engine.isHost) {
             this.decorations = this.decorations.filter(d => d.id !== id);
             this.broadcastDecorations();
@@ -298,9 +338,10 @@ export class DecorationManager {
     }
 
     /**
-     * 데코레이션 목록을 참가자들에게 공유합니다. (호스트 전용)
+     * 전체 참가자들에게 권한 필터(공개 범위)를 적용하여 데코레이션 목록을 동기화 전송합니다. (호스트 전용)
+     * @returns {void}
      */
-    public broadcastDecorations() {
+    public broadcastDecorations(): void {
         if (!this.engine.isHost) return;
         Object.keys(this.engine.participantManager.participants).forEach(peerId => {
             if (peerId !== 'host') {
@@ -313,9 +354,13 @@ export class DecorationManager {
     }
 
     /**
-     * 해당 데코레이션이 작성된 파일과 라인 위치로 이동합니다.
+     * 사이드바 목록 등에서 클릭 시 해당 데코레이션이 위치한 에디터 라인으로 포커스를 이동합니다.
+     * @param fileName 대상 파일 이름.
+     * @param line 이동할 대상 라인 번호 (0-based).
+     * @param char 이동할 대상 문자 컬럼 위치 (0-based).
+     * @returns {void}
      */
-    public jumpToDecoration(fileName: string, line: number, char: number) {
+    public jumpToDecoration(fileName: string, line: number, char: number): void {
         const file = this.engine.fileStorageManager.sharedFiles.find(f => f.name === fileName);
         if (file) {
             vscode.workspace.openTextDocument(file.path).then(doc => {
@@ -328,18 +373,32 @@ export class DecorationManager {
         }
     }
 
-    public removeDecorationsForFile(fileName: string) {
+    /**
+     * 공유 취소 또는 삭제된 특정 파일의 모든 데코레이션을 제거합니다.
+     * @param fileName 대상 파일 이름.
+     * @returns {void}
+     */
+    public removeDecorationsForFile(fileName: string): void {
         this.decorations = this.decorations.filter(d => d.fileName !== fileName);
         this.refreshDecorationsInEditors();
     }
 
-    public setShowDecorations(show: boolean) {
+    /**
+     * 데코레이션 표시/숨김 여부를 설정하고 에디터 렌더링을 갱신합니다.
+     * @param show 데코레이션 표시 여부.
+     * @returns {void}
+     */
+    public setShowDecorations(show: boolean): void {
         this.showDecorations = show;
         this.refreshDecorationsInEditors();
         this.engine.pushUIUpdate();
     }
 
-    public reset() {
+    /**
+     * 세션 종료 또는 방 퇴장 시 데코레이션 상태 및 재계산 타이머를 초기화합니다.
+     * @returns {void}
+     */
+    public reset(): void {
         this.decorations = [];
         this.showDecorations = true;
         this.decorationRecalculateTimers.forEach(t => clearTimeout(t));

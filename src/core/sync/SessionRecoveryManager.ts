@@ -11,53 +11,104 @@ import { SyncEngine } from '../SyncEngine';
 import { SharedFile, PeerPermission, FileDecoration, ChatMessage } from '../../types';
 import { normalizeEOL } from '../../utils/helpers';
 
+/**
+ * @interface PersistentFileSnapshot
+ * @description 창 새로고침 또는 폴더 전환 시 세션 복구를 위해 영속화되는 파일 스냅샷 구조체입니다.
+ */
 export interface PersistentFileSnapshot {
+    /** 파일 이름 (확장자 포함) */
     name: string;
+    /** 로컬 파일 시스템 상의 절대 경로 */
     path: string;
+    /** 원본 백업본 파일 경로 (호스트 전용, Diff 비교용) */
     source?: string;
+    /** 단독 편집 권한이 할당된 사용자 ID */
     assigneeId?: string;
+    /** 단독 편집 권한이 할당된 사용자 이름 */
     assigneeName?: string;
+    /** 직렬화 시점의 최신 텍스트 내용 */
     content: string;
+    /** Yjs CRDT 상태 벡터 업데이트 바이너리를 Base64로 인코딩한 문자열 */
     yjsStateBase64?: string;
 }
 
+/**
+ * @interface PersistentSessionData
+ * @description globalState에 저장되는 전체 P2P 협업 세션 데이터 구조체입니다.
+ */
 export interface PersistentSessionData {
+    /** 참여 중인 P2P 방 이름 */
     roomName: string;
+    /** 현재 사용자가 호스트인지 여부 */
     isHost: boolean;
+    /** 현재 사용자의 표시 닉네임 */
     myName: string;
+    /** 현재 사용자의 고유 피어 ID */
     myId: string;
+    /** 자동 승인 활성화 여부 */
     isAutoApprove: boolean;
+    /** 팔로우 모드(호스트 화면 추종) 활성화 여부 */
     isFollowMeMode: boolean;
+    /** 커서 필터링 모드 ('host' | 'editable' | 'all') */
     cursorFilter: 'host' | 'editable' | 'all';
+    /** 데코레이션(리뷰 배지) 표시 여부 */
     showDecorations?: boolean;
+    /** 참가자 권한 및 연결 상태 맵 */
     participants: { [key: string]: PeerPermission };
+    /** 공유 중인 파일들의 영속화 스냅샷 목록 */
     sharedFiles: PersistentFileSnapshot[];
+    /** 등록된 데코레이션(인라인 피드백) 목록 */
     decorations: FileDecoration[];
+    /** 채팅 메시지 이력 */
     chatHistory: ChatMessage[];
+    /** 현재 세션을 점유하고 있는 VS Code 창의 고유 식별자 */
     activeWindowId: string;
+    /** 마지막으로 하트비트가 갱신된 에포크 밀리초 타임스탬프 */
     lastHeartbeat: number;
 }
 
+/** globalState에 세션 정보를 저장할 때 사용하는 스토리지 키 */
 const GLOBAL_SESSION_KEY = 'p2p_code_share_active_session';
+/** 세션 생존 보고(하트비트) 주기 (밀리초) */
 const HEARTBEAT_INTERVAL_MS = 2000;
+/** 다른 창의 활성 상태를 판별하는 하트비트 만료 시간 (밀리초) */
 const HEARTBEAT_TIMEOUT_MS = 4000;
-const SESSION_MAX_AGE_MS = 60000; // 1분 이상 지난 세션은 완전 종료로 간주
+/** 세션 유효 최대 수명 (1분 이상 경과 시 세션 폐기) */
+const SESSION_MAX_AGE_MS = 60000;
 
+/**
+ * SessionRecoveryManager 클래스.
+ * VS Code 창 새로고침(Reload Window) 및 작업 공간 전환(Open Folder) 시
+ * P2P 세션 정보(방, 파일, Yjs 상태, 권한, 채팅, 데코레이션)의 영속화 및 자동 복구를 관리합니다.
+ */
 export class SessionRecoveryManager {
+    /** 현재 VS Code 창의 고유 인스턴스 ID */
     public currentWindowId: string;
+
+    /** 현재 세션 복구 프로세스가 진행 중인지 여부 플래그 */
     public isRestoringSession = false;
+
+    /** 게스트 자동 복구 재시도 횟수 카운터 */
     public restoreRetryCount = 0;
+
+    /** 주기적 세션 저장을 위한 하트비트 타이머 */
     private heartbeatTimer?: NodeJS.Timeout;
 
+    /**
+     * SessionRecoveryManager 인스턴스를 생성하고 창 고유 ID를 초기화합니다.
+     * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
+     * @param context VS Code 확장 컨텍스트 (globalState 접근용).
+     */
     constructor(private engine: SyncEngine, private context: vscode.ExtensionContext) {
         // 현재 창의 고유 ID 생성 (타임스탬프 + 난수)
         this.currentWindowId = `win_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     }
 
     /**
-     * 주기적인 생존 보고(하트비트)를 시작합니다.
+     * 활성 세션 상태를 주기적으로 globalState에 저장하는 하트비트 타이머를 시작합니다.
+     * @returns {void}
      */
-    public startHeartbeat() {
+    public startHeartbeat(): void {
         this.stopHeartbeat();
         this.heartbeatTimer = setInterval(() => {
             if (this.engine.isConnected && this.engine.roomName) {
@@ -67,9 +118,10 @@ export class SessionRecoveryManager {
     }
 
     /**
-     * 하트비트를 중단합니다.
+     * 실행 중인 하트비트 타이머를 중단합니다.
+     * @returns {void}
      */
-    public stopHeartbeat() {
+    public stopHeartbeat(): void {
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
             this.heartbeatTimer = undefined;
@@ -77,9 +129,10 @@ export class SessionRecoveryManager {
     }
 
     /**
-     * 현재 활성 세션의 모든 상태를 globalState에 저장합니다.
+     * 현재 활성 세션의 모든 상태(방 설정, 참가자, 파일 스냅샷, Yjs 상태, 데코레이션, 채팅)를 globalState에 저장합니다.
+     * @returns {Promise<void>}
      */
-    public async saveSession() {
+    public async saveSession(): Promise<void> {
         if (!this.engine.isConnected && !this.engine.isHost) return;
         if (!this.engine.roomName || this.engine.roomName === 'Untitled Room') return;
 
@@ -135,16 +188,18 @@ export class SessionRecoveryManager {
     }
 
     /**
-     * 사용자가 명시적으로 방을 나갔을 때 세션을 완전히 삭제합니다.
+     * 사용자가 명시적으로 방을 종료하거나 나갔을 때 영속화된 세션을 완전히 삭제합니다.
+     * @returns {Promise<void>}
      */
-    public async clearSession() {
+    public async clearSession(): Promise<void> {
         this.stopHeartbeat();
         await this.context.globalState.update(GLOBAL_SESSION_KEY, undefined);
     }
 
     /**
-     * 창이 새로 열렸을 때, 복구 가능한 이전 세션이 있는지 검사합니다.
-     * 다른 창이 현재 활성 연결을 유지하고 있다면 복구하지 않습니다 (멀티 윈도우 격리).
+     * 창이 새로 열렸을 때 복구 가능한 이전 세션이 존재하는지 확인합니다.
+     * 다른 창이 현재 활성 연결을 유지하고 있거나 타임아웃된 경우 null을 반환합니다.
+     * @returns 복구 가능한 세션 데이터 객체 또는 null.
      */
     public getRecoverableSession(): PersistentSessionData | null {
         const session = this.context.globalState.get<PersistentSessionData>(GLOBAL_SESSION_KEY);
@@ -168,19 +223,21 @@ export class SessionRecoveryManager {
     }
 
     /**
-     * 이전 세션 데이터를 현재 엔진에 복원합니다.
+     * 이전 세션 데이터를 현재 활성 엔진 인스턴스에 복원하고 P2P 허브 또는 재연결 플로우를 재개합니다.
+     * @param session 복원할 세션 데이터 객체.
+     * @returns {Promise<void>}
      */
-    public async restoreSession(session: PersistentSessionData) {
+    public async restoreSession(session: PersistentSessionData): Promise<void> {
         this.isRestoringSession = true;
         this.restoreRetryCount = 0;
         this.engine.logToUI(`Restoring session for room "${session.roomName}" (${session.isHost ? 'Host' : 'Guest'})...`);
 
-        // 소유권 획득
+        // 세션 점유권 획득
         session.activeWindowId = this.currentWindowId;
         session.lastHeartbeat = Date.now();
         await this.context.globalState.update(GLOBAL_SESSION_KEY, session);
 
-        // 기본 속성 복원
+        // 기본 엔진 속성 복원
         this.engine.roomName = session.roomName;
         this.engine.isHost = session.isHost;
         this.engine.myName = session.myName;
@@ -192,7 +249,8 @@ export class SessionRecoveryManager {
         }
         this.engine.chatHistory = session.chatHistory || [];
         const restoredParticipants = session.participants || {};
-        // 호스트 복원 시 호스트 본인은 'connected', 게스트들은 아직 재연결 전이므로 'reconnecting'으로 초기화
+        
+        // 호스트 복원 시 호스트 본인은 'connected', 게스트들은 재연결 대기 상태('reconnecting')로 초기화
         const recoveryTime = Date.now();
         if (session.isHost) {
             Object.keys(restoredParticipants).forEach(id => {
@@ -208,10 +266,10 @@ export class SessionRecoveryManager {
         this.engine.participantManager.isAutoApprove = session.isAutoApprove ?? true;
 
         if (session.isHost) {
-            // 호스트 스토리지 초기화
+            // 호스트 스토리지 디렉터리 초기화
             this.engine.fileStorageManager.initializeStorage();
 
-            // 공유 파일 복원
+            // 공유 파일 및 Yjs 상태 복원
             this.engine.fileStorageManager.sharedFiles = [];
             for (const snap of session.sharedFiles) {
                 const sharedFile: SharedFile = {
@@ -243,7 +301,7 @@ export class SessionRecoveryManager {
             // 데코레이션 복원
             this.engine.decorationManager.decorations = session.decorations || [];
 
-            // PeerJS 방 재개설 (재연결 플래그 설정)
+            // WebRTC P2P 허브 재개설
             this.engine.isSetupMode = false;
             this.engine.isConnected = true;
             this.engine.isSignalingConnected = false; // 시그널링 서버 연결 완료(roomNameSuccess) 전까지 대기 상태

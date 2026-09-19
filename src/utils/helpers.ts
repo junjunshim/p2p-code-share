@@ -22,8 +22,9 @@ export function sanitizePath(name: string): string {
 /**
  * 디렉토리가 존재하는지 확인하고, 없다면 생성합니다.
  * @param dir 디렉토리 경로.
+ * @returns {void}
  */
-export function ensureDirectory(dir: string) {
+export function ensureDirectory(dir: string): void {
     // 디렉토리가 존재하지 않으면 재귀적으로 생성합니다
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -49,17 +50,31 @@ export function getLanguage(fileName: string): string {
     return map[ext] || 'plaintext';
 }
 
+/**
+ * 두 파일 경로가 동일한 경로를 가리키는지 정규화하여 비교합니다.
+ * (운영체제 구분자 및 대소문자 차이를 흡수)
+ * @param p1 첫 번째 파일 경로.
+ * @param p2 두 번째 파일 경로.
+ * @returns 두 경로가 일치하면 true, 그렇지 않거나 하나라도 없으면 false.
+ */
 export function isPathEqual(p1?: string, p2?: string): boolean {
     if (!p1 || !p2) return false;
     return path.normalize(p1).toLowerCase() === path.normalize(p2).toLowerCase();
 }
 
+/**
+ * 파일 경로를 표준화하고 소문자로 변환하여 일관된 식별자를 생성합니다.
+ * @param p 원본 파일 경로.
+ * @returns 정규화된 파일 경로 문자열.
+ */
 export function normalizePath(p: string): string {
     return path.normalize(p).toLowerCase();
 }
 
 /**
- * 줄바꿈을 LF(\n)로 통일하여 플랫폼/에디터 간 오프셋 불일치를 방지합니다.
+ * 줄바꿈 문자를 LF(\n)로 통일하여 플랫폼/에디터 간 오프셋 불일치를 방지합니다.
+ * @param text 원본 텍스트 문자열.
+ * @returns CRLF(\r\n)가 LF(\n)로 치환된 텍스트.
  */
 export function normalizeEOL(text: string): string {
     return text.replace(/\r\n/g, '\n');

@@ -10,19 +10,39 @@ import { SharedFile } from '../../types';
 import { sanitizePath, ensureDirectory, isPathEqual, normalizeEOL } from '../../utils/helpers';
 import { SyncEngine } from '../SyncEngine';
 
+/**
+ * FileStorageManager 클래스.
+ * 실시간 협업 대상 파일 목록(SharedFile)을 관리하며, 로컬 임시 디렉터리 파일 입출력(I/O),
+ * 파일 생성/백업/삭제, 게스트 읽기 전용(Readonly) 모드 전환, 디바운스 파일 저장 등을 총괄합니다.
+ */
 export class FileStorageManager {
+    /** 임시 공유 파일들이 저장되는 로컬 디렉터리 절대 경로 */
     public storagePath: string = '';
+
+    /** 로컬 스토리지 디렉터리가 정상적으로 생성/초기화되었는지 여부 플래그 */
     public isStorageInitialized: boolean = false;
+
+    /** 현재 세션에서 공유 중인 파일 메타데이터 목록 */
     public sharedFiles: SharedFile[] = [];
+
+    /** 현재 닫기 작업이 진행 중인 파일 경로 세트 (저장 타이머 중복 실행 방지용) */
     public closingDocuments = new Set<string>();
+
+    /** 파일별 디스크 디바운스 저장을 제어하는 타이머 맵 */
     private debouncedSaveTimers = new Map<string, NodeJS.Timeout>();
 
+    /**
+     * FileStorageManager 인스턴스를 생성합니다.
+     * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
+     */
     constructor(private engine: SyncEngine) {}
 
     /**
-     * 현재 방을 제외한 이전 임시 방 스토리지 디렉터리들을 안전하게 삭제합니다 (게스트 전용).
+     * 현재 방을 제외한 이전 임시 세션 디렉터리들을 안전하게 삭제하여 디스크 용량을 확보합니다 (게스트 전용).
+     * @param currentRoomName 현재 참여 중인 방 이름 (선택 사항).
+     * @returns {void}
      */
-    public cleanOldRoomStorages(currentRoomName?: string) {
+    public cleanOldRoomStorages(currentRoomName?: string): void {
         if (this.engine.isHost) return;
 
         try {
@@ -34,7 +54,7 @@ export class FileStorageManager {
             const entries = fs.readdirSync(baseStorage, { withFileTypes: true });
             for (const entry of entries) {
                 if (entry.isDirectory()) {
-                    // 현재 참여하는 방의 폴더가 아니면 이전 방의 임시 폴더이므로 정리
+                    // 현재 참여 중인 방의 폴더가 아니면 이전 세션의 잔여 임시 폴더이므로 정리
                     if (currentSanitized && entry.name === currentSanitized) {
                         continue;
                     }
@@ -42,19 +62,20 @@ export class FileStorageManager {
                     try {
                         fs.rmSync(targetDir, { recursive: true, force: true });
                     } catch (e) {
-                        // 권한이나 사용 중 등으로 삭제 실패 시 다음 기회로 패스
+                        // 권한 문제나 파일 락 등으로 삭제 실패 시 다음 기회로 패스
                     }
                 }
             }
         } catch (e) {
-            // 정리 중 오류가 발생해도 P2P 연결 흐름에 지장을 주지 않도록 방어
+            // 디렉터리 정리 실패가 전체 연결 프로세스에 영향을 주지 않도록 방어
         }
     }
 
     /**
-     * 게스트가 퇴장하거나 강퇴당했을 때 현재 방의 임시 스토리지 전체를 깨끗하게 삭제합니다.
+     * 게스트가 방을 퇴장하거나 강퇴당했을 때 현재 방의 임시 스토리지 전체를 깨끗하게 삭제합니다.
+     * @returns {Promise<void>}
      */
-    public async clearLocalStorage() {
+    public async clearLocalStorage(): Promise<void> {
         if (this.engine.isHost) return;
 
         // 1. 열려있는 모든 공유 파일 에디터 탭 닫기 및 파일별 정리
@@ -82,9 +103,10 @@ export class FileStorageManager {
     }
 
     /**
-     * 공유 파일 저장을 위한 저장소를 초기화합니다.
+     * 공유 파일 저장을 위한 전용 임시 디렉터리를 초기화하고 준비합니다.
+     * @returns {void}
      */
-    public initializeStorage() {
+    public initializeStorage(): void {
         if (this.isStorageInitialized) return;
         if (!this.engine.isHost && (!this.engine.myId || this.engine.myId === 'default' || !this.engine.roomName || this.engine.roomName === 'Untitled Room')) return;
 
@@ -93,7 +115,7 @@ export class FileStorageManager {
             this.cleanOldRoomStorages(this.engine.roomName);
         }
 
-        // 기기 내 충돌 방지를 위해 myId/roomName 기반 폴더 생성
+        // 로컬 충돌 방지를 위해 myId 및 roomName 기반 독립 폴더 생성
         const folderName = this.engine.isHost ? 'host' : (this.engine.myId || 'guest');
         this.storagePath = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName), sanitizePath(folderName));
         ensureDirectory(this.storagePath);
@@ -101,9 +123,11 @@ export class FileStorageManager {
     }
 
     /**
-     * 호스트가 활성화된 파일을 공유합니다.
+     * 호스트 측에서 현재 활성화된 에디터의 파일 또는 컨텍스트 메뉴에서 선택한 파일을 공유 시작합니다.
+     * @param targetUri 컨텍스트 메뉴 등을 통해 전달된 대상 파일 URI (선택 사항).
+     * @returns {Promise<void>}
      */
-    public async shareActiveFile(targetUri?: vscode.Uri) {
+    public async shareActiveFile(targetUri?: vscode.Uri): Promise<void> {
         if (!this.engine.isHost) return;
         this.initializeStorage();
 
@@ -170,9 +194,11 @@ export class FileStorageManager {
     }
 
     /**
-     * 게스트가 호스트로부터 초기 파일 스냅샷을 수신하여 로컬에 열고 Yjs를 동기화합니다.
+     * 게스트가 호스트로부터 초기 파일 스냅샷(INIT_SNAPSHOT)을 수신하여 로컬 임시 파일로 저장하고 Yjs 문서를 동기화합니다.
+     * @param msg 스냅샷 데이터(파일명, 텍스트 내용, Yjs 상태, 권한 등)를 담은 메시지 객체.
+     * @returns {Promise<void>}
      */
-    public async handleGuestInitSnapshot(msg: any) {
+    public async handleGuestInitSnapshot(msg: any): Promise<void> {
         this.initializeStorage();
         if (!this.storagePath) return;
 
@@ -201,10 +227,10 @@ export class FileStorageManager {
         // Yjs 문서 생성 및 상태 초기화
         this.engine.documentSyncManager.createDocForGuest(msg.fileName, msg.yjsState, msg.content);
 
-        // 권한 설정 적용
+        // 편집 권한에 따른 읽기 전용 상태 설정
         await this.updateReadonlyState(file);
 
-        // VS Code에서 파일 열기
+        // VS Code 에디터에 파일 열기
         try {
             const doc = await vscode.workspace.openTextDocument(filePath);
             await vscode.window.showTextDocument(doc, { preview: false });
@@ -216,9 +242,11 @@ export class FileStorageManager {
     }
 
     /**
-     * 특정 파일의 읽기 전용 상태를 업데이트합니다.
+     * 특정 공유 파일에 대해 현재 사용자의 편집 권한에 따라 읽기 전용 상태를 적용합니다.
+     * @param file 대상 공유 파일 객체.
+     * @returns {Promise<void>}
      */
-    public async updateReadonlyState(file: SharedFile) {
+    public async updateReadonlyState(file: SharedFile): Promise<void> {
         if (this.engine.isHost) return;
         try {
             const canEdit = this.engine.participantManager.canIEdit(file.name);
@@ -229,14 +257,24 @@ export class FileStorageManager {
         } catch (e) {}
     }
 
-    public async updateAllReadonlyStates() {
+    /**
+     * 공유 중인 모든 파일의 읽기 전용 상태를 일괄 갱신합니다.
+     * @returns {Promise<void>}
+     */
+    public async updateAllReadonlyStates(): Promise<void> {
         if (this.engine.isHost) return;
         for (const file of this.sharedFiles) {
             await this.updateReadonlyState(file);
         }
     }
 
-    public async applyEditorReadonlyState(editor: vscode.TextEditor, readonly: boolean) {
+    /**
+     * VS Code 에디터에 내장된 세션 단위 읽기 전용 모드를 토글합니다.
+     * @param editor 대상 텍스트 에디터.
+     * @param readonly 읽기 전용 여부.
+     * @returns {Promise<void>}
+     */
+    public async applyEditorReadonlyState(editor: vscode.TextEditor, readonly: boolean): Promise<void> {
         if (this.engine.isHost) return;
         if (vscode.window.activeTextEditor !== editor) return;
 
@@ -250,9 +288,11 @@ export class FileStorageManager {
     }
 
     /**
-     * 백그라운드에서 디바운스 방식으로 디스크에 저장합니다 (실시간 타이핑 중 I/O 렉 방지).
+     * 실시간 타이핑 중 빈번한 디스크 I/O 렉을 방지하기 위해 디바운스(1.5초) 방식으로 문서를 저장합니다.
+     * @param filePath 저장 대상 로컬 파일 절대 경로.
+     * @returns {void}
      */
-    public scheduleDebouncedSave(filePath: string) {
+    public scheduleDebouncedSave(filePath: string): void {
         // 이미 공유 목록에 없는 파일이거나 닫히는 중인 파일은 저장 예약하지 않음
         if (!this.sharedFiles.some(f => isPathEqual(f.path, filePath)) || this.closingDocuments.has(filePath)) {
             return;
@@ -279,9 +319,10 @@ export class FileStorageManager {
     }
 
     /**
-     * 활성화된 에디터의 파일 공유를 중지합니다.
+     * 현재 활성화된 에디터 파일의 공유를 중지합니다.
+     * @returns {Promise<void>}
      */
-    public async stopSharing() {
+    public async stopSharing(): Promise<void> {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
         const file = this.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
@@ -289,9 +330,11 @@ export class FileStorageManager {
     }
 
     /**
-     * 이름으로 파일 공유를 중지합니다 (호스트 전용).
+     * 특정 파일명의 공유를 중지하고 변경 사항을 백업본과 Diff 비교합니다 (호스트 전용).
+     * @param fileName 공유를 중지할 파일 이름.
+     * @returns {Promise<void>}
      */
-    public async stopSharingByName(fileName: string) {
+    public async stopSharingByName(fileName: string): Promise<void> {
         if (!this.engine.isHost) return;
 
         const answer = await vscode.window.showWarningMessage(`"${fileName}" 공유를 중지하시겠습니까?`, { modal: true }, "중지");
@@ -299,12 +342,12 @@ export class FileStorageManager {
 
         const file = this.sharedFiles.find(f => f.name === fileName);
         if (file) {
-            // 변경 사항 저장
+            // 변경 사항 최종 저장
             const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, file.path));
             if (doc) {
                 await doc.save();
                 if (file.source && fs.existsSync(file.source)) {
-                    // 원본 백업본과 현재 협업본을 Diff 비교
+                    // 원본 백업본과 현재 협업본 간의 변경점 Diff 뷰 실행
                     vscode.commands.executeCommand(
                         'vscode.diff',
                         vscode.Uri.file(file.source),
@@ -314,16 +357,18 @@ export class FileStorageManager {
                 }
             }
 
-            // 게스트들에게 공유 중지 전송
+            // 게스트들에게 공유 중지 통지
             this.engine.sendMessage('STOP_SHARING', { fileName: file.name });
             await this.handleRemoteStop(file.name);
         }
     }
 
     /**
-     * 원격 공유 중지 요청을 처리합니다 (게스트 및 호스트 공통 목록 정리).
+     * 공유 중지(호스트 명령 또는 피어 알림) 발생 시 메모리 자원, 타이머, 탭 및 임시 파일을 정리합니다.
+     * @param fileName 정리할 파일 이름.
+     * @returns {Promise<void>}
      */
-    public async handleRemoteStop(fileName: string) {
+    public async handleRemoteStop(fileName: string): Promise<void> {
         const index = this.sharedFiles.findIndex(f => f.name === fileName);
         const file = index !== -1 ? this.sharedFiles[index] : undefined;
         const filePath = file?.path || (this.storagePath ? path.join(this.storagePath, fileName) : '');
@@ -405,7 +450,11 @@ export class FileStorageManager {
         this.engine.pushUIUpdate();
     }
 
-    public reset() {
+    /**
+     * FileStorageManager의 모든 타이머, 파일 목록 및 상태를 초기화합니다.
+     * @returns {void}
+     */
+    public reset(): void {
         this.debouncedSaveTimers.forEach(t => clearTimeout(t));
         this.debouncedSaveTimers.clear();
         this.sharedFiles = [];
