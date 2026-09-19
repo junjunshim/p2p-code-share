@@ -116,7 +116,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // 웹뷰 옵션 구성
         webviewView.webview.options = { enableScripts: true, localResourceRoots: [this._extensionUri] };
         // 초기 HTML 템플릿 설정
-        webviewView.webview.html = getSidebarTemplate();
+        webviewView.webview.html = getSidebarTemplate(this._extensionUri, webviewView.webview);
         (webviewView as any).retainContextWhenHidden = true;
 
         // 웹뷰로부터의 메시지 수신 및 라우팅 처리

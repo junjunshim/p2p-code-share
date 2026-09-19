@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
         
         // 상태 업데이트를 사이드바에 알림
         if (state.type === 'log') {
-            // 엔진 웹뷰(getEngineTemplate)로 로그 전송
+            // 엔진 웹뷰(media/engine/engine.js)로 로그 전송
             hub.sendToEngine({ type: 'log', message: state.message });
         } else {
             sidebar.postMessage({
