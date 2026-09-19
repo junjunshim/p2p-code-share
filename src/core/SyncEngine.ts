@@ -206,7 +206,7 @@ export class SyncEngine {
                         this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
                         if (this.isHost) {
                             const isAutoJoining = this.participantManager.joinRequests.some(r => r.peerId === peerId);
-                            if (!isAutoJoining && !this.roomName) {
+                            if (!isAutoJoining) {
                                 this.participantManager.handleGuestJoin(msg, peerId);
                                 this.updateStatus('Connected');
                             }
@@ -280,6 +280,10 @@ export class SyncEngine {
         };
     }
 
+    /**
+     * WebRTC 데이터 채널 연결 성공 이벤트를 처리합니다.
+     * @param peerId 연결된 피어 식별자
+     */
     private handleOnConnected(peerId: string) {
         this.logToUI(`ON_CONNECTED received: ${peerId}`);
         if (this.isHost) {
@@ -290,10 +294,9 @@ export class SyncEngine {
             }
         } else {
             if (!this.participantManager.isAutoJoin) {
-                this.isConnected = true;
-                this.isSetupMode = false;
-                this.logToUI("Manual connection complete");
-                this.updateStatus('Connected');
+                // 수동 연결의 경우 호스트로부터 피어 ID 할당 및 방 정보(USER_LIST_UPDATE)를 수신할 때까지 대기
+                this.logToUI("Manual connection established, finalizing handshake...");
+                this.updateStatus('Connecting...');
             } else {
                 this.logToUI("Connected to host, waiting for join approval...");
                 this.updateStatus('Waiting...');
@@ -302,6 +305,10 @@ export class SyncEngine {
         this.pushUIUpdate();
     }
 
+    /**
+     * 호스트로부터 할당받은 피어 식별자를 설정하고 참가 요청 또는 등록 절차를 진행합니다.
+     * @param msg 피어 식별자 정보가 담긴 메시지 객체
+     */
     private handleAssignPeerId(msg: any) {
         if (!this.isHost) {
             this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
@@ -326,7 +333,8 @@ export class SyncEngine {
                     peerId: this.myId,
                     previousPeerId: req.previousPeerId
                 });
-            } else if (!this.participantManager.isAutoJoin && !this.isConnected) {
+            } else if (!this.participantManager.isAutoJoin) {
+                // 수동 연결 게스트: 호스트에게 참여자 등록 메시지 전송
                 this.sendMessage('GUEST_JOIN', { name: this.myName }); 
             }
             
@@ -334,6 +342,10 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * 특정 파일의 편집 담당자 변경 정보를 반영합니다.
+     * @param msg 파일 담당자 정보 메시지 객체
+     */
     private async handleFileAssigneeUpdate(msg: any) {
         if (!this.isHost) {
             const file = this.fileStorageManager.sharedFiles.find(f => f.name === msg.fileName);
@@ -347,6 +359,10 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * 호스트로부터 최신 참여자 목록 및 방 정보를 동기화합니다.
+     * @param msg 참여자 목록 및 방 이름 메시지 객체
+     */
     private async handleUserListUpdate(msg: any) {
         this.participantManager.participants = msg.users;
         this.logToUI(`User list updated. ${Object.keys(this.participantManager.participants).length} users. myId=${this.myId}`);
@@ -366,6 +382,14 @@ export class SyncEngine {
             const myData = this.participantManager.participants[this.myId] || this.participantManager.participants['default'];
             if (myData) {
                 this.myName = myData.name;
+            }
+
+            // 수동 연결 게스트가 호스트로부터 참여자 목록 및 방 정보를 정상 수신하면 연결 완료 상태로 전환
+            if (!this.participantManager.isAutoJoin && !this.isConnected) {
+                this.isConnected = true;
+                this.isSetupMode = false;
+                this.logToUI("Manual connection complete");
+                this.updateStatus('Connected');
             }
         }
         
@@ -486,7 +510,7 @@ export class SyncEngine {
     public handleSetRole(msg: any) {
         this.isHost = msg.isHost;
         this.myId = this.isHost ? 'host' : '';
-        this.roomName = msg.roomName || 'Untitled Room';
+        this.roomName = msg.roomName !== undefined ? msg.roomName : (this.isHost ? 'Untitled Room' : '');
         this.myName = this.isHost ? 'Host' : '';
         this.initialName = this.myName;
         this.logToUI(`Role set: ${this.isHost ? 'Host' : 'Guest'} for room "${this.roomName}"`);
@@ -496,15 +520,21 @@ export class SyncEngine {
             this.isSetupMode = false;
             this.fileStorageManager.initializeStorage(); 
             this.participantManager.participants['host'] = { name: this.myName, globalCanEdit: true, filePermissions: {} }; 
-            this.hub.createHub(true, this.roomName, 'none'); 
-            
             if (this.roomName && this.roomName !== 'Untitled Room') {
+                this.hub.createHub(true, this.roomName, 'none'); 
                 this.participantManager.inviteGuest(true);
+            } else {
+                this.hub.createHub(true, '', 'none');
             }
             this.participantManager.startPingCheck();
         } else { 
             this.isSetupMode = (this.roomName && this.roomName !== 'Untitled Room') ? false : true; 
-            this.hub.createHub(false, this.roomName, 'default'); 
+            if (this.roomName && this.roomName !== 'Untitled Room') {
+                this.hub.createHub(false, this.roomName, 'default'); 
+            } else {
+                // 수동 연결 모드: 시그널링 허브를 시작하지 않고 수동 SDP 대기 상태로 유지
+                this.hub.createHub(false, '', 'default');
+            }
             if (this.isSetupMode) this.updateStatus('Waiting...');
         }
         this.pushUIUpdate();

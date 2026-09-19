@@ -68,10 +68,6 @@ export function activate(context: vscode.ExtensionContext) {
         hub.dispose();
         engine.reset(true);
 
-        // 방 이름이 있는 경우에만 Hub 생성 (수동 연결 방식을 위해 roomName이 빈 문자열일 수 있음)
-        if (roomName) {
-            hub.createHub(initiator, roomName);
-        }
         engine.handleSetRole({ isHost: initiator, roomName });
     };
 
@@ -262,11 +258,26 @@ export function activate(context: vscode.ExtensionContext) {
     hub.onRoomNameError = (errorType: string) => {
         engine.isSignalingConnected = false;
         if (!engine.isHost) {
+            // 수동 연결 모드(수동 SDP 교환 중이거나 자동 참가가 아닌 경우):
+            // 시그널링 서버를 통한 연결이 아니므로 시그널링 에러(방 부재/서버 오류 등)를 무시합니다.
+            if (engine.isSetupMode || !engine.participantManager.isAutoJoin || !engine.roomName) {
+                return;
+            }
+
             // 게스트가 호스트 재연결 유예 기간(Grace Period) 중인 경우:
             // 호스트 창이 아직 서버에 안 떴거나 일시적으로 서버 연결 중일 수 있으므로 즉시 에러 팝업을 띄우거나 reset()하지 않음
             if (engine.participantManager.isReconnecting) {
                 engine.logToUI(`Guest reconnect probe (${errorType}): Host room not ready yet, will retry...`);
                 engine.participantManager.onGuestReconnectProbeFailed();
+                return;
+            }
+
+            // 게스트가 이미 호스트와 P2P 연결되어 방에 정상 입장해 있는 경우:
+            // 일시적인 시그널링 서버 연결 끊김/에러로 인해 진행 중인 P2P 세션에서 퇴장되지 않도록 보호합니다.
+            // (PeerJS는 백그라운드에서 자동 재연결을 시도하며, 실제 P2P 통신은 WebRTC DataChannel을 통해 유지됩니다.)
+            if (engine.isConnected) {
+                engine.logToUI(`Signaling server notice while connected (${errorType}): P2P session remains active.`);
+                engine.pushUIUpdate();
                 return;
             }
 
