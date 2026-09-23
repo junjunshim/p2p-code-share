@@ -1014,8 +1014,8 @@ export class SyncEngine {
             this.decorationManager.refreshDecorationsInEditors();
             this.decorationManager.broadcastDecorations();
 
-            // 2. 해당 피어 연결 정리 (커서 정리, 참가자 리스트 제거, 유저 리스트 브로드캐스트)
-            this.participantManager.handlePeerDisconnect(actualPeerId);
+            // 2. 해당 피어 즉시 영구 연결 정리 (커서 정리, 참가자 리스트 제거, 파일 잠금 해제, 유저 리스트 브로드캐스트)
+            this.participantManager.removePeerPermanently(actualPeerId);
         }
     }
 

@@ -671,8 +671,8 @@ export class ParticipantManager {
         // 엔진 레벨에서 WebRTC 피어 연결 해제
         this.engine.hub.disconnectPeer(peerId);
 
-        // 로컬에서 즉시 연결 해제 처리
-        this.handlePeerDisconnect(peerId);
+        // 로컬에서 즉시 영구 제거 및 리소스 정리
+        this.removePeerPermanently(peerId);
         vscode.window.showInformationMessage(`"${targetName}" 사용자를 방에서 퇴장시켰습니다.`);
     }
 
@@ -745,9 +745,23 @@ export class ParticipantManager {
             this.lastPongTimes.delete(peerId);
             this.reconnectStartTimes.delete(peerId);
             
+            // 퇴장한 피어가 독점 담당자로 지정되어 있던 파일들의 잠금 해제 및 브로드캐스트
+            this.engine.fileStorageManager.sharedFiles.forEach(f => {
+                if (f.assigneeId === peerId) {
+                    f.assigneeId = undefined;
+                    f.assigneeName = undefined;
+                    this.engine.sendMessage('FILE_ASSIGNEE_UPDATE', {
+                        fileName: f.name,
+                        assigneeId: undefined,
+                        assigneeName: undefined
+                    });
+                }
+            });
+
             // 해당 피어의 데코레이션 및 색상 정리
             this.engine.cursorManager.clearPeerCursor(peerId);
             this.broadcastUserList();
+            this.engine.pushUIUpdate();
         }
     }
 
@@ -1006,6 +1020,7 @@ export class ParticipantManager {
     public async stopGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = false;
         this.isProbeInFlight = false;
+        this.stopJoinRequestRetry();
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
             this.reconnectRetryTimer = undefined;
