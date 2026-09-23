@@ -611,12 +611,11 @@ export class ParticipantManager {
     public handlePeerDisconnect(peerId: string): void {
         if (!this.engine.isHost) {
             // 게스트일 경우: 호스트와의 일시적 단절(호스트 창 전환 등)을 감지하고 30초 재연결 유예 모드로 진입
-            if (peerId === 'default' || peerId === 'all') { 
-                if (this.engine.isConnected && !this.isReconnecting) {
-                    this.startGuestReconnectGracePeriod();
-                } else if (!this.isReconnecting) {
-                    this.engine.reset(); 
-                }
+            // peerId가 'default', 'all', 또는 할당받았던 내 ID/호스트 ID 어디서 오든 동일하게 보호
+            if (this.engine.isConnected && !this.isReconnecting) {
+                this.startGuestReconnectGracePeriod();
+            } else if (!this.isReconnecting) {
+                this.engine.reset(); 
             }
         } else {
             // 호스트일 경우 참가자 제거 및 UI 알림
@@ -859,17 +858,17 @@ export class ParticipantManager {
             this.engine.hub.dispose();
             this.sendJoinRequest(savedRoomName, savedName, savedId);
 
-            // 각 시도마다 WebRTC 및 WebSocket이 완료될 수 있도록 최소 2.5초~3초 확보
-            const nextInterval = elapsedSec < 10 ? 2500 : 3000;
+            // 서로 다른 물리 PC 환경의 ICE 수집 및 시그널링 교환 시간을 고려하여 최소 4.5초 확보
+            const nextInterval = elapsedSec < 10 ? 4500 : 5000;
             this.reconnectRetryTimer = setTimeout(tryReconnect, nextInterval);
         };
 
-        // 800ms 뒤 첫 재시도 (호스트 소켓 준비 시간 감안)
-        this.reconnectRetryTimer = setTimeout(tryReconnect, 800);
+        // 호스트 소켓 정리 및 새 방 등록 완료를 대기한 뒤 첫 재시도 (2500ms)
+        this.reconnectRetryTimer = setTimeout(tryReconnect, 2500);
     }
 
     /**
-     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출되어 1.5초 후 다음 시도를 트리거합니다.
+     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출되어 2초 후 다음 시도를 트리거합니다.
      * @returns {void}
      */
     public onGuestReconnectProbeFailed(): void {
@@ -878,7 +877,7 @@ export class ParticipantManager {
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
         }
-        // 실패 시 1.5초 후 즉시 다음 재시도 트리거
+        // 실패 시 2초 후 다음 재시도 트리거 (호스트 고스트 ID 해제 대기 보장)
         this.reconnectRetryTimer = setTimeout(() => {
             if (this.isReconnecting) {
                 const savedRoomName = this.engine.roomName;
@@ -887,7 +886,7 @@ export class ParticipantManager {
                 this.engine.hub.dispose();
                 this.sendJoinRequest(savedRoomName, savedName, savedId);
             }
-        }, 1500);
+        }, 2000);
     }
 
     /**
@@ -905,6 +904,7 @@ export class ParticipantManager {
             clearTimeout(this.reconnectDeadlineTimer);
             this.reconnectDeadlineTimer = undefined;
         }
+        vscode.window.setStatusBarMessage('✅ 호스트에 다시 연결되었습니다.', 3000);
     }
 
     /**

@@ -12,7 +12,10 @@
     let pendingSdpMap = {};
     let remotePeerIdMap = {};
     let peerServer = null;
-    let activeSignalingConn = null;
+    let guestSignalingConn = null; // 게스트가 호스트와 통신하기 위한 시그널링 커넥션
+    let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
+    let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
+    let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
 
@@ -32,15 +35,44 @@
             try { peers[id].destroy(); } catch(e) {}
             delete peers[id];
         });
-        if (activeSignalingConn) {
-            try { activeSignalingConn.close(); } catch(e) {}
-            activeSignalingConn = null;
+        pendingSignalingQueue = [];
+        peerSignalingConnMap = {};
+        if (guestSignalingConn) {
+            try { guestSignalingConn.close(); } catch(e) {}
+            guestSignalingConn = null;
         }
         if (peerServer) {
             try { peerServer.destroy(); } catch(e) {}
             peerServer = null;
         }
         if (st) st.innerText = 'DISCONNECTED';
+    }
+
+    /**
+     * 대기 중인 게스트 시그널링 요청 큐를 확인하고 생성된 SDP 오퍼를 즉시 전송합니다.
+     */
+    function flushPendingSignalingRequests() {
+        if (!currentInitiator || pendingSignalingQueue.length === 0) return;
+
+        const readyTargetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator && pendingSdpMap[id]);
+        if (!readyTargetId) return;
+
+        const sdp = pendingSdpMap[readyTargetId];
+
+        while (pendingSignalingQueue.length > 0) {
+            const req = pendingSignalingQueue.shift();
+            try {
+                if (req.conn && req.conn.open) {
+                    log('Dispatching queued SDP offer to guest (targetId: ' + readyTargetId + ')...');
+                    peerSignalingConnMap[readyTargetId] = req.conn;
+                    connPeerIdMap.set(req.conn, readyTargetId);
+                    req.conn.send({ type: 'SDP', sdp: sdp, peerId: readyTargetId });
+                    break;
+                }
+            } catch (err) {
+                log('Failed to send SDP to queued connection: ' + err.message);
+            }
+        }
     }
 
     /**
@@ -54,6 +86,9 @@
             });
             rawPc.addEventListener('iceconnectionstatechange', () => {
                 log('ICE Connection State: ' + rawPc.iceConnectionState);
+                if (rawPc.iceConnectionState === 'failed') {
+                    vscode.postMessage({ type: 'iceFailed', peerId });
+                }
             });
         }
 
@@ -61,9 +96,15 @@
             const sdpStr = JSON.stringify(data);
             pendingSdpMap[peerId] = sdpStr;
             vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId });
-            if (activeSignalingConn && activeSignalingConn.open) {
+
+            if (currentInitiator) {
+                flushPendingSignalingRequests();
+            }
+
+            const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
+            if (targetConn && targetConn.open) {
                 log('SDP generated. Sending SDP message to ' + (currentInitiator ? 'guest' : 'host') + ' via signaling channel.');
-                activeSignalingConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
+                targetConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
             }
         });
 
@@ -99,7 +140,17 @@
             } else {
                 updateStatus();
             }
-            if (activeSignalingConn) { activeSignalingConn.close(); activeSignalingConn = null; }
+            if (currentInitiator) {
+                if (peerSignalingConnMap[peerId]) {
+                    try { peerSignalingConnMap[peerId].close(); } catch(e) {}
+                    delete peerSignalingConnMap[peerId];
+                }
+            } else {
+                if (guestSignalingConn) {
+                    try { guestSignalingConn.close(); } catch(e) {}
+                    guestSignalingConn = null;
+                }
+            }
         });
 
         p.on('data', data => {
@@ -235,7 +286,9 @@
         }
 
         function handleSignalingConn(conn) {
-            activeSignalingConn = conn;
+            if (!currentInitiator) {
+                guestSignalingConn = conn;
+            }
             conn.on('open', () => {
                 log('Signaling channel established.');
                 if (!currentInitiator) {
@@ -246,26 +299,53 @@
 
             conn.on('data', (data) => {
                 if (data.type === 'REQ_OFFER') {
-                    const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
+                    const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator && pendingSdpMap[id]);
                     if (targetId && pendingSdpMap[targetId]) {
-                        log('Sending SDP offer to guest...');
+                        log('Sending SDP offer to guest immediately (targetId: ' + targetId + ')...');
+                        peerSignalingConnMap[targetId] = conn;
+                        connPeerIdMap.set(conn, targetId);
                         conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
                     } else {
-                        log('No SDP offer ready yet. Requesting invite slot from host...');
+                        log('No SDP offer ready yet. Queuing signaling connection and requesting invite slot from host...');
+                        pendingSignalingQueue.push({ conn, timestamp: Date.now() });
                         vscode.postMessage({ type: 'requireInvite' });
                     }
                 } else if (data.type === 'SDP') {
-                    const targetId = currentInitiator ? data.peerId : 'default';
-                    if (peers[targetId] && peers[targetId].connected) return;
-                    if (!currentInitiator) remotePeerIdMap['default'] = data.peerId;
-                    log('Received SDP exchange signal from ' + (currentInitiator ? 'guest' : 'host') + '. Applying signal...');
+                    let targetId;
+                    if (currentInitiator) {
+                        targetId = data.peerId || connPeerIdMap.get(conn);
+                        if (!targetId) {
+                            targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
+                        }
+                        if (targetId) {
+                            peerSignalingConnMap[targetId] = conn;
+                            connPeerIdMap.set(conn, targetId);
+                        }
+                    } else {
+                        targetId = 'default';
+                        remotePeerIdMap['default'] = data.peerId;
+                    }
+
+                    if (!targetId || !peers[targetId]) {
+                        log('Target peer not found for SDP signal (targetId: ' + targetId + ')');
+                        return;
+                    }
+                    if (peers[targetId].connected) return;
+
+                    log('Received SDP exchange signal from ' + (currentInitiator ? 'guest' : 'host') + ' (targetId: ' + targetId + '). Applying signal...');
                     window.dispatchEvent(new MessageEvent('message', { data: { type: 'signal', sdp: data.sdp, peerId: targetId } }));
                 }
             });
 
             conn.on('close', () => {
                 log('Signaling channel connection closed.');
-                if (activeSignalingConn === conn) activeSignalingConn = null;
+                if (!currentInitiator && guestSignalingConn === conn) {
+                    guestSignalingConn = null;
+                }
+                const boundPeerId = connPeerIdMap.get(conn);
+                if (boundPeerId && peerSignalingConnMap[boundPeerId] === conn) {
+                    delete peerSignalingConnMap[boundPeerId];
+                }
             });
 
             conn.on('error', (err) => {

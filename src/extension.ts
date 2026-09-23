@@ -86,6 +86,7 @@ export function activate(context: vscode.ExtensionContext) {
         else if (msg.type === 'requireInvite') hub.onRequireInvite?.();
         else if (msg.type === 'roomNameSuccess') hub.onRoomNameSuccess?.();
         else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType);
+        else if (msg.type === 'iceFailed') hub.onIceFailed?.(pid);
         else if (msg.type === 'sdpGenerated') {
             hub.sdpMap.set(pid, msg.sdp);
             hub.onSdpGenerated?.(msg.sdp, pid);
@@ -246,12 +247,28 @@ export function activate(context: vscode.ExtensionContext) {
         engine.isSignalingConnected = true; // 시그널링 서버 연결 완료 상태 플래그 설정
         engine.sessionRecoveryManager.startHeartbeat();
 
-        // 호스트인 경우 게스트의 REQ_OFFER에 즉시 응답할 수 있도록 대기 중인 초대 슬롯 생성
+        // 호스트인 경우 다중 게스트 동시 재접속에 대비해 대기 초대 슬롯을 사전에 확보
         if (engine.isHost) {
-            engine.participantManager.inviteGuest(true);
+            const guestCount = Object.keys(engine.participantManager.participants).filter(id => id !== 'host' && id !== 'default').length;
+            const slotsToCreate = Math.min(3, Math.max(1, guestCount));
+            for (let i = 0; i < slotsToCreate; i++) {
+                setTimeout(() => {
+                    if (engine.isConnected && engine.isHost) {
+                        engine.participantManager.inviteGuest(true);
+                    }
+                }, i * 300);
+            }
         }
 
         engine.pushUIUpdate();
+    };
+
+    // WebRTC ICE 바인딩 실패 시 조기 감지 및 빠른 재시도
+    hub.onIceFailed = (peerId: string) => {
+        if (!engine.isHost && engine.participantManager.isReconnecting) {
+            engine.logToUI(`ICE connection failed for peer ${peerId}. Triggering early reconnection probe...`);
+            engine.participantManager.onGuestReconnectProbeFailed();
+        }
     };
 
     // 방 이름 중복 또는 서버 에러 처리

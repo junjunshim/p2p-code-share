@@ -224,13 +224,14 @@ export class FileStorageManager {
             file.assigneeName = msg.assigneeName;
         }
 
-        // Yjs 문서 생성 및 상태 초기화
+        // Yjs 문서 생성 및 호스트 최신 상태로 완전 덮어쓰기 (무결성 보장)
         this.engine.documentSyncManager.createDocForGuest(msg.fileName, msg.yjsState, msg.content);
+        await this.engine.documentSyncManager.queueUpdateEditor(msg.fileName);
 
         // 편집 권한에 따른 읽기 전용 상태 설정
         await this.updateReadonlyState(file);
 
-        // VS Code 에디터에 파일 열기
+        // VS Code 에디터에 파일 열기 (이미 열려 있다면 활성화 및 최신 텍스트 동기화)
         try {
             const doc = await vscode.workspace.openTextDocument(filePath);
             await vscode.window.showTextDocument(doc, { preview: false });
