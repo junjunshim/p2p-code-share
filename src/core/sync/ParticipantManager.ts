@@ -989,7 +989,17 @@ export class ParticipantManager {
         this.lastPongTimes.set(peerId, Date.now());
         this.reconnectStartTimes.delete(peerId);
 
-        const perm = this.participants[peerId];
+        let perm = this.participants[peerId];
+        // peerId로 직접 매칭되지 않는 경우, 동일한 ID 또는 이름을 가진 참가자 항목을 검색
+        if (!perm) {
+            const foundEntry = Object.entries(this.participants).find(([id, p]) => id === peerId || p.name === peerId);
+            if (foundEntry) {
+                this.lastPongTimes.set(foundEntry[0], Date.now());
+                this.reconnectStartTimes.delete(foundEntry[0]);
+                perm = foundEntry[1];
+            }
+        }
+
         if (perm && perm.connectionStatus !== 'connected') {
             perm.connectionStatus = 'connected';
             this.broadcastUserList();

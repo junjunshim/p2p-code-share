@@ -147,6 +147,11 @@ export class SyncEngine {
         this.hub.onDidReceiveData = async (text, peerId) => {
             this.logToUI(`Data received from peer: ${peerId}`);
             try {
+                // 호스트인 경우 게스트로부터 정상적인 데이터 수신 시 생존(Alive) 시간 갱신
+                if (this.isHost && peerId) {
+                    this.participantManager.handlePong(peerId);
+                }
+
                 // 수신된 P2P 메시지 파싱
                 const msg = JSON.parse(text) as P2PMessage;
                 switch (msg.type) {
@@ -266,13 +271,20 @@ export class SyncEngine {
                         break;
                     case 'PING':
                         if (!this.isHost) {
-                            this.sendMessage('PONG', { peerId: this.myId, timestamp: msg.timestamp });
+                            this.sendMessage('PONG', { peerId: this.myId, name: this.myName, timestamp: msg.timestamp });
                         }
                         break;
                     case 'PONG':
                         if (this.isHost) {
-                            const senderId = msg.peerId || peerId;
-                            this.participantManager.handlePong(senderId);
+                            if (peerId) {
+                                this.participantManager.handlePong(peerId);
+                            }
+                            if (msg.peerId && msg.peerId !== peerId) {
+                                this.participantManager.handlePong(msg.peerId);
+                            }
+                            if (msg.name) {
+                                this.participantManager.handlePong(msg.name);
+                            }
                         }
                         break;
                 }
@@ -322,8 +334,8 @@ export class SyncEngine {
             this.fileStorageManager.isStorageInitialized = false; 
             this.fileStorageManager.initializeStorage(); 
             
-            // UI에 피어 ID 변경 알림
-            this.sendMessage('updatePeerId', { oldId, newId: this.myId });
+            // Webview 엔진 내부 피어 맵의 키 갱신
+            this.hub.sendToEngine({ type: 'updatePeerId', oldId, newId: this.myId });
             
             if (this.participantManager.isAutoJoin && this.participantManager.pendingJoinRequest) {
                 const req = this.participantManager.pendingJoinRequest;
