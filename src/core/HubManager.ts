@@ -18,6 +18,9 @@ export class HubManager {
     /** 사이드바 Webview 인스턴스 참조 (메시지 포스팅용) */
     private _webview?: vscode.Webview;
 
+    /** Webview가 준비되기 전 전송 요청된 메시지 대기열 */
+    private _pendingMessageQueue: Array<{ msg: any; to?: string }> = [];
+
     /** 피어 ID별 최신 SDP 문자열을 보관하는 맵 */
     public sdpMap: Map<string, string> = new Map();
 
@@ -54,6 +57,13 @@ export class HubManager {
      */
     public setWebview(webview: vscode.Webview): void {
         this._webview = webview;
+        // 대기열에 쌓인 메시지가 있다면 순서대로 전송
+        while (this._pendingMessageQueue.length > 0) {
+            const item = this._pendingMessageQueue.shift();
+            if (item) {
+                this.sendToEngine(item.msg, item.to);
+            }
+        }
     }
 
     /**
@@ -97,7 +107,11 @@ export class HubManager {
      * @returns {void}
      */
     public sendToEngine(msg: any, to?: string): void {
-        this._webview?.postMessage({ ...msg, targetPeerId: to });
+        if (!this._webview) {
+            this._pendingMessageQueue.push({ msg, to });
+            return;
+        }
+        this._webview.postMessage({ ...msg, targetPeerId: to });
     }
 
     /**

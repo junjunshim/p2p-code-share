@@ -107,9 +107,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 새 창이 열렸을 때 이전 창에서 넘어온 세션이 있는지 확인 (Reload Window / Open Folder 대응)
-        const session = engine.sessionRecoveryManager.getRecoverableSession();
-        if (session) {
-            await engine.sessionRecoveryManager.restoreSession(session);
+        if (!engine.sessionRecoveryManager.isRestoringSession) {
+            const session = engine.sessionRecoveryManager.getRecoverableSession();
+            if (session) {
+                await engine.sessionRecoveryManager.restoreSession(session);
+            } else {
+                engine.pushUIUpdate();
+            }
         } else {
             engine.pushUIUpdate();
         }
@@ -380,6 +384,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('p2p-code-share.addDecoration', () => engine.addDecorationFlow()),
         vscode.commands.registerCommand('p2p-code-share.deleteDecoration', (id: string) => engine.deleteDecoration(id))
     );
+
+    // 창이 새로 로드되거나 폴더 전환 시, 사이드바를 직접 클릭하지 않아도 세션 복구가 즉각 실행되도록 트리거
+    const recoverableSession = engine.sessionRecoveryManager.getRecoverableSession();
+    if (recoverableSession) {
+        // 사이드바 뷰를 포커스/활성화하여 resolveWebviewView 및 onReady -> restoreSession이 즉시 가동되도록 함
+        vscode.commands.executeCommand('p2p-code-share-sidebar.focus');
+    }
 }
 
 let activeHub: HubManager | undefined;
