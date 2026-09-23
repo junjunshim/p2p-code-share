@@ -224,19 +224,36 @@ export class SyncEngine {
                         }
                         break;
                     case 'GUEST_RENAME':
+                        const newName = msg.newName;
+                        if (peerId) {
+                            if (this.participantManager.participants[peerId]) {
+                                this.participantManager.participants[peerId].name = newName;
+                            }
+                            // 커서 상태 캐시에 저장된 닉네임도 즉시 갱신
+                            const cursorState = this.cursorManager['remoteCursorStates'].get(peerId);
+                            if (cursorState) {
+                                cursorState.userName = newName;
+                            }
+                        }
+
                         if (this.isHost) { 
-                            this.participantManager.participants[peerId] = { 
-                                ...(this.participantManager.participants[peerId] || { globalCanEdit: false, filePermissions: {} }), 
-                                name: msg.newName 
-                            }; 
                             this.participantManager.broadcastUserList(); 
 
                             // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경 및 브로드캐스트
                             this.decorationManager.decorations.forEach(d => {
-                                if (d.creatorId === peerId) d.creatorName = msg.newName;
+                                if (d.creatorId === peerId) d.creatorName = newName;
                             });
                             this.decorationManager.broadcastDecorations();
+
+                            // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신
+                            Object.keys(this.participantManager.participants).forEach(pId => {
+                                if (pId !== 'host' && pId !== peerId) {
+                                    this.sendMessageToPeer(pId, 'GUEST_RENAME', { newName, peerId });
+                                }
+                            });
                         }
+                        this.cursorManager.refreshAllDecorations();
+                        this.pushUIUpdate();
                         break;
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'FILE_ASSIGNEE_UPDATE': await this.handleFileAssigneeUpdate(msg); break;
@@ -253,9 +270,12 @@ export class SyncEngine {
                     case 'KICKED': this.participantManager.handleKicked(msg); break;
                     case 'SET_PERMISSION': await this.participantManager.handleSetPermission(msg); break;
                     case 'ADD_DECORATION':
-                        if (this.isHost) {
-                            this.decorationManager.decorations.push(msg.decoration);
-                            this.decorationManager.broadcastDecorations();
+                        if (this.isHost && msg.decoration) {
+                            const exists = this.decorationManager.decorations.some(d => d.id === msg.decoration.id);
+                            if (!exists) {
+                                this.decorationManager.decorations.push(msg.decoration);
+                                this.decorationManager.broadcastDecorations();
+                            }
                         }
                         break;
                     case 'DELETE_DECORATION':

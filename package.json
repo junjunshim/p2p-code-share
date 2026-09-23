@@ -2,7 +2,7 @@
   "name": "p2p-code-share",
   "displayName": "P2P Code Share",
   "description": "P2P 실시간 코드 동시 편집 확장 프로그램",
-  "version": "0.1.10",
+  "version": "0.1.12",
   "readme": "README.extension.md",
   "publisher": "junjunshim",
   "repository": {

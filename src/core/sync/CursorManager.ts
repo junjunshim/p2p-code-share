@@ -30,8 +30,13 @@ export class CursorManager {
     /** 피어 ID별로 할당된 16진수 색상 코드 맵 */
     private userColorMap = new Map<string, string>();
 
-    /** 새 피어 접속 시 순차적으로 할당할 테마 색상 팔레트 목록 */
-    private colorPalette = ['#4ec9b0', '#ffeb3b', '#2196f3', '#9c27b0', '#ff9800', '#00bcd4', '#8bc34a'];
+    /** 30인 이상 동시 접속 수업 환경에서도 겹치지 않는 32색 고대비 테마 색상 팔레트 */
+    private colorPalette = [
+        '#4ec9b0', '#ffeb3b', '#2196f3', '#9c27b0', '#ff9800', '#00bcd4', '#8bc34a', '#e91e63',
+        '#00e676', '#ff4081', '#3d5afe', '#ffd600', '#00b0ff', '#76ff03', '#ff6d00', '#d500f9',
+        '#64ffda', '#ffab00', '#1de9b6', '#f50057', '#00e5ff', '#c6ff00', '#ff3d00', '#651fff',
+        '#aeea00', '#ff1744', '#00bfa5', '#ff9100', '#2979ff', '#f4ff81', '#b388ff', '#84ffff'
+    ];
 
     /** 불필요한 데코레이션 재생성을 방지하기 위한 피어별 데코레이션 캐시 정보 */
     private remoteCursorDecoTypes = new Map<string, { cursorDeco: vscode.TextEditorDecorationType; selectionDeco: vscode.TextEditorDecorationType; key: string }>();

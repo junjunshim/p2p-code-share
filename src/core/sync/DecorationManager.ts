@@ -306,6 +306,8 @@ export class DecorationManager {
             this.decorations.push(newDeco);
             this.broadcastDecorations();
         } else {
+            // 게스트도 로컬 상태에 즉시 반영하여 화면 전환 반응성을 극대화(낙관적 UI)
+            this.decorations.push(newDeco);
             this.engine.sendMessage('ADD_DECORATION', { decoration: newDeco });
         }
         

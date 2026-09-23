@@ -670,54 +670,76 @@ export class ParticipantManager {
 
     /**
      * 피어 연결 해제 이벤트를 처리합니다.
-     * 게스트의 경우 호스트 단절 시 30초 유예 모드로 진입하며, 호스트의 경우 해당 피어를 명단에서 제거합니다.
+     * 게스트의 경우 호스트 단절 시 45초 유예 모드로 진입하며,
+     * 호스트의 경우 즉시 삭제하지 않고 45초간 'reconnecting' 유예 상태로 유지하여 게스트의 복귀를 대기합니다.
      * @param peerId 연결이 해제된 피어 ID.
      * @returns {void}
      */
     public handlePeerDisconnect(peerId: string): void {
         if (!this.engine.isHost) {
-            // 게스트일 경우: 호스트와의 일시적 단절(호스트 창 전환 등)을 감지하고 30초 재연결 유예 모드로 진입
-            // peerId가 'default', 'all', 또는 할당받았던 내 ID/호스트 ID 어디서 오든 동일하게 보호
+            // 게스트일 경우: 호스트와의 일시적 단절(호스트 창 전환 등)을 감지하고 45초 재연결 유예 모드로 진입
             if (this.engine.isConnected && !this.isReconnecting) {
                 this.startGuestReconnectGracePeriod();
             } else if (!this.isReconnecting) {
                 this.engine.reset(); 
             }
         } else {
-            // 호스트일 경우 참가자 제거 및 UI 알림
+            // 호스트일 경우: 즉시 삭제하지 않고 재연결 유예 상태('reconnecting')로 전환
             const isParticipant = !!this.participants[peerId];
             const isJoinRequest = this.joinRequests.some(req => req.peerId === peerId);
 
             if (isParticipant) {
-                const disconnectedName = this.participants[peerId]?.name || '누군가';
-                vscode.window.setStatusBarMessage(`P2P: ${disconnectedName}님이 방을 나갔습니다.`, 3000);
-                
-                // 퇴장 시스템 메시지 기록
-                const systemMsg = {
-                    id: 'sys-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
-                    senderId: 'system',
-                    senderName: 'System',
-                    text: `${disconnectedName}(퇴장)`,
-                    timestamp: Date.now(),
-                    isSystem: true
-                };
-                this.engine.chatHistory.push(systemMsg);
-                this.engine.sendMessage('CHAT_MESSAGE', { chatMessage: systemMsg });
-                this.engine.chatPanel?.updateHistory(this.engine.chatHistory, this.engine.myId, this.participants);
-
-                delete this.participants[peerId];
-                this.lastPongTimes.delete(peerId);
-                this.reconnectStartTimes.delete(peerId);
-                
-                // 해당 피어의 데코레이션 및 색상 정리
-                this.engine.cursorManager.clearPeerCursor(peerId);
-                this.broadcastUserList();
+                const targetUser = this.participants[peerId];
+                if (targetUser.connectionStatus !== 'reconnecting') {
+                    targetUser.connectionStatus = 'reconnecting';
+                    if (!this.reconnectStartTimes.has(peerId)) {
+                        this.reconnectStartTimes.set(peerId, Date.now());
+                    }
+                    this.engine.logToUI(`Peer ${targetUser.name} (${peerId}) temporarily disconnected. Entering grace period (45s)...`);
+                    vscode.window.setStatusBarMessage(`P2P: ${targetUser.name}님의 연결이 일시 중단되었습니다. 재연결 대기 중...`, 4000);
+                    this.broadcastUserList();
+                }
             }
 
             if (isJoinRequest) {
                 this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
                 this.engine.pushUIUpdate();
             }
+        }
+    }
+
+    /**
+     * 재연결 유예 시간(45초)을 초과한 피어를 참가자 명단에서 완전히 삭제하고 정리합니다 (호스트 전용).
+     * @param peerId 삭제할 피어 ID.
+     */
+    public removePeerPermanently(peerId: string): void {
+        if (!this.engine.isHost) return;
+
+        const isParticipant = !!this.participants[peerId];
+        if (isParticipant) {
+            const disconnectedName = this.participants[peerId]?.name || '누군가';
+            vscode.window.setStatusBarMessage(`P2P: ${disconnectedName}님이 방을 나갔습니다.`, 3000);
+            
+            // 퇴장 시스템 메시지 기록
+            const systemMsg = {
+                id: 'sys-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                senderId: 'system',
+                senderName: 'System',
+                text: `${disconnectedName}(퇴장)`,
+                timestamp: Date.now(),
+                isSystem: true
+            };
+            this.engine.chatHistory.push(systemMsg);
+            this.engine.sendMessage('CHAT_MESSAGE', { chatMessage: systemMsg });
+            this.engine.chatPanel?.updateHistory(this.engine.chatHistory, this.engine.myId, this.participants);
+
+            delete this.participants[peerId];
+            this.lastPongTimes.delete(peerId);
+            this.reconnectStartTimes.delete(peerId);
+            
+            // 해당 피어의 데코레이션 및 색상 정리
+            this.engine.cursorManager.clearPeerCursor(peerId);
+            this.broadcastUserList();
         }
     }
 
@@ -970,10 +992,10 @@ export class ParticipantManager {
     }
 
     /**
-     * 재연결 성공 또는 최종 타임아웃 시 유예 타이머 및 관련 상태를 정리합니다.
-     * @returns {void}
+     * 재연결 성공 또는 최종 타임아웃 시 유예 타이머 및 관련 상태를 정리하고 에디터 읽기 전용 락을 해제합니다.
+     * @returns {Promise<void>}
      */
-    public stopGuestReconnectGracePeriod(): void {
+    public async stopGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = false;
         this.isProbeInFlight = false;
         if (this.reconnectRetryTimer) {
@@ -985,6 +1007,13 @@ export class ParticipantManager {
             this.reconnectDeadlineTimer = undefined;
         }
         vscode.window.setStatusBarMessage('✅ 호스트에 다시 연결되었습니다.', 3000);
+
+        // 재연결 성공 시 유예 기간 동안 걸어두었던 에디터 읽기 전용 잠금(ReadOnly)을 사용자 권한에 맞게 자동 해제
+        if (!this.engine.isHost) {
+            await this.engine.fileStorageManager.updateAllReadonlyStates();
+            this.engine.cursorManager.refreshAllDecorations();
+            this.engine.pushUIUpdate();
+        }
     }
 
     /**
@@ -1030,10 +1059,10 @@ export class ParticipantManager {
                         this.reconnectStartTimes.set(peerId, now);
                     }
                     const reconnectStarted = this.reconnectStartTimes.get(peerId) || now;
-                    // 게스트 재연결 유예 시간(30초) 초과 시 참가자 명단에서 완전히 정리
-                    if (now - reconnectStarted >= 30000) {
-                        this.engine.logToUI(`Guest reconnect timeout exceeded (30s) for: ${perm.name} (${peerId})`);
-                        this.handlePeerDisconnect(peerId);
+                    // 게스트 재연결 유예 시간(45초) 초과 시 참가자 명단에서 완전히 정리
+                    if (now - reconnectStarted >= 45000) {
+                        this.engine.logToUI(`Guest reconnect timeout exceeded (45s) for: ${perm.name} (${peerId})`);
+                        this.removePeerPermanently(peerId);
                         return;
                     }
                 } else {
