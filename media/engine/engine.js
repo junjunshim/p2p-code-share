@@ -405,8 +405,15 @@
         if (m.type === 'peerData') {
             const data = new TextEncoder().encode(JSON.stringify(m.value));
 
-            function safeSend(peer, payload) {
-                if (!peer || !peer.connected) return;
+            function safeSend(peer, payload, retries = 3) {
+                if (!peer) return;
+                // 아직 연결 수립 중인 피어라면 100ms 후 최대 3회 재시도 (초기 핸드셰이크 시 패킷 유실 방지)
+                if (!peer.connected) {
+                    if (retries > 0) {
+                        setTimeout(() => safeSend(peer, payload, retries - 1), 100);
+                    }
+                    return;
+                }
                 const channel = peer._channel;
                 // SCTP 버퍼가 1MB 이상 적체된 경우 잠시 대기 후 안전 발송
                 if (channel && channel.bufferedAmount > 1024 * 1024) {

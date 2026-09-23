@@ -218,6 +218,16 @@ export class ParticipantManager {
         vscode.window.setStatusBarMessage(`호스트가 요청을 확인했습니다. 승인을 기다리는 중...`, 5000);
         this.engine.updateStatus('Waiting...');
         this.engine.pushUIUpdate();
+
+        // 승인 패킷(JOIN_RESPONSE) 유실 방어를 위해 6초 주기로 가벼운 확인(재확인) 핑 유지
+        if (!this.engine.isConnected) {
+            this.joinRequestRetryTimer = setTimeout(() => {
+                if (!this.engine.isConnected && this.isAutoJoin) {
+                    this.engine.logToUI(`Sending keep-alive ping for join status to host...`);
+                    this.engine.sendMessage('PING', { timestamp: Date.now() });
+                }
+            }, 6000);
+        }
     }
 
     /**
@@ -390,28 +400,47 @@ export class ParticipantManager {
             this.broadcastUserList(); 
             
             // 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
-            this.engine.fileStorageManager.sharedFiles.forEach(f => {
-                const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
-                const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
-                const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, f.path));
-                const rawContent = ytext ? ytext.toString() : (doc ? doc.getText() : fs.readFileSync(f.path, 'utf8'));
-                const content = normalizeEOL(rawContent);
-                const yjsState = ydoc ? Buffer.from(Y.encodeStateAsUpdate(ydoc)).toString('base64') : undefined;
-
-                // 해당 피어에게만 초기 스냅샷 전송 (파일 목록 생성 및 에디터 열기 유도)
-                this.engine.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { 
-                    fileName: f.name, 
-                    content,
-                    yjsState,
-                    assigneeId: f.assigneeId,
-                    assigneeName: f.assigneeName
-                });
-            });
+            this.sendInitialSnapshotsToPeer(peerId);
 
             // 현재 데코레이션 목록 전송 (비공개 처리 적용)
             const peerDecos = this.engine.decorationManager.decorations.filter(d => d.visibility !== 'host' || d.creatorId === peerId);
             this.engine.sendMessageToPeer(peerId, 'SYNC_DECORATIONS', { decorations: peerDecos });
         }
+    }
+
+    /**
+     * 특정 피어에게 현재 공유 중인 모든 파일(또는 누락된 특정 파일)의 최신 스냅샷과 Yjs 상태를 안전하게 전송합니다 (호스트 전용).
+     * @param peerId 대상 게스트 피어 ID
+     * @param targetFiles 특정 파일만 선별 전송할 경우의 파일명 배열 (생략 시 전체 파일)
+     */
+    public sendInitialSnapshotsToPeer(peerId: string, targetFiles?: string[]): void {
+        if (!this.engine.isHost) return;
+
+        const filesToSend = targetFiles && targetFiles.length > 0
+            ? this.engine.fileStorageManager.sharedFiles.filter(f => targetFiles.includes(f.name))
+            : this.engine.fileStorageManager.sharedFiles;
+
+        filesToSend.forEach((f, idx) => {
+            const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
+            const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
+            const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, f.path));
+            const rawContent = ytext ? ytext.toString() : (doc ? doc.getText() : fs.readFileSync(f.path, 'utf8'));
+            const content = normalizeEOL(rawContent);
+            const yjsState = ydoc ? Buffer.from(Y.encodeStateAsUpdate(ydoc)).toString('base64') : undefined;
+
+            // 파일이 여러 개일 경우 채널 과부하 방지를 위해 순차 발송 (idx * 40ms)
+            setTimeout(() => {
+                if (this.engine.isHost && this.participants[peerId]) {
+                    this.engine.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { 
+                        fileName: f.name, 
+                        content,
+                        yjsState,
+                        assigneeId: f.assigneeId,
+                        assigneeName: f.assigneeName
+                    });
+                }
+            }, idx * 40);
+        });
     }
 
     /**
@@ -426,10 +455,15 @@ export class ParticipantManager {
         // participants 목록 업데이트
         this.participants[peerId] = permission;
         
-        // 해당 피어에게 SET_PERMISSION 메시지 전송
+        // 해당 피어에게 SET_PERMISSION 메시지 전송 (패킷 유실 방지를 위해 다중 발송 보강)
         this.engine.sendMessageToPeer(peerId, 'SET_PERMISSION', { permission });
+        setTimeout(() => {
+            if (this.engine.isHost && this.participants[peerId]) {
+                this.engine.sendMessageToPeer(peerId, 'SET_PERMISSION', { permission });
+            }
+        }, 150);
         
-        // 전체 사용자 목록 갱신 브로드캐스트
+        // 전체 사용자 목록 갱신 브로드캐스트 (USER_LIST_UPDATE를 통한 2차 자가 치유)
         this.broadcastUserList();
         this.engine.logToUI(`Permission set for ${peerId}: Global=${permission.globalCanEdit}`);
         this.engine.cursorManager.refreshAllDecorations();
@@ -584,7 +618,7 @@ export class ParticipantManager {
     }
 
     /**
-     * 참가자 명단과 최신 방 이름을 모든 피어에게 브로드캐스트합니다 (호스트 전용).
+     * 참가자 명단과 최신 방 이름, 공유 중인 파일 목록을 모든 피어에게 브로드캐스트합니다 (호스트 전용).
      * @returns {void}
      */
     public broadcastUserList(): void {
@@ -592,8 +626,13 @@ export class ParticipantManager {
             // 'default' ID를 제외한 참가자 목록 생성
             const filteredParticipants = { ...this.participants };
             delete filteredParticipants['default'];
-            // 사용자 목록 및 방 이름 업데이트 메시지 전송
-            this.engine.sendMessage('USER_LIST_UPDATE', { users: filteredParticipants, roomName: this.engine.roomName });
+            const sharedFileNames = this.engine.fileStorageManager.sharedFiles.map(f => f.name);
+            // 사용자 목록 및 방 이름, 공유 파일 목록 업데이트 메시지 전송
+            this.engine.sendMessage('USER_LIST_UPDATE', { 
+                users: filteredParticipants, 
+                roomName: this.engine.roomName,
+                sharedFileNames
+            });
         }
         this.engine.pushUIUpdate();
     }

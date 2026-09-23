@@ -196,6 +196,12 @@ export class SyncEngine {
                     case 'INIT_SNAPSHOT': 
                         await this.fileStorageManager.handleGuestInitSnapshot(msg); 
                         break;
+                    case 'REQUEST_FILE_SYNC':
+                        if (this.isHost && peerId) {
+                            this.logToUI(`REQUEST_FILE_SYNC received from peer ${peerId}. Resending requested snapshots...`);
+                            this.participantManager.sendInitialSnapshotsToPeer(peerId, msg.missingFiles);
+                        }
+                        break;
                     case 'YJS_UPDATE':
                         await this.documentSyncManager.handleYjsUpdate(msg);
                         if (this.isHost) {
@@ -411,6 +417,24 @@ export class SyncEngine {
                 this.isSetupMode = false;
                 this.logToUI("Manual connection complete");
                 this.updateStatus('Connected');
+            }
+
+            // [패킷 유실 Fallback 1: 권한 자가 치유 (Self-Healing)]
+            // SET_PERMISSION 패킷이 유실되었더라도 USER_LIST_UPDATE에 담긴 최신 권한으로 자동 동기화
+            if (this.myId && this.participantManager.participants[this.myId]) {
+                const myPerm = this.participantManager.participants[this.myId];
+                this.logToUI(`Syncing permission from user list: GlobalCanEdit=${myPerm.globalCanEdit}`);
+            }
+
+            // [패킷 유실 Fallback 2: 공유 파일 누락 시 재요청 자가 치유]
+            // 호스트가 공유 중인 파일 목록과 로컬에 저장된 파일 목록을 비교하여 누락된 파일이 있으면 재동기화 요청
+            if (this.isConnected && Array.isArray(msg.sharedFileNames) && msg.sharedFileNames.length > 0) {
+                const localFileNames = new Set(this.fileStorageManager.sharedFiles.map(f => f.name));
+                const missingFiles = msg.sharedFileNames.filter((name: string) => !localFileNames.has(name));
+                if (missingFiles.length > 0) {
+                    this.logToUI(`Detected ${missingFiles.length} missing shared files (${missingFiles.join(', ')}). Requesting sync...`);
+                    this.sendMessage('REQUEST_FILE_SYNC', { missingFiles });
+                }
             }
         }
         
