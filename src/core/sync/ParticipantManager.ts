@@ -139,18 +139,20 @@ export class ParticipantManager {
         this.engine.fileStorageManager.cleanOldRoomStorages(roomName);
         this.engine.pushUIUpdate();
 
-        // 20초 내에 연결 단계가 완료되지 않으면 에러 및 리셋 처리 (재연결 유예 중인 경우는 30초 유예 타이머가 별도 관리하므로 제외)
+        // 30초 내에 호스트와의 초기 WebRTC 물리적 채널이 열리지 않으면 에러 및 리셋 처리
+        // (채널이 열리거나 호스트 응답이 오면 clearJoinTimeout()으로 즉시 해제되어 무한정 승인 대기 가능)
         if (this.joinTimeout) {
             clearTimeout(this.joinTimeout);
         }
         if (!this.isReconnecting) {
             this.joinTimeout = setTimeout(() => {
                 if (!this.engine.isConnected && this.isAutoJoin && !this.isReconnecting) {
+                    this.engine.logToUI("Initial connection handshake timeout (30s) reached.");
                     vscode.window.showErrorMessage("호스트와의 연결 시도 시간이 초과되었습니다. 방 이름이 올바른지 혹은 호스트가 온라인인지 확인해주세요.");
                     this.engine.reset();
                     this.engine.hub.dispose();
                 }
-            }, 20000);
+            }, 30000);
         }
 
         // 허브 생성 (게스트 모드)
@@ -873,14 +875,14 @@ export class ParticipantManager {
     }
 
     /**
-     * 호스트 일시 단절 감지 시 30초 동안 에디터를 잠그고 조용히 재접속을 시도하는 유예 기간(Grace Period)을 시작합니다 (게스트 전용).
+     * 호스트 일시 단절 감지 시 45초 동안 에디터를 잠그고 조용히 재접속을 시도하는 유예 기간(Grace Period)을 시작합니다 (게스트 전용).
      * @returns {Promise<void>}
      */
     public async startGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = true;
         this.engine.isConnected = false;
         this.engine.updateStatus('Reconnecting...');
-        this.engine.logToUI(`Host connection lost temporarily. Entering 30s grace period and locking editor...`);
+        this.engine.logToUI(`Host connection lost temporarily. Entering 45s grace period and locking editor...`);
 
         // 1. 게스트 에디터 일시 잠금 (오프라인 타이핑 유실 및 충돌 100% 방지)
         for (const file of this.engine.fileStorageManager.sharedFiles) {
@@ -889,13 +891,13 @@ export class ParticipantManager {
                 await this.engine.fileStorageManager.applyEditorReadonlyState(editor, true);
             }
         }
-        vscode.window.setStatusBarMessage(`🔒 호스트 작업 공간 전환 중... 재연결 대기 (최대 30초)`, 30000);
+        vscode.window.setStatusBarMessage(`🔒 호스트 작업 공간 전환 중... 재연결 대기 (최대 45초)`, 45000);
 
-        // 2. 30초 전체 타임아웃 타이머 설정
+        // 2. 45초 전체 타임아웃 타이머 설정 (창 복구, 시그널링 서버 등록 지연 감안)
         if (this.reconnectDeadlineTimer) clearTimeout(this.reconnectDeadlineTimer);
         this.reconnectDeadlineTimer = setTimeout(async () => {
-            this.engine.logToUI(`Host reconnection timeout exceeded (30s).`);
-            vscode.window.showErrorMessage("호스트가 세션을 종료했거나 재연결 제한 시간(30초)을 초과했습니다.");
+            this.engine.logToUI(`Host reconnection timeout exceeded (45s).`);
+            vscode.window.showErrorMessage("호스트가 세션을 종료했거나 재연결 제한 시간(45초)을 초과했습니다.");
             this.stopGuestReconnectGracePeriod();
 
             // 로컬 임시 파일/폴더 삭제 및 세션 영구 정리
@@ -906,7 +908,7 @@ export class ParticipantManager {
             this.engine.hub.dispose();
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', false);
             vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', false);
-        }, 30000);
+        }, 45000);
 
         // 3. 간격을 두고 호스트에게 재연결(노크) 시도 및 상태 메시지 갱신
         const savedRoomName = this.engine.roomName;
@@ -918,13 +920,13 @@ export class ParticipantManager {
         const tryReconnect = () => {
             if (!this.isReconnecting) return;
             const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
-            const remainingSec = Math.max(0, 30 - elapsedSec);
+            const remainingSec = Math.max(0, 45 - elapsedSec);
             vscode.window.setStatusBarMessage(`🔒 호스트 작업 공간 전환 중... 재연결 대기 (${remainingSec}초 남음)`, 3000);
 
             // 이미 연결 핸드셰이크가 진행 중이면 소켓을 파괴하지 않고 진행 완료를 기다림
             if (this.isProbeInFlight) {
                 this.engine.logToUI(`Reconnection probe already in progress (${elapsedSec}s elapsed), waiting...`);
-                this.reconnectRetryTimer = setTimeout(tryReconnect, 2500);
+                this.reconnectRetryTimer = setTimeout(tryReconnect, 2000);
                 return;
             }
 
@@ -933,17 +935,19 @@ export class ParticipantManager {
             this.engine.hub.dispose();
             this.sendJoinRequest(savedRoomName, savedName, savedId);
 
-            // 서로 다른 물리 PC 환경의 ICE 수집 및 시그널링 교환 시간을 고려하여 최소 4.5초 확보
-            const nextInterval = elapsedSec < 10 ? 4500 : 5000;
+            // 다수의 게스트가 동시에 몰려 발생하는 충돌(Phase-lock)을 방지하기 위해 랜덤 지터(Jitter) 적용
+            const jitter = Math.floor(Math.random() * 1500);
+            const nextInterval = (elapsedSec < 12 ? 3000 : 4000) + jitter;
             this.reconnectRetryTimer = setTimeout(tryReconnect, nextInterval);
         };
 
-        // 호스트 소켓 정리 및 새 방 등록 완료를 대기한 뒤 첫 재시도 (2500ms)
-        this.reconnectRetryTimer = setTimeout(tryReconnect, 2500);
+        // 호스트 소켓 정리 및 새 방 등록 완료를 대기한 뒤 첫 재시도 (2000ms + 무작위 지터)
+        const initialJitter = Math.floor(Math.random() * 1000);
+        this.reconnectRetryTimer = setTimeout(tryReconnect, 1800 + initialJitter);
     }
 
     /**
-     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출되어 2초 후 다음 시도를 트리거합니다.
+     * 게스트 재연결 프로브가 실패(호스트 미준비/오프라인)했음을 통보받았을 때 즉시 호출되어 1.5~2.5초 후 다음 시도를 트리거합니다.
      * @returns {void}
      */
     public onGuestReconnectProbeFailed(): void {
@@ -952,16 +956,17 @@ export class ParticipantManager {
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
         }
-        // 실패 시 2초 후 다음 재시도 트리거 (호스트 고스트 ID 해제 대기 보장)
+        // 실패 시 즉시 허브를 정리하고 1.5초~2.5초 지터 대기 후 다음 재시도 트리거
+        this.engine.hub.dispose();
+        const retryDelay = 1500 + Math.floor(Math.random() * 1000);
         this.reconnectRetryTimer = setTimeout(() => {
             if (this.isReconnecting) {
                 const savedRoomName = this.engine.roomName;
                 const savedName = this.engine.myName;
                 const savedId = this.engine.myId;
-                this.engine.hub.dispose();
                 this.sendJoinRequest(savedRoomName, savedName, savedId);
             }
-        }, 2000);
+        }, retryDelay);
     }
 
     /**

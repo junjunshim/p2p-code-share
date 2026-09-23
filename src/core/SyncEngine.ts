@@ -311,6 +311,9 @@ export class SyncEngine {
                 this.participantManager.pendingInvites.delete(peerId);
             }
         } else {
+            // 호스트와 WebRTC 채널이 정상 연결되었으므로 "호스트 연결 시도 시간 초과(20초)" 타이머를 즉시 해제
+            this.participantManager.clearJoinTimeout();
+
             if (!this.participantManager.isAutoJoin) {
                 // 수동 연결의 경우 호스트로부터 피어 ID 할당 및 방 정보(USER_LIST_UPDATE)를 수신할 때까지 대기
                 this.logToUI("Manual connection established, finalizing handshake...");

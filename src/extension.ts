@@ -251,16 +251,21 @@ export function activate(context: vscode.ExtensionContext) {
         engine.isSignalingConnected = true; // 시그널링 서버 연결 완료 상태 플래그 설정
         engine.sessionRecoveryManager.startHeartbeat();
 
-        // 호스트인 경우 다중 게스트 동시 접속(Burst Join)에 대비해 대기 초대 슬롯 풀을 5개 확보
+        // 호스트인 경우: 재연결 게스트 전원 + 신규 게스트 유입 버퍼(5개)만큼 슬롯을 사전 생성
         if (engine.isHost) {
             const guestCount = Object.keys(engine.participantManager.participants).filter(id => id !== 'host' && id !== 'default').length;
-            const slotsToCreate = Math.min(8, Math.max(5, guestCount));
+            // 기존 참가자 수 + 신규 참가자 대비 버퍼(최소 5개 확보)
+            const slotsToCreate = Math.max(5, guestCount + 5);
+            engine.logToUI(`Preparing ${slotsToCreate} invite slots for reconnecting guests (${guestCount}) and new guests...`);
+
+            // 최초 5개는 0ms 즉시 생성하여 복구 직후 몰려오는 요청을 즉시 수용, 나머지는 50ms 간격으로 생성
             for (let i = 0; i < slotsToCreate; i++) {
+                const delay = i < 5 ? 0 : (i - 4) * 50;
                 setTimeout(() => {
                     if (engine.isConnected && engine.isHost) {
                         engine.participantManager.inviteGuest(true);
                     }
-                }, i * 150);
+                }, delay);
             }
         }
 
