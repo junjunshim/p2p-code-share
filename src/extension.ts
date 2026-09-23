@@ -320,17 +320,18 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 호스트인 경우: 이전 창의 소켓이 서버에서 정리되는 중일 수 있으므로(고스트 ID),
-        // 세션 복구 중이라면 팝업을 띄우지 않고 0.8초 간격으로 최대 6회 조용히 재시도
+        // 세션 복구 중이라면 팝업을 띄우지 않고 1초 간격으로 최대 10회 조용히 재시도
         if (engine.sessionRecoveryManager.isRestoringSession && errorType === 'duplicate') {
-            if (engine.sessionRecoveryManager.restoreRetryCount < 6) {
+            if (engine.sessionRecoveryManager.restoreRetryCount < 10) {
                 engine.sessionRecoveryManager.restoreRetryCount++;
-                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in 800ms (${engine.sessionRecoveryManager.restoreRetryCount}/6)...`);
+                const delay = 900 + Math.floor(Math.random() * 300);
+                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in ${delay}ms (${engine.sessionRecoveryManager.restoreRetryCount}/10)...`);
                 setTimeout(() => {
                     if (engine.sessionRecoveryManager.isRestoringSession) {
                         hub.dispose();
                         hub.createHub(true, engine.roomName, 'none');
                     }
-                }, 800);
+                }, delay);
                 return;
             }
         }
@@ -393,7 +394,9 @@ export function activate(context: vscode.ExtensionContext) {
     // 창이 새로 로드되거나 폴더 전환 시, 사이드바를 직접 클릭하지 않아도 세션 복구가 즉각 실행되도록 트리거
     const recoverableSession = engine.sessionRecoveryManager.getRecoverableSession();
     if (recoverableSession) {
-        // 사이드바 뷰를 포커스/활성화하여 resolveWebviewView 및 onReady -> restoreSession이 즉시 가동되도록 함
+        // 웹뷰 로딩을 기다리지 않고 백그라운드 엔진 상태(방 정보, Yjs 도큐먼트, 파일 스냅샷, 권한)를 즉시 복원
+        engine.sessionRecoveryManager.restoreSession(recoverableSession);
+        // 사이드바 뷰를 포커스/활성화하여 UI도 즉시 동기화되도록 유도
         vscode.commands.executeCommand('p2p-code-share-sidebar.focus');
     }
 }
@@ -405,11 +408,11 @@ let activeEngine: SyncEngine | undefined;
  * 확장 프로그램을 비활성화합니다.
  * 창 종료(Reload Window / Open Folder) 직전 최신 세션을 저장하고 소켓을 명시적으로 정리합니다.
  */
-export function deactivate() {
+export async function deactivate(): Promise<void> {
     try {
         if (activeEngine && activeEngine.isConnected) {
-            // 동기적으로 하트비트 타임스탬프 갱신
-            activeEngine.sessionRecoveryManager.saveSession();
+            // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 4초 지연 없이 즉시 복구되도록 보장)
+            await activeEngine.sessionRecoveryManager.saveSession(true);
         }
         if (activeHub) {
             activeHub.dispose();

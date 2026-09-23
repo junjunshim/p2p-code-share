@@ -63,6 +63,8 @@ export interface PersistentSessionData {
     chatHistory: ChatMessage[];
     /** 현재 세션을 점유하고 있는 VS Code 창의 고유 식별자 */
     activeWindowId: string;
+    /** 창 종료(새로고침 또는 창 닫기)에 의해 명시적으로 저장되었는지 여부 */
+    isShuttingDown?: boolean;
     /** 마지막으로 하트비트가 갱신된 에포크 밀리초 타임스탬프 */
     lastHeartbeat: number;
 }
@@ -132,7 +134,7 @@ export class SessionRecoveryManager {
      * 현재 활성 세션의 모든 상태(방 설정, 참가자, 파일 스냅샷, Yjs 상태, 데코레이션, 채팅)를 globalState에 저장합니다.
      * @returns {Promise<void>}
      */
-    public async saveSession(): Promise<void> {
+    public async saveSession(isShuttingDown = false): Promise<void> {
         if (!this.engine.isConnected && !this.engine.isHost) return;
         if (!this.engine.roomName || this.engine.roomName === 'Untitled Room') return;
 
@@ -181,6 +183,7 @@ export class SessionRecoveryManager {
             decorations: this.engine.decorationManager.decorations,
             chatHistory: this.engine.chatHistory,
             activeWindowId: this.currentWindowId,
+            isShuttingDown,
             lastHeartbeat: Date.now()
         };
 
@@ -214,6 +217,12 @@ export class SessionRecoveryManager {
             return null;
         }
 
+        // 창 새로고침/종료 시점에 명시적으로 저장된 세션(isShuttingDown === true)인 경우
+        // 이전 창이 종료되었음이 확실하므로 4초 하트비트 검사를 생략하고 즉시 복구 허용
+        if (session.isShuttingDown) {
+            return session;
+        }
+
         // 다른 창이 아직 활발하게 하트비트를 보내고 있다면(4초 이내) 간섭하지 않음
         if (session.activeWindowId !== this.currentWindowId && age < HEARTBEAT_TIMEOUT_MS) {
             return null;
@@ -234,6 +243,7 @@ export class SessionRecoveryManager {
 
         // 세션 점유권 획득
         session.activeWindowId = this.currentWindowId;
+        session.isShuttingDown = false;
         session.lastHeartbeat = Date.now();
         await this.context.globalState.update(GLOBAL_SESSION_KEY, session);
 
