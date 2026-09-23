@@ -101,6 +101,9 @@ export class ParticipantManager {
         // 호스트는 항상 모든 파일에 대한 완전한 권한을 가짐
         if (this.engine.isHost) return true;
         
+        // 게스트 재연결 유예 기간 중에는 오프라인 타이핑 유실 및 충돌 방지를 위해 편집 불가
+        if (this.isReconnecting) return false;
+        
         // 내 ID 또는 기본 ID로 데이터 검색
         const myData = this.participants[this.engine.myId] || this.participants['default'];
         
@@ -401,6 +404,11 @@ export class ParticipantManager {
 
             this.broadcastUserList(); 
             
+            // 승계된 쓰기 권한이 있는 경우 해당 피어에게 SET_PERMISSION을 즉시 발송하여 권한 복구 보장
+            if (existingPermission && (existingPermission.globalCanEdit || Object.keys(existingPermission.filePermissions || {}).length > 0)) {
+                this.engine.sendMessageToPeer(peerId, 'SET_PERMISSION', { permission: existingPermission });
+            }
+
             // 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
             this.sendInitialSnapshotsToPeer(peerId);
 

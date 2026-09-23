@@ -500,12 +500,16 @@ export class SyncEngine {
                 }
             }
 
-            if (this.isHost) return;
+            if (this.isHost) {
+                this.cursorManager.refreshAllDecorations();
+                return;
+            }
             const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
             if (file) {
                 const canEdit = this.participantManager.canIEdit(file.name);
                 await this.fileStorageManager.applyEditorReadonlyState(editor, !canEdit);
             }
+            this.cursorManager.refreshAllDecorations();
         });
 
         // 호스트 스크롤 변경 시 화면 추적 동기화
