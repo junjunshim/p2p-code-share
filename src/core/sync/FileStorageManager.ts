@@ -239,6 +239,13 @@ export class FileStorageManager {
             this.engine.logToUI(`Error opening document ${msg.fileName}: ${e}`);
         }
 
+        // 호스트로부터 초기 파일 스냅샷을 수신했다는 것은 방 승인이 완료되었음을 의미하므로,
+        // JOIN_RESPONSE가 누락되었더라도 즉시 연결 완료 상태로 전환
+        if (!this.engine.isHost && !this.engine.isConnected) {
+            this.engine.logToUI(`INIT_SNAPSHOT received for ${msg.fileName}. Auto-finalizing room join...`);
+            await this.engine.participantManager.handleJoinResponse({ approved: true });
+        }
+
         this.engine.pushUIUpdate();
     }
 

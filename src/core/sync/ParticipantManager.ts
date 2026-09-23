@@ -248,8 +248,18 @@ export class ParticipantManager {
         // 요청 목록에서 제거
         this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
         
-        // 승인 메시지 전송
+        // 승인 메시지 전송 (네트워크 버퍼링 및 패킷 유실 방지를 위해 다중 발송)
         this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+        setTimeout(() => {
+            if (this.engine.isHost && this.participants[peerId]) {
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+            }
+        }, 200);
+        setTimeout(() => {
+            if (this.engine.isHost && this.participants[peerId]) {
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+            }
+        }, 450);
         
         this.engine.pushUIUpdate();
     }
@@ -677,6 +687,17 @@ export class ParticipantManager {
             if (existingParticipant || this.isAutoApprove) {
                 this.handleGuestJoin({ name: guestName, previousPeerId }, peerId);
                 this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+                setTimeout(() => {
+                    if (this.engine.isHost && this.participants[peerId]) {
+                        this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+                    }
+                }, 200);
+                setTimeout(() => {
+                    if (this.engine.isHost && this.participants[peerId]) {
+                        this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+                    }
+                }, 450);
+
                 if (existingParticipant) {
                     vscode.window.showInformationMessage(`재연결 승인: ${guestName} (${peerId})`);
                 } else {

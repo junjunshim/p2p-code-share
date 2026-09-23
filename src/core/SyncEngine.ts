@@ -390,14 +390,23 @@ export class SyncEngine {
             this.fileStorageManager.initializeStorage();
         }
         
-        if (!this.isHost && this.myId) {
-            const myData = this.participantManager.participants[this.myId] || this.participantManager.participants['default'];
-            if (myData) {
-                this.myName = myData.name;
+        if (!this.isHost) {
+            const hasMyEntry = (this.myId && this.participantManager.participants[this.myId]) ||
+                               (this.myName && Object.values(this.participantManager.participants).some(p => p.name === this.myName));
+
+            if (this.myId) {
+                const myData = this.participantManager.participants[this.myId] || this.participantManager.participants['default'];
+                if (myData) {
+                    this.myName = myData.name;
+                }
             }
 
-            // 수동 연결 게스트가 호스트로부터 참여자 목록 및 방 정보를 정상 수신하면 연결 완료 상태로 전환
-            if (!this.participantManager.isAutoJoin && !this.isConnected) {
+            // 호스트의 참가자 명단에 본인이 이미 등록되어 있다면, JOIN_RESPONSE 유실 여부와 무관하게 즉시 승인 완료 처리
+            if (hasMyEntry && !this.isConnected) {
+                this.logToUI("Confirmed presence in host's user list. Finalizing connection...");
+                await this.participantManager.handleJoinResponse({ approved: true });
+            } else if (!this.participantManager.isAutoJoin && !this.isConnected) {
+                // 수동 연결 게스트의 경우
                 this.isConnected = true;
                 this.isSetupMode = false;
                 this.logToUI("Manual connection complete");
