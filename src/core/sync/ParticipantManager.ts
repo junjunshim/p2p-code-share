@@ -274,10 +274,25 @@ export class ParticipantManager {
         const requestsToApprove = [...this.joinRequests];
         this.joinRequests = [];
 
-        for (const req of requestsToApprove) {
-            this.handleGuestJoin({ name: req.name, previousPeerId: req.previousPeerId }, req.peerId);
-            this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
-        }
+        requestsToApprove.forEach((req, index) => {
+            // 30명 동시 승인 시 호스트 CPU 및 DataChannel 버퍼 과부하 방지를 위해 30ms 간격으로 스케줄링
+            setTimeout(() => {
+                this.handleGuestJoin({ name: req.name, previousPeerId: req.previousPeerId }, req.peerId);
+                
+                // 승인 응답 다중 전송 (네트워크 버퍼링 및 패킷 유실 원천 방지)
+                this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
+                setTimeout(() => {
+                    if (this.engine.isHost && this.participants[req.peerId]) {
+                        this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
+                    }
+                }, 200);
+                setTimeout(() => {
+                    if (this.engine.isHost && this.participants[req.peerId]) {
+                        this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
+                    }
+                }, 450);
+            }, index * 30);
+        });
 
         this.engine.pushUIUpdate();
     }
@@ -937,14 +952,14 @@ export class ParticipantManager {
         this.stopPingCheck();
         if (!this.engine.isHost) return;
 
-        // 4초마다 모든 게스트에게 PING 전송 및 PONG 타임아웃(8초) 검사
+        // 5초마다 모든 게스트에게 PING 전송 및 PONG 타임아웃(10초) 검사
         this.pingTimer = setInterval(() => {
             if (!this.engine.isHost) return;
 
             const now = Date.now();
             let hasStatusChanged = false;
 
-            Object.entries(this.participants).forEach(([peerId, perm]) => {
+            Object.entries(this.participants).forEach(([peerId, perm], index) => {
                 if (peerId === 'host' || peerId === 'default') {
                     if (perm.connectionStatus !== 'connected') {
                         perm.connectionStatus = 'connected';
@@ -953,12 +968,16 @@ export class ParticipantManager {
                     return;
                 }
 
-                // 게스트에게 PING 전송
-                this.engine.sendMessageToPeer(peerId, 'PING', { timestamp: now });
+                // 30명 동시 전송 시 트래픽 폭증 방지를 위해 20ms 지터(Jitter) 분산 발송
+                setTimeout(() => {
+                    if (this.engine.isHost && this.participants[peerId]) {
+                        this.engine.sendMessageToPeer(peerId, 'PING', { timestamp: Date.now() });
+                    }
+                }, index * 20);
 
-                // PONG 응답 시간 검사 (마지막 응답으로부터 8초 초과 시 reconnecting/노란색으로 표시)
+                // PONG 응답 시간 검사 (마지막 활동/응답으로부터 10초 초과 시 reconnecting/노란색으로 표시)
                 const lastPong = this.lastPongTimes.get(peerId);
-                const isAlive = lastPong !== undefined && (now - lastPong <= 8000);
+                const isAlive = lastPong !== undefined && (now - lastPong <= 10000);
                 const currentStatus = isAlive ? 'connected' : 'reconnecting';
 
                 if (currentStatus === 'reconnecting') {

@@ -419,7 +419,16 @@ export class SyncEngine {
         this.cursorManager.refreshAllDecorations();
     }
 
+    /** 호스트 커서 중계 패킷 폭증 방지를 위한 피어별 쓰로틀 타이머 맵 */
+    private cursorBroadcastThrottleMap = new Map<string, NodeJS.Timeout>();
+
     private broadcastCursor(msg: any, senderId: string) {
+        if (this.cursorBroadcastThrottleMap.has(senderId)) return;
+
+        this.cursorBroadcastThrottleMap.set(senderId, setTimeout(() => {
+            this.cursorBroadcastThrottleMap.delete(senderId);
+        }, 50));
+
         this.hub.sendToEngine({ type: 'peerData', value: { type: 'CURSOR_UPDATE', ...msg } });
     }
 

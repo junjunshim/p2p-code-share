@@ -404,10 +404,26 @@
         if (m.type === 'signal' && peers[targetId]) peers[targetId].signal(m.sdp);
         if (m.type === 'peerData') {
             const data = new TextEncoder().encode(JSON.stringify(m.value));
+
+            function safeSend(peer, payload) {
+                if (!peer || !peer.connected) return;
+                const channel = peer._channel;
+                // SCTP 버퍼가 1MB 이상 적체된 경우 잠시 대기 후 안전 발송
+                if (channel && channel.bufferedAmount > 1024 * 1024) {
+                    setTimeout(() => {
+                        if (peer.connected) {
+                            try { peer.send(payload); } catch(e) {}
+                        }
+                    }, 50);
+                } else {
+                    try { peer.send(payload); } catch(e) {}
+                }
+            }
+
             if (m.targetPeerId) {
-                if (peers[m.targetPeerId] && peers[m.targetPeerId].connected) peers[m.targetPeerId].send(data);
+                if (peers[m.targetPeerId]) safeSend(peers[m.targetPeerId], data);
             } else {
-                Object.values(peers).forEach(p => { if (p.connected) p.send(data); });
+                Object.values(peers).forEach(p => safeSend(p, data));
             }
         }
     });

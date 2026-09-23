@@ -36,6 +36,10 @@ export class CursorManager {
     /** 불필요한 데코레이션 재생성을 방지하기 위한 피어별 데코레이션 캐시 정보 */
     private remoteCursorDecoTypes = new Map<string, { cursorDeco: vscode.TextEditorDecorationType; selectionDeco: vscode.TextEditorDecorationType; key: string }>();
 
+    /** 커서 업데이트 전송 과부하 방지를 위한 쓰로틀 타이머 */
+    private sendThrottleTimer?: NodeJS.Timeout;
+    private pendingEditor?: vscode.TextEditor;
+
     /**
      * CursorManager 인스턴스를 생성하고 에디터 선택 이벤트 리스너를 바인딩합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
@@ -52,7 +56,17 @@ export class CursorManager {
         vscode.window.onDidChangeTextEditorSelection(e => {
             // 자신의 ID가 정상적으로 할당된 경우에만 커서 업데이트를 전송
             if (!this.engine.myId || this.engine.myId === 'default' || this.engine.myId === '') return;
-            this.sendCursorUpdate(e.textEditor);
+            
+            // 30명 동시 환경에서 커서 패킷 폭증을 방지하기 위해 60ms 쓰로틀링 적용
+            this.pendingEditor = e.textEditor;
+            if (!this.sendThrottleTimer) {
+                this.sendThrottleTimer = setTimeout(() => {
+                    this.sendThrottleTimer = undefined;
+                    if (this.pendingEditor) {
+                        this.sendCursorUpdate(this.pendingEditor);
+                    }
+                }, 60);
+            }
         });
     }
 
