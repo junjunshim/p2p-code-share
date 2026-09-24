@@ -54,20 +54,27 @@
     function flushPendingSignalingRequests() {
         if (!currentInitiator || pendingSignalingQueue.length === 0) return;
 
-        const readyTargetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator && pendingSdpMap[id]);
-        if (!readyTargetId) return;
-
-        const sdp = pendingSdpMap[readyTargetId];
-
         while (pendingSignalingQueue.length > 0) {
+            // 아직 시그널링 채널에 바인딩되지 않았고, 미연결 상태이며, SDP 오퍼 생성이 완료된 슬롯 탐색
+            const readyTargetId = Object.keys(peers).find(id => 
+                !peers[id].connected && 
+                peers[id].initiator && 
+                pendingSdpMap[id] && 
+                !peerSignalingConnMap[id]
+            );
+
+            if (!readyTargetId) break;
+
             const req = pendingSignalingQueue.shift();
+            if (!req) break;
+
             try {
                 if (req.conn && req.conn.open) {
+                    const sdp = pendingSdpMap[readyTargetId];
                     log('Dispatching queued SDP offer to guest (targetId: ' + readyTargetId + ')...');
                     peerSignalingConnMap[readyTargetId] = req.conn;
                     connPeerIdMap.set(req.conn, readyTargetId);
                     req.conn.send({ type: 'SDP', sdp: sdp, peerId: readyTargetId });
-                    break;
                 }
             } catch (err) {
                 log('Failed to send SDP to queued connection: ' + err.message);
@@ -299,14 +306,20 @@
 
             conn.on('data', (data) => {
                 if (data.type === 'REQ_OFFER') {
-                    const targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator && pendingSdpMap[id]);
+                    // 아직 시그널링 커넥션이 바인딩되지 않았고, SDP가 준비된 오퍼 슬롯 검색
+                    const targetId = Object.keys(peers).find(id => 
+                        !peers[id].connected && 
+                        peers[id].initiator && 
+                        pendingSdpMap[id] && 
+                        !peerSignalingConnMap[id]
+                    );
                     if (targetId && pendingSdpMap[targetId]) {
                         log('Sending SDP offer to guest immediately (targetId: ' + targetId + ')...');
                         peerSignalingConnMap[targetId] = conn;
                         connPeerIdMap.set(conn, targetId);
                         conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
                     } else {
-                        log('No SDP offer ready yet. Queuing signaling connection and requesting invite slot from host...');
+                        log('No unassigned SDP offer ready yet. Queuing signaling connection and requesting invite slot from host...');
                         pendingSignalingQueue.push({ conn, timestamp: Date.now() });
                         vscode.postMessage({ type: 'requireInvite' });
                     }

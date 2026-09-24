@@ -35,6 +35,9 @@ export class ParticipantManager {
     /** 게스트 연결 준비 완료 시 자동 발송할 대기 중인 참여 요청 정보 */
     public pendingJoinRequest: { roomName: string, userName: string, previousPeerId?: string } | null = null;
 
+    /** 게스트 재연결 유예 모드 진입 시 본래 피어 ID 보존 (프로브 실패로 임시 ID가 바뀌어도 영속 유지) */
+    public reconnectOriginalPeerId?: string;
+
     /** 게스트 방 입장 시도 전체 제한시간(20초) 타이머 */
     private joinTimeout?: NodeJS.Timeout;
 
@@ -43,6 +46,9 @@ export class ParticipantManager {
 
     /** 현재 재연결 시도(프로브)가 진행 중인지 여부 플래그 */
     private isProbeInFlight = false;
+
+    /** 프로브 무응답 교착 상태(Deadlock) 방지를 위한 안전 타임아웃 타이머 */
+    private probeInFlightTimeout?: NodeJS.Timeout;
 
     /** 게스트 재연결 재시도 주기 타이머 */
     private reconnectRetryTimer?: NodeJS.Timeout;
@@ -224,14 +230,20 @@ export class ParticipantManager {
         this.engine.updateStatus('Waiting...');
         this.engine.pushUIUpdate();
 
-        // 승인 패킷(JOIN_RESPONSE) 유실 방어를 위해 6초 주기로 가벼운 확인(재확인) 핑 유지
+        // 승인 패킷(JOIN_RESPONSE) 유실 방어를 위해 연결 완료 시까지 4초 주기로 확인(재확인) 핑 반복 유지
         if (!this.engine.isConnected) {
-            this.joinRequestRetryTimer = setTimeout(() => {
+            const sendKeepAlivePing = () => {
                 if (!this.engine.isConnected && this.isAutoJoin) {
                     this.engine.logToUI(`Sending keep-alive ping for join status to host...`);
-                    this.engine.sendMessage('PING', { timestamp: Date.now() });
+                    this.engine.sendMessage('PING', { 
+                        timestamp: Date.now(),
+                        peerId: this.engine.myId,
+                        name: this.engine.myName
+                    });
+                    this.joinRequestRetryTimer = setTimeout(sendKeepAlivePing, 4000);
                 }
-            }, 6000);
+            };
+            this.joinRequestRetryTimer = setTimeout(sendKeepAlivePing, 4000);
         }
     }
 
@@ -409,10 +421,13 @@ export class ParticipantManager {
                 this.engine.sendMessageToPeer(peerId, 'SET_PERMISSION', { permission: existingPermission });
             }
 
-            // 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
+            // 4. 승인 응답(JOIN_RESPONSE)을 파일 스냅샷 전송 전에 선제 발송하여 게스트의 대기 상태를 즉시 해제
+            this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+
+            // 5. 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
             this.sendInitialSnapshotsToPeer(peerId);
 
-            // 현재 데코레이션 목록 전송 (비공개 처리 적용)
+            // 6. 현재 데코레이션 목록 전송 (비공개 처리 적용)
             const peerDecos = this.engine.decorationManager.decorations.filter(d => d.visibility !== 'host' || d.creatorId === peerId);
             this.engine.sendMessageToPeer(peerId, 'SYNC_DECORATIONS', { decorations: peerDecos });
         }
@@ -697,8 +712,9 @@ export class ParticipantManager {
      */
     public handlePeerDisconnect(peerId: string): void {
         if (!this.engine.isHost) {
-            // 게스트일 경우: 호스트와의 일시적 단절(호스트 창 전환 등)을 감지하고 45초 재연결 유예 모드로 진입
-            if (this.engine.isConnected && !this.isReconnecting) {
+            // 게스트일 경우: 방 이름이 있고 재연결 유예 모드가 아니라면 45초 재연결 유예 모드로 안전하게 진입
+            // (isConnected가 이미 false로 바뀌었더라도 세션이 즉시 폭파되는 것을 방지)
+            if (!this.isReconnecting && this.engine.roomName && this.engine.roomName !== 'Untitled Room') {
                 this.startGuestReconnectGracePeriod();
             } else if (!this.isReconnecting) {
                 this.engine.reset(); 
@@ -797,6 +813,9 @@ export class ParticipantManager {
 
             // 호스트 창 전환 후 재접속한 기존 게스트이거나 자동 승인 모드인 경우 즉시 승인
             if (existingParticipant || this.isAutoApprove) {
+                // 이전 대기열에 동일 피어 ID나 이전 피어 ID의 요청이 남아있다면 정리
+                this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId && req.peerId !== previousPeerId);
+
                 this.handleGuestJoin({ name: guestName, previousPeerId }, peerId);
                 this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
                 setTimeout(() => {
@@ -969,7 +988,10 @@ export class ParticipantManager {
         // 3. 간격을 두고 호스트에게 재연결(노크) 시도 및 상태 메시지 갱신
         const savedRoomName = this.engine.roomName;
         const savedName = this.engine.myName;
-        const savedId = this.engine.myId;
+        if (!this.reconnectOriginalPeerId && this.engine.myId && this.engine.myId !== 'default') {
+            this.reconnectOriginalPeerId = this.engine.myId;
+        }
+        const originalId = this.reconnectOriginalPeerId || this.engine.myId;
         const startTime = Date.now();
         this.isProbeInFlight = false;
 
@@ -986,10 +1008,18 @@ export class ParticipantManager {
                 return;
             }
 
-            this.engine.logToUI(`Attempting to reconnect to host room "${savedRoomName}" (${elapsedSec}s elapsed)...`);
+            this.engine.logToUI(`Attempting to reconnect to host room "${savedRoomName}" with originalId "${originalId}" (${elapsedSec}s elapsed)...`);
             this.isProbeInFlight = true;
+            if (this.probeInFlightTimeout) clearTimeout(this.probeInFlightTimeout);
+            this.probeInFlightTimeout = setTimeout(() => {
+                if (this.isReconnecting && this.isProbeInFlight) {
+                    this.engine.logToUI(`Reconnection probe safety timeout (6s) reached. Resetting probe lock for next attempt...`);
+                    this.isProbeInFlight = false;
+                }
+            }, 6000);
+
             this.engine.hub.dispose();
-            this.sendJoinRequest(savedRoomName, savedName, savedId);
+            this.sendJoinRequest(savedRoomName, savedName, originalId);
 
             // 다수의 게스트가 동시에 몰려 발생하는 충돌(Phase-lock)을 방지하기 위해 랜덤 지터(Jitter) 적용
             const jitter = Math.floor(Math.random() * 1500);
@@ -1009,6 +1039,10 @@ export class ParticipantManager {
     public onGuestReconnectProbeFailed(): void {
         if (!this.isReconnecting) return;
         this.isProbeInFlight = false;
+        if (this.probeInFlightTimeout) {
+            clearTimeout(this.probeInFlightTimeout);
+            this.probeInFlightTimeout = undefined;
+        }
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
         }
@@ -1019,8 +1053,8 @@ export class ParticipantManager {
             if (this.isReconnecting) {
                 const savedRoomName = this.engine.roomName;
                 const savedName = this.engine.myName;
-                const savedId = this.engine.myId;
-                this.sendJoinRequest(savedRoomName, savedName, savedId);
+                const originalId = this.reconnectOriginalPeerId || this.engine.myId;
+                this.sendJoinRequest(savedRoomName, savedName, originalId);
             }
         }, retryDelay);
     }
@@ -1032,6 +1066,11 @@ export class ParticipantManager {
     public async stopGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = false;
         this.isProbeInFlight = false;
+        if (this.probeInFlightTimeout) {
+            clearTimeout(this.probeInFlightTimeout);
+            this.probeInFlightTimeout = undefined;
+        }
+        this.reconnectOriginalPeerId = undefined;
         this.stopJoinRequestRetry();
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
