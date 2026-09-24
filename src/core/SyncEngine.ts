@@ -88,6 +88,9 @@ export class SyncEngine {
     /** 내 타이핑 종료 후 잠금 해제 메시지(TYPING_UNLOCK)를 발송하기 위한 타이머 맵 */
     public localTypingUnlockTimers = new Map<string, NodeJS.Timeout>();
 
+    /** 사이드바 UI 갱신 쓰로틀/디바운스를 위한 타이머 */
+    private uiUpdateTimeout?: NodeJS.Timeout;
+
     /**
      * 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임).
      */
@@ -502,14 +505,31 @@ export class SyncEngine {
 
     /** 호스트 커서 중계 패킷 폭증 방지를 위한 피어별 쓰로틀 타이머 맵 */
     private cursorBroadcastThrottleMap = new Map<string, NodeJS.Timeout>();
+    /** 호스트 쓰로틀 대기 중 유입된 최신 커서 메시지 버퍼 */
+    private cursorBroadcastPendingMap = new Map<string, any>();
 
     private broadcastCursor(msg: any, senderId: string) {
-        if (this.cursorBroadcastThrottleMap.has(senderId)) return;
+        if (this.cursorBroadcastThrottleMap.has(senderId)) {
+            // 쓰로틀 대기 중에는 최신 커서 상태를 저장해두고 종료 시 최신본으로 전송
+            this.cursorBroadcastPendingMap.set(senderId, msg);
+            return;
+        }
 
+        // 즉시 첫 패킷 전송
+        this.sendBroadcastCursorToPeers(msg, senderId);
+
+        // 쓰로틀 타이머 설정 (60ms)
         this.cursorBroadcastThrottleMap.set(senderId, setTimeout(() => {
             this.cursorBroadcastThrottleMap.delete(senderId);
-        }, 50));
+            const pendingMsg = this.cursorBroadcastPendingMap.get(senderId);
+            if (pendingMsg) {
+                this.cursorBroadcastPendingMap.delete(senderId);
+                this.sendBroadcastCursorToPeers(pendingMsg, senderId);
+            }
+        }, 60));
+    }
 
+    private sendBroadcastCursorToPeers(msg: any, senderId: string) {
         // 보낸 피어 및 호스트를 제외한 다른 게스트들에게만 커서 중계 (에코 차단 및 대역폭 절약)
         Object.keys(this.participantManager.participants).forEach(pId => {
             if (pId !== 'host' && pId !== senderId) {
@@ -734,8 +754,30 @@ export class SyncEngine {
 
     /**
      * 현재 상태를 바탕으로 UI 업데이트를 실행합니다.
+     * 대규모 접속 시 UI 렌더러 과부하를 방지하기 위해 기본 100ms 디바운스를 적용합니다.
+     * @param immediate true인 경우 디바운스 없이 즉시 UI를 갱신합니다.
      */
-    public pushUIUpdate() { 
+    public pushUIUpdate(immediate: boolean = false) { 
+        if (immediate) {
+            if (this.uiUpdateTimeout) {
+                clearTimeout(this.uiUpdateTimeout);
+                this.uiUpdateTimeout = undefined;
+            }
+            this.executePushUIUpdate();
+            return;
+        }
+
+        if (this.uiUpdateTimeout) {
+            return; // 이미 예약되어 있으므로 스킵
+        }
+
+        this.uiUpdateTimeout = setTimeout(() => {
+            this.uiUpdateTimeout = undefined;
+            this.executePushUIUpdate();
+        }, 100);
+    }
+
+    private executePushUIUpdate() {
         // 닉네임 동적 변경 실시간 갱신을 위해 채팅방 업데이트
         this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
 
@@ -1207,6 +1249,13 @@ export class SyncEngine {
         // 타이핑 락 상태 초기화 - 모든 에디터의 readonly 무조건 해제
         this.localTypingUnlockTimers.forEach(t => clearTimeout(t));
         this.localTypingUnlockTimers.clear();
+        this.cursorBroadcastThrottleMap.forEach(t => clearTimeout(t));
+        this.cursorBroadcastThrottleMap.clear();
+        this.cursorBroadcastPendingMap.clear();
+        if (this.uiUpdateTimeout) {
+            clearTimeout(this.uiUpdateTimeout);
+            this.uiUpdateTimeout = undefined;
+        }
         this.remoteTypingLocked.forEach((locked, fileName) => {
             this.setEditorReadonly(fileName, false);
         });

@@ -45,6 +45,9 @@ export class CursorManager {
     private sendThrottleTimer?: NodeJS.Timeout;
     private pendingEditor?: vscode.TextEditor;
 
+    /** 파일별 커서 렌더링 디바운스 타이머 맵 (동일 파일에 여러 커서 변경 시 렌더링 폭주 방지) */
+    private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
+
     /**
      * CursorManager 인스턴스를 생성하고 에디터 선택 이벤트 리스너를 바인딩합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
@@ -148,8 +151,21 @@ export class CursorManager {
             return;
         }
 
-        // 해당 파일에 존재하는 모든 원격 피어의 커서를 다시 계산하여 렌더링 (동일 위치 겹침 방지)
-        this.renderCursorsForFile(file);
+        // 현재 열려있는 화면(visibleTextEditors)에 없는 파일인 경우 에디터 데코레이션 렌더링을 완전히 생략
+        // (상태는 remoteCursorStates에 정상 캐싱되어 탭 활성화 시 즉시 렌더링됨)
+        const isVisible = vscode.window.visibleTextEditors.some(e => isPathEqual(e.document.uri.fsPath, file.path));
+        if (!isVisible) {
+            return;
+        }
+
+        // 30명 동시 이동 시 에디터 데코레이션 재계산 폭주를 방지하기 위해 파일별 40ms 디바운스 적용
+        if (!this.renderDebounceTimers.has(file.name)) {
+            const timer = setTimeout(() => {
+                this.renderDebounceTimers.delete(file.name);
+                this.renderCursorsForFile(file);
+            }, 40);
+            this.renderDebounceTimers.set(file.name, timer);
+        }
     }
 
     /**
@@ -159,6 +175,10 @@ export class CursorManager {
      * @returns {void}
      */
     public renderCursorsForFile(file: SharedFile): void {
+        // 화면에 보이지 않는 파일이면 데코레이션 연산 생략
+        const isVisible = vscode.window.visibleTextEditors.some(e => isPathEqual(e.document.uri.fsPath, file.path));
+        if (!isVisible) return;
+
         const ydoc = this.engine.documentSyncManager.yDocs.get(file.name);
         const ytext = this.engine.documentSyncManager.yTexts.get(file.name);
         if (!ydoc || !ytext) return;
@@ -424,6 +444,13 @@ export class CursorManager {
      * @returns {void}
      */
     public stopAll(): void {
+        if (this.sendThrottleTimer) {
+            clearTimeout(this.sendThrottleTimer);
+            this.sendThrottleTimer = undefined;
+        }
+        this.renderDebounceTimers.forEach(t => clearTimeout(t));
+        this.renderDebounceTimers.clear();
+
         this.remoteCursorDecorations.forEach(d => d.dispose());
         this.remoteCursorDecorations.clear();
         this.remoteSelectionDecorations.forEach(d => d.dispose());
