@@ -364,6 +364,39 @@ export class ParticipantManager {
     }
 
     /**
+     * 참가자 명단 및 요청 대기열과 중복되지 않도록 필요 시 "(2)", "(3)" 등의 자동 넘버링을 부여합니다.
+     * @param requestedName 사용자가 요청한 기본 닉네임.
+     * @param targetPeerId 변경 대상 피어 ID (자기 자신의 기존 닉네임은 중복 검사에서 제외).
+     * @returns {string} 중복이 해결된 고유 닉네임.
+     */
+    public getUniqueParticipantName(requestedName: string, targetPeerId?: string): string {
+        const baseName = requestedName.trim() || 'Guest';
+        const otherNames = new Set<string>();
+
+        Object.entries(this.participants).forEach(([id, p]) => {
+            if (id !== targetPeerId && p && p.name) {
+                otherNames.add(p.name);
+            }
+        });
+
+        this.joinRequests.forEach(req => {
+            if (req.peerId !== targetPeerId && req.name) {
+                otherNames.add(req.name);
+            }
+        });
+
+        if (!otherNames.has(baseName)) {
+            return baseName;
+        }
+
+        let counter = 2;
+        while (otherNames.has(`${baseName} (${counter})`)) {
+            counter++;
+        }
+        return `${baseName} (${counter})`;
+    }
+
+    /**
      * 호스트가 방에 참여한 게스트를 참가자 명단에 등록하고 최신 공유 파일 스냅샷과 데코레이션을 전송합니다.
      * 창 새로고침 등으로 재연결된 게스트인 경우 이전 피어 ID의 권한과 파일 담당자 상태를 승계합니다.
      * @param msg 게스트 참여 메시지 (사용자 이름, 이전 피어 ID 등).
@@ -372,17 +405,15 @@ export class ParticipantManager {
      */
     public handleGuestJoin(msg: any, peerId: string): void {
         if (this.engine.isHost) { 
-            const guestName = msg.name || peerId;
+            const rawGuestName = msg.name || peerId;
             const previousPeerId = msg.previousPeerId;
 
-            // 1. 이전 피어 ID 탐색 (전송받은 previousPeerId 우선, 없으면 동일한 이름을 가진 이전 참가자 검색)
-            let oldPeerId = (previousPeerId && previousPeerId !== peerId && this.participants[previousPeerId]) ? previousPeerId : undefined;
-            if (!oldPeerId) {
-                oldPeerId = Object.keys(this.participants).find(id => id !== 'host' && id !== peerId && this.participants[id].name === guestName);
-            }
+            // 1. 이전 피어 ID 탐색 (재연결 시 전송받은 previousPeerId가 participants에 유효할 때만 승계)
+            const oldPeerId = (previousPeerId && previousPeerId !== peerId && this.participants[previousPeerId]) ? previousPeerId : undefined;
 
-            // 2. 세션 복원 시 기존에 부여되어 있던 참가자 권한 또는 이전 피어 ID의 권한 승계
+            // 2. 세션 복원 시 기존 권한 승계 또는 신규 생성 (동일 이름 중복 방지를 위해 자동 넘버링 적용)
             const existingPermission = this.participants[peerId] || (oldPeerId ? this.participants[oldPeerId] : undefined);
+            const guestName = existingPermission ? (existingPermission.name || rawGuestName) : this.getUniqueParticipantName(rawGuestName, peerId);
             this.participants[peerId] = existingPermission 
                 ? { ...existingPermission, name: guestName, connectionStatus: 'connected' }
                 : { name: guestName, globalCanEdit: false, filePermissions: {}, connectionStatus: 'connected' };
@@ -605,7 +636,11 @@ export class ParticipantManager {
         const trimmedNewName = newName.trim();
         if (!trimmedNewName) return;
 
-        const isDuplicate = Object.entries(this.participants).some(([id, data]) => id !== this.engine.myId && data.name === trimmedNewName);
+        const myEffectiveId = this.engine.isHost ? 'host' : (this.engine.myId || 'default');
+        const isDuplicate = Object.entries(this.participants).some(([id, data]) => {
+            const isSelf = (id === myEffectiveId) || (this.engine.myId && id === this.engine.myId);
+            return !isSelf && data && data.name === trimmedNewName;
+        });
         
         if (isDuplicate) {
             vscode.window.showWarningMessage(`"${trimmedNewName}" 이름은 이미 사용 중입니다. 다른 이름을 선택해주세요.`);
@@ -807,22 +842,26 @@ export class ParticipantManager {
      */
     public handleJoinRequest(msg: any, peerId: string): void {
         if (this.engine.isHost) {
-            const guestName = msg.name || peerId;
+            const rawGuestName = msg.name || peerId;
             const previousPeerId = msg.previousPeerId;
 
             // 0. 게스트에게 요청이 정상 도착했음을 알리는 ACK 즉시 회신 (게스트 재전송 중지 유도)
             this.engine.sendMessageToPeer(peerId, 'JOIN_REQUEST_ACK', { received: true });
 
+            // 기존 참가자 판정: peerId 또는 previousPeerId로만 식별 (동일 이름 게스트를 기존 참가자로 오인하지 않음)
             const existingParticipant = this.participants[peerId] || 
-                (previousPeerId && this.participants[previousPeerId]) || 
-                Object.values(this.participants).find(p => p.name === guestName);
+                (previousPeerId && this.participants[previousPeerId]);
 
             // 호스트 창 전환 후 재접속한 기존 게스트이거나 자동 승인 모드인 경우 즉시 승인
             if (existingParticipant || this.isAutoApprove) {
                 // 이전 대기열에 동일 피어 ID나 이전 피어 ID의 요청이 남아있다면 정리
                 this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId && req.peerId !== previousPeerId);
 
-                this.handleGuestJoin({ name: guestName, previousPeerId }, peerId);
+                const finalName = existingParticipant 
+                    ? (existingParticipant.name || rawGuestName) 
+                    : this.getUniqueParticipantName(rawGuestName, peerId);
+
+                this.handleGuestJoin({ name: finalName, previousPeerId }, peerId);
                 this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
                 setTimeout(() => {
                     if (this.engine.isHost && this.participants[peerId]) {
@@ -836,29 +875,32 @@ export class ParticipantManager {
                 }, 450);
 
                 if (existingParticipant) {
-                    vscode.window.showInformationMessage(`재연결 승인: ${guestName} (${peerId})`);
+                    vscode.window.showInformationMessage(`재연결 승인: ${finalName} (${peerId})`);
                 } else {
-                    vscode.window.showInformationMessage(`방 참여 자동 승인: ${guestName} (${peerId})`);
+                    vscode.window.showInformationMessage(`방 참여 자동 승인: ${finalName} (${peerId})`);
                 }
                 this.engine.pushUIUpdate();
             } else {
+                // 수동 승인 모드인 경우 요청 대기열에서도 중복 없는 고유 이름 할당
+                const finalName = this.getUniqueParticipantName(rawGuestName, peerId);
+
                 // 이미 대기 중인 요청이 있다면 정보만 갱신(중복 알림 및 중복 리스트 방지)
                 const existingIndex = this.joinRequests.findIndex(req => req.peerId === peerId);
                 if (existingIndex >= 0) {
                     this.joinRequests[existingIndex] = {
                         peerId,
-                        name: guestName,
+                        name: finalName,
                         previousPeerId,
                         timestamp: Date.now()
                     };
                 } else {
                     this.joinRequests.push({
                         peerId,
-                        name: guestName,
+                        name: finalName,
                         previousPeerId,
                         timestamp: Date.now()
                     });
-                    vscode.window.showInformationMessage(`방 참여 요청: ${guestName} (${peerId})`);
+                    vscode.window.showInformationMessage(`방 참여 요청: ${finalName} (${peerId})`);
                 }
                 this.engine.pushUIUpdate();
             }
@@ -1201,9 +1243,9 @@ export class ParticipantManager {
         this.reconnectStartTimes.delete(peerId);
 
         let perm = this.participants[peerId];
-        // peerId로 직접 매칭되지 않는 경우, 동일한 ID 또는 이름을 가진 참가자 항목을 검색
+        // peerId로 직접 매칭되지 않는 경우, 동일한 ID를 가진 참가자 항목 검색
         if (!perm) {
-            const foundEntry = Object.entries(this.participants).find(([id, p]) => id === peerId || p.name === peerId);
+            const foundEntry = Object.entries(this.participants).find(([id, p]) => id === peerId);
             if (foundEntry) {
                 this.lastPongTimes.set(foundEntry[0], Date.now());
                 this.reconnectStartTimes.delete(foundEntry[0]);

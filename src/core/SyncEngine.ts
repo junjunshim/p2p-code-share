@@ -325,8 +325,7 @@ export class SyncEngine {
                         } else if (this.isHost && peerId) {
                             // 게스트가 승인 응답(JOIN_RESPONSE)을 받지 못해 확인 핑을 보낸 경우의 Fallback
                             const isExisting = this.participantManager.participants[peerId] || 
-                                               (msg.peerId && this.participantManager.participants[msg.peerId]) ||
-                                               (msg.name && Object.values(this.participantManager.participants).find(p => p.name === msg.name));
+                                               (msg.peerId && this.participantManager.participants[msg.peerId]);
                             if (isExisting) {
                                 this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
                                 this.participantManager.broadcastUserList();
@@ -456,8 +455,7 @@ export class SyncEngine {
         }
         
         if (!this.isHost) {
-            const hasMyEntry = (this.myId && this.participantManager.participants[this.myId]) ||
-                               (this.myName && Object.values(this.participantManager.participants).some(p => p.name === this.myName));
+            const hasMyEntry = !!(this.myId && this.participantManager.participants[this.myId]);
 
             if (this.myId) {
                 const myData = this.participantManager.participants[this.myId] || this.participantManager.participants['default'];
