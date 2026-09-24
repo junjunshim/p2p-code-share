@@ -20,6 +20,8 @@ export function getSidebarTemplate(extensionUri: vscode.Uri, webview: vscode.Web
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'sidebar', 'sidebar.css'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'sidebar', 'sidebar.js'));
     const engineScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'engine', 'engine.js'));
+    const simplePeerUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'libs', 'simplepeer.min.js'));
+    const peerJsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'libs', 'peerjs.min.js'));
 
     const htmlPath = path.join(extensionUri.fsPath, 'media', 'sidebar', 'sidebar.html');
     let bodyHtml = '';
@@ -34,12 +36,13 @@ export function getSidebarTemplate(extensionUri: vscode.Uri, webview: vscode.Web
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline' 'unsafe-eval'; connect-src * wss: ws: https: http:; img-src ${webview.cspSource} data: https:;">
     <link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
     ${bodyHtml}
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js"></script>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="${simplePeerUri}"></script>
+    <script src="${peerJsUri}"></script>
     <script src="${scriptUri}"></script>
     <script src="${engineScriptUri}"></script>
 </body>
