@@ -53,6 +53,9 @@ export class ParticipantManager {
     /** 게스트 재연결 재시도 주기 타이머 */
     private reconnectRetryTimer?: NodeJS.Timeout;
 
+    /** 게스트 재연결 시도 함수 참조 (프로브 실패 시 즉시 루프 재시동용) */
+    private tryReconnectFn?: () => void;
+
     /** 게스트 재연결 최종 데드라인(30초) 타이머 */
     private reconnectDeadlineTimer?: NodeJS.Timeout;
 
@@ -716,7 +719,10 @@ export class ParticipantManager {
             // (isConnected가 이미 false로 바뀌었더라도 세션이 즉시 폭파되는 것을 방지)
             if (!this.isReconnecting && this.engine.roomName && this.engine.roomName !== 'Untitled Room') {
                 this.startGuestReconnectGracePeriod();
-            } else if (!this.isReconnecting) {
+            } else if (this.isReconnecting) {
+                // 이미 재연결 유예 모드 진행 중인데 물리 채널이 끊어졌다면 즉시 다음 프로브 스케줄링
+                this.onGuestReconnectProbeFailed();
+            } else {
                 this.engine.reset(); 
             }
         } else {
@@ -1027,9 +1033,29 @@ export class ParticipantManager {
             this.reconnectRetryTimer = setTimeout(tryReconnect, nextInterval);
         };
 
+        this.tryReconnectFn = tryReconnect;
+
         // 호스트 소켓 정리 및 새 방 등록 완료를 대기한 뒤 첫 재시도 (2000ms + 무작위 지터)
         const initialJitter = Math.floor(Math.random() * 1000);
         this.reconnectRetryTimer = setTimeout(tryReconnect, 1800 + initialJitter);
+    }
+
+    /**
+     * WebRTC 데이터 채널이 성공적으로 열렸을 때 호출되어 재연결 프로브 타이머를 일시 정지하고 호스트 승인을 기다립니다.
+     * @returns {void}
+     */
+    public pauseGuestReconnectProbe(): void {
+        if (!this.isReconnecting) return;
+        this.engine.logToUI(`WebRTC data channel connected during grace period. Pausing reconnect retry timer and waiting for host approval...`);
+        this.isProbeInFlight = true;
+        if (this.reconnectRetryTimer) {
+            clearTimeout(this.reconnectRetryTimer);
+            this.reconnectRetryTimer = undefined;
+        }
+        if (this.probeInFlightTimeout) {
+            clearTimeout(this.probeInFlightTimeout);
+            this.probeInFlightTimeout = undefined;
+        }
     }
 
     /**
@@ -1046,15 +1072,12 @@ export class ParticipantManager {
         if (this.reconnectRetryTimer) {
             clearTimeout(this.reconnectRetryTimer);
         }
-        // 실패 시 즉시 허브를 정리하고 1.5초~2.5초 지터 대기 후 다음 재시도 트리거
+        // 실패 시 즉시 허브를 정리하고 1.2초~2.0초 지터 대기 후 다음 재시도 프로브 트리거
         this.engine.hub.dispose();
-        const retryDelay = 1500 + Math.floor(Math.random() * 1000);
+        const retryDelay = 1200 + Math.floor(Math.random() * 800);
         this.reconnectRetryTimer = setTimeout(() => {
-            if (this.isReconnecting) {
-                const savedRoomName = this.engine.roomName;
-                const savedName = this.engine.myName;
-                const originalId = this.reconnectOriginalPeerId || this.engine.myId;
-                this.sendJoinRequest(savedRoomName, savedName, originalId);
+            if (this.isReconnecting && this.tryReconnectFn) {
+                this.tryReconnectFn();
             }
         }, retryDelay);
     }
@@ -1066,6 +1089,7 @@ export class ParticipantManager {
     public async stopGuestReconnectGracePeriod(): Promise<void> {
         this.isReconnecting = false;
         this.isProbeInFlight = false;
+        this.tryReconnectFn = undefined;
         if (this.probeInFlightTimeout) {
             clearTimeout(this.probeInFlightTimeout);
             this.probeInFlightTimeout = undefined;

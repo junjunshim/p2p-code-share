@@ -13,6 +13,7 @@
     let remotePeerIdMap = {};
     let peerServer = null;
     let guestSignalingConn = null; // 게스트가 호스트와 통신하기 위한 시그널링 커넥션
+    let guestSignalingConnectTimer = null;
     let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
     let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
     let pendingSignalingQueue = [];
@@ -31,6 +32,10 @@
      */
     function stopEngine() {
         log('Stopping P2P engine and disposing connections...');
+        if (guestSignalingConnectTimer) {
+            clearTimeout(guestSignalingConnectTimer);
+            guestSignalingConnectTimer = null;
+        }
         Object.keys(peers).forEach(id => {
             try { peers[id].destroy(); } catch(e) {}
             delete peers[id];
@@ -246,6 +251,20 @@
                     log('Connecting to room host for room: "' + rName + '"...');
                     const conn = peerServer.connect(toSafeId(rName));
                     handleSignalingConn(conn);
+
+                    // 게스트 시그널링 채널 조기 타임아웃(3.5초) 설정
+                    // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
+                    if (guestSignalingConnectTimer) {
+                        clearTimeout(guestSignalingConnectTimer);
+                    }
+                    guestSignalingConnectTimer = setTimeout(() => {
+                        guestSignalingConnectTimer = null;
+                        if (!currentInitiator && guestSignalingConn === conn && !conn.open) {
+                            log('Guest signaling connection early timeout (3.5s): Host not responding yet. Closing connection to trigger retry probe...');
+                            try { conn.close(); } catch(e) {}
+                            vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
+                        }
+                    }, 3500);
                 }
             });
 
@@ -265,6 +284,10 @@
             peerServer.on('error', (err) => {
                 log('PeerJS Connection Error: ' + err.type);
                 if (!currentInitiator) {
+                    if (guestSignalingConnectTimer) {
+                        clearTimeout(guestSignalingConnectTimer);
+                        guestSignalingConnectTimer = null;
+                    }
                     if (err.type === 'peer-unavailable') {
                         vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
                     } else if (err.type === 'server-error' || err.type === 'network') {
@@ -280,7 +303,7 @@
                                     log('Retrying host PeerJS reconnection after temporary collision...');
                                     peerServer.reconnect();
                                 }
-                            }, 3000);
+                            }, 800);
                         }
                         return;
                     }
@@ -297,6 +320,10 @@
                 guestSignalingConn = conn;
             }
             conn.on('open', () => {
+                if (guestSignalingConnectTimer) {
+                    clearTimeout(guestSignalingConnectTimer);
+                    guestSignalingConnectTimer = null;
+                }
                 log('Signaling channel established.');
                 if (!currentInitiator) {
                     log('Requesting SDP offer from host...');
