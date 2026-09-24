@@ -321,7 +321,7 @@ export class FileStorageManager {
                     await doc.save();
                 } catch (e) {}
             }
-        }, 1500);
+        }, 3000);
 
         this.debouncedSaveTimers.set(filePath, timer);
     }

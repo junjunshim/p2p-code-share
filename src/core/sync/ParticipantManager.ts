@@ -69,6 +69,9 @@ export class ParticipantManager {
     /** 피어들의 생존 여부를 주기적으로 확인하는 PING 타이머 */
     private pingTimer?: NodeJS.Timeout;
 
+    /** 유저 리스트 브로드캐스트 패킷 폭증 방지를 위한 디바운스 타이머 */
+    private broadcastUserListDebounceTimer?: NodeJS.Timeout;
+
     /** 피어 ID별 가장 최근 PONG 수신 에포크 밀리초 타임스탬프 맵 */
     public lastPongTimes = new Map<string, number>();
 
@@ -709,9 +712,36 @@ export class ParticipantManager {
 
     /**
      * 참가자 명단과 최신 방 이름, 공유 중인 파일 목록을 모든 피어에게 브로드캐스트합니다 (호스트 전용).
+     * 30명 동시 접속 시 네트워크 대역폭 보호를 위해 80ms 디바운스를 적용합니다.
+     * @param immediate true인 경우 디바운스 없이 즉시 전송합니다.
      * @returns {void}
      */
-    public broadcastUserList(): void {
+    public broadcastUserList(immediate: boolean = false): void {
+        if (!this.engine.isHost) {
+            this.engine.pushUIUpdate();
+            return;
+        }
+
+        if (immediate) {
+            if (this.broadcastUserListDebounceTimer) {
+                clearTimeout(this.broadcastUserListDebounceTimer);
+                this.broadcastUserListDebounceTimer = undefined;
+            }
+            this.executeBroadcastUserList();
+            return;
+        }
+
+        if (this.broadcastUserListDebounceTimer) {
+            return;
+        }
+
+        this.broadcastUserListDebounceTimer = setTimeout(() => {
+            this.broadcastUserListDebounceTimer = undefined;
+            this.executeBroadcastUserList();
+        }, 80);
+    }
+
+    private executeBroadcastUserList(): void {
         if (this.engine.isHost) {
             // 'default' ID를 제외한 참가자 목록 생성
             const filteredParticipants = { ...this.participants };
@@ -1203,15 +1233,20 @@ export class ParticipantManager {
                     return;
                 }
 
-                // 30명 동시 전송 시 트래픽 폭증 방지를 위해 20ms 지터(Jitter) 분산 발송
-                setTimeout(() => {
-                    if (this.engine.isHost && this.participants[peerId]) {
-                        this.engine.sendMessageToPeer(peerId, 'PING', { timestamp: Date.now() });
-                    }
-                }, index * 20);
+                // 최근 3초 이내에 정상 데이터를 수신한 활성 피어는 이미 생존이 확인되었으므로 PING 패킷 전송을 생략
+                const lastPong = this.lastPongTimes.get(peerId);
+                const isRecentlyActive = lastPong !== undefined && (now - lastPong <= 3000);
+
+                if (!isRecentlyActive) {
+                    // 30명 동시 전송 시 트래픽 폭증 방지를 위해 20ms 지터(Jitter) 분산 발송
+                    setTimeout(() => {
+                        if (this.engine.isHost && this.participants[peerId]) {
+                            this.engine.sendMessageToPeer(peerId, 'PING', { timestamp: Date.now() });
+                        }
+                    }, index * 20);
+                }
 
                 // PONG 응답 시간 검사 (마지막 활동/응답으로부터 10초 초과 시 reconnecting/노란색으로 표시)
-                const lastPong = this.lastPongTimes.get(peerId);
                 const isAlive = lastPong !== undefined && (now - lastPong <= 10000);
                 const currentStatus = isAlive ? 'connected' : 'reconnecting';
 
@@ -1287,6 +1322,10 @@ export class ParticipantManager {
      */
     public reset(): void {
         this.stopPingCheck();
+        if (this.broadcastUserListDebounceTimer) {
+            clearTimeout(this.broadcastUserListDebounceTimer);
+            this.broadcastUserListDebounceTimer = undefined;
+        }
         this.lastPongTimes.clear();
         this.reconnectStartTimes.clear();
         this.stopGuestReconnectGracePeriod();
