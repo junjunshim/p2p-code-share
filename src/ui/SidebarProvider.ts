@@ -18,6 +18,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     /** 사이드바 웹뷰 뷰 인스턴스 참조 */
     private _view?: vscode.WebviewView;
 
+    /** 웹뷰 준비 완료 여부 플래그 */
+    private _isReady = false;
+
+    /** 웹뷰가 준비되기 전 대기 중인 메시지 큐 */
+    private _pendingMessageQueue: any[] = [];
+
     /** 피어 초기화 요청 시 호출되는 콜백 */
     public onInitPeer?: (initiator: boolean, roomName: string) => void;
 
@@ -123,7 +129,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
                 // UI 준비 완료 이벤트
-                case 'ready': this.onReady?.(); break;
+                case 'ready': 
+                    this._isReady = true;
+                    this.flushPendingMessages();
+                    this.onReady?.(); 
+                    break;
                 // 피어 초기화 요청
                 case 'initPeer': this.onInitPeer?.(msg.initiator, msg.roomName); break;
                 // 방 참여 요청
@@ -178,11 +188,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * 웹뷰가 준비되기 전 대기열에 쌓인 메시지들을 순차적으로 전송합니다.
+     */
+    private flushPendingMessages(): void {
+        if (!this._view || !this._isReady) return;
+        while (this._pendingMessageQueue.length > 0) {
+            const msg = this._pendingMessageQueue.shift();
+            if (msg) {
+                this._view.webview.postMessage(msg);
+            }
+        }
+    }
+
+    /**
      * 사이드바 웹뷰로 상태 갱신 메시지를 전송합니다.
+     * 웹뷰가 아직 준비되지 않은 경우 대기열에 적재하여 누락을 방지합니다.
      * @param msg 웹뷰로 전달할 데이터 메시지 객체.
      * @returns {void}
      */
     public postMessage(msg: any): void {
-        this._view?.webview.postMessage(msg);
+        if (!this._view || !this._isReady) {
+            // renderState 타입의 메시지는 항상 최신 상태 1건만 유지하도록 대기열 압축
+            if (msg.type === 'renderState') {
+                this._pendingMessageQueue = this._pendingMessageQueue.filter(m => m.type !== 'renderState');
+            }
+            this._pendingMessageQueue.push(msg);
+            return;
+        }
+        this._view.webview.postMessage(msg);
     }
 }

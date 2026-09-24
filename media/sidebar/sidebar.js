@@ -917,3 +917,11 @@ function toggleAutoApprove(val) {
 
 vscode.postMessage({ type: 'ready' });
 
+// 초기 로딩 지연 방어: 1.5초 이내에 renderState 메시지를 수신하지 못했을 경우 다시 ready 신호를 전송
+setTimeout(() => {
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl && !loadingEl.classList.contains('hidden')) {
+        vscode.postMessage({ type: 'ready' });
+    }
+}, 1500);
+

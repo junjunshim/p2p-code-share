@@ -111,12 +111,9 @@ export function activate(context: vscode.ExtensionContext) {
             const session = engine.sessionRecoveryManager.getRecoverableSession();
             if (session) {
                 await engine.sessionRecoveryManager.restoreSession(session);
-            } else {
-                engine.pushUIUpdate();
             }
-        } else {
-            engine.pushUIUpdate();
         }
+        engine.pushUIUpdate();
     };
 
     // 게스트 초대 프로세스 시작
