@@ -9,6 +9,7 @@ import { HubManager } from './HubManager';
 import { SharedFile, P2PMessage, PeerPermission, FileDecoration, ChatMessage } from '../types';
 import { ChatPanel } from '../ui/ChatPanel';
 import { isPathEqual } from '../utils/helpers';
+import { Logger } from '../utils/Logger';
 
 import { FileStorageManager } from './sync/FileStorageManager';
 import { ParticipantManager } from './sync/ParticipantManager';
@@ -91,6 +92,10 @@ export class SyncEngine {
     /** 사이드바 UI 갱신 쓰로틀/디바운스를 위한 타이머 */
     private uiUpdateTimeout?: NodeJS.Timeout;
 
+    /** Follow-Me 모드 스크롤 브로드캐스트 쓰로틀링 타이머 및 대기 버퍼 */
+    private followMeThrottleTimer?: NodeJS.Timeout;
+    private pendingFollowUpdate?: { fileName: string; startLine: number; endLine: number };
+
     /**
      * 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임).
      */
@@ -148,7 +153,10 @@ export class SyncEngine {
      */
     public setupHandlers() {
         this.hub.onDidReceiveData = async (text, peerId) => {
-            this.logToUI(`Data received from peer: ${peerId}`);
+            // 대규모 동시 접속 배포판에서 초당 수백 회의 IPC 부하를 방지하기 위해 개발 모드(F5)에서만 패킷 수신 로그 출력
+            if (this.context.extensionMode === vscode.ExtensionMode.Development) {
+                this.logToUI(`Data received from peer: ${peerId}`);
+            }
             try {
                 // 호스트인 경우 게스트로부터 정상적인 데이터 수신 시 생존(Alive) 시간 갱신
                 if (this.isHost && peerId) {
@@ -360,12 +368,14 @@ export class SyncEngine {
     private handleOnConnected(peerId: string) {
         this.logToUI(`ON_CONNECTED received: ${peerId}`);
         if (this.isHost) {
+            Logger.get().info('Host', `WebRTC data channel opened with peer: ${peerId}`);
             if (this.participantManager.pendingInvites.has(peerId)) {
                 this.isSetupMode = false;
                 this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
                 this.participantManager.pendingInvites.delete(peerId);
             }
         } else {
+            Logger.get().step('GuestJoin', 2, 5, `WebRTC physical data channel connected to host (peerId=${peerId})`);
             // 호스트와 WebRTC 채널이 정상 연결되었으므로 "호스트 연결 시도 시간 초과(20초)" 타이머를 즉시 해제
             this.participantManager.clearJoinTimeout();
 
@@ -391,6 +401,7 @@ export class SyncEngine {
     private handleAssignPeerId(msg: any) {
         if (!this.isHost) {
             this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
+            Logger.get().info('GuestJoin', `Assigned peer ID from host: ${msg.peerId}`);
             const oldId = this.myId || 'default';
             this.myId = msg.peerId;
             const requestedName = (this.participantManager.pendingJoinRequest && this.participantManager.pendingJoinRequest.userName) 
@@ -571,17 +582,28 @@ export class SyncEngine {
             this.cursorManager.refreshAllDecorations();
         });
 
-        // 호스트 스크롤 변경 시 화면 추적 동기화
+        // 호스트 스크롤 변경 시 화면 추적 동기화 (30명 대상 대역폭 보호를 위해 60ms 쓰로틀링 적용)
         vscode.window.onDidChangeTextEditorVisibleRanges(e => {
             if (this.isHost && this.isFollowMeMode) {
                 const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.textEditor.document.uri.fsPath));
                 if (file && e.visibleRanges.length > 0) {
                     const range = e.visibleRanges[0];
-                    this.sendMessage('FOLLOW_UPDATE', {
+                    const updateData = {
                         fileName: file.name,
                         startLine: range.start.line,
                         endLine: range.end.line
-                    });
+                    };
+
+                    this.pendingFollowUpdate = updateData;
+                    if (!this.followMeThrottleTimer) {
+                        this.followMeThrottleTimer = setTimeout(() => {
+                            this.followMeThrottleTimer = undefined;
+                            if (this.pendingFollowUpdate) {
+                                this.sendMessage('FOLLOW_UPDATE', this.pendingFollowUpdate);
+                                this.pendingFollowUpdate = undefined;
+                            }
+                        }, 60);
+                    }
                 }
             }
         });
@@ -653,6 +675,7 @@ export class SyncEngine {
         this.roomName = msg.roomName !== undefined ? msg.roomName : (this.isHost ? 'Untitled Room' : '');
         this.myName = this.isHost ? 'Host' : '';
         this.initialName = this.myName;
+        Logger.get().info('System', `Role set: ${this.isHost ? 'Host' : 'Guest'} for room "${this.roomName}"`);
         this.logToUI(`Role set: ${this.isHost ? 'Host' : 'Guest'} for room "${this.roomName}"`);
         this.updateStatus('Initializing...');
 
@@ -726,15 +749,27 @@ export class SyncEngine {
      */
     public getIndexFromPosition(text: string, position: vscode.Position): number {
         let currentLine = 0;
-        let index = 0;
-        const lines = text.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-            if (i === position.line) {
-                return index + Math.min(position.character, lines[i].length);
+        let lineStartIndex = 0;
+        const len = text.length;
+
+        for (let i = 0; i < len; i++) {
+            if (currentLine === position.line) {
+                const lineEndIndex = text.indexOf('\n', lineStartIndex);
+                const currentLineLen = (lineEndIndex === -1 ? len : lineEndIndex) - lineStartIndex;
+                return lineStartIndex + Math.min(position.character, currentLineLen);
             }
-            index += lines[i].length + 1; // +1 for '\n'
+            if (text[i] === '\n') {
+                currentLine++;
+                lineStartIndex = i + 1;
+            }
         }
-        return Math.min(index, text.length);
+
+        if (currentLine === position.line) {
+            const currentLineLen = len - lineStartIndex;
+            return lineStartIndex + Math.min(position.character, currentLineLen);
+        }
+
+        return len;
     }
 
 
@@ -745,9 +780,6 @@ export class SyncEngine {
         this.updateUI({ 
             type: 'log', 
             message,
-            participants: this.participantManager.participants,
-            roomName: this.roomName,
-            files: this.fileStorageManager.sharedFiles,
             isConnected: this.isConnected
         });
     }
@@ -1256,6 +1288,11 @@ export class SyncEngine {
             clearTimeout(this.uiUpdateTimeout);
             this.uiUpdateTimeout = undefined;
         }
+        if (this.followMeThrottleTimer) {
+            clearTimeout(this.followMeThrottleTimer);
+            this.followMeThrottleTimer = undefined;
+        }
+        this.pendingFollowUpdate = undefined;
         this.remoteTypingLocked.forEach((locked, fileName) => {
             this.setEditorReadonly(fileName, false);
         });

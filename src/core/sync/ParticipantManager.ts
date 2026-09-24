@@ -9,6 +9,7 @@ import * as Y from 'yjs';
 import { PeerPermission } from '../../types';
 import { SyncEngine } from '../SyncEngine';
 import { isPathEqual, normalizeEOL } from '../../utils/helpers';
+import { Logger } from '../../utils/Logger';
 
 /**
  * ParticipantManager 클래스.
@@ -147,6 +148,9 @@ export class ParticipantManager {
         this.engine.isSetupMode = false;
         this.isAutoJoin = true; // 자동 참여 모드 설정
         this.pendingJoinRequest = { roomName, userName, previousPeerId }; // 요청 큐에 저장
+
+        Logger.get().step('GuestJoin', 1, 5, `Starting join request for room "${roomName}" as "${this.engine.myName}"`);
+
         // 게스트가 새로운 방에 입장할 때 기존에 남아있던 타 방 임시 디렉터리들을 선제적으로 정리
         this.engine.fileStorageManager.cleanOldRoomStorages(roomName);
         this.engine.pushUIUpdate();
@@ -159,6 +163,7 @@ export class ParticipantManager {
         if (!this.isReconnecting) {
             this.joinTimeout = setTimeout(() => {
                 if (!this.engine.isConnected && this.isAutoJoin && !this.isReconnecting) {
+                    Logger.get().error('GuestJoin', `Initial connection handshake timeout (30s) reached for room "${roomName}".`);
                     this.engine.logToUI("Initial connection handshake timeout (30s) reached.");
                     vscode.window.showErrorMessage("호스트와의 연결 시도 시간이 초과되었습니다. 방 이름이 올바른지 혹은 호스트가 온라인인지 확인해주세요.");
                     this.engine.reset();
@@ -195,6 +200,8 @@ export class ParticipantManager {
         let attempts = 0;
         const maxAttempts = 5;
 
+        Logger.get().step('GuestJoin', 3, 5, `Sending JOIN_REQUEST packet to host (peerId=${reqData.peerId}, name="${reqData.name}")`);
+
         const sendAndSchedule = () => {
             if (this.isJoinRequestAckReceived || this.engine.isConnected || !this.isAutoJoin) {
                 this.stopJoinRequestRetry();
@@ -202,6 +209,7 @@ export class ParticipantManager {
             }
 
             attempts++;
+            Logger.get().info('GuestJoin', `JOIN_REQUEST transmit attempt ${attempts}/${maxAttempts}`);
             this.engine.logToUI(`Sending JOIN_REQUEST to host (attempt ${attempts}/${maxAttempts})...`);
             vscode.window.setStatusBarMessage(`호스트에게 참여 요청 전달 중... (${attempts}/${maxAttempts})`, 2500);
 
@@ -210,6 +218,7 @@ export class ParticipantManager {
             if (attempts < maxAttempts) {
                 this.joinRequestRetryTimer = setTimeout(sendAndSchedule, 1800);
             } else {
+                Logger.get().warn('GuestJoin', `Max JOIN_REQUEST attempts (${maxAttempts}) reached. Awaiting host response...`);
                 this.engine.logToUI(`Max JOIN_REQUEST attempts reached (${maxAttempts}). Waiting for host response...`);
             }
         };
@@ -228,6 +237,7 @@ export class ParticipantManager {
         this.stopJoinRequestRetry();
         this.clearJoinTimeout();
 
+        Logger.get().step('GuestJoin', 4, 5, `Host ACK received. Awaiting host approval...`);
         this.engine.logToUI(`JOIN_REQUEST_ACK received: Host successfully received join request.`);
         vscode.window.setStatusBarMessage(`호스트가 요청을 확인했습니다. 승인을 기다리는 중...`, 5000);
         this.engine.updateStatus('Waiting...');
@@ -420,6 +430,8 @@ export class ParticipantManager {
             this.lastPongTimes.set(peerId, Date.now());
             this.reconnectStartTimes.delete(peerId);
 
+            Logger.get().step('HostApprove', 1, 4, `Registered participant: ${guestName} (${peerId})${oldPeerId ? ` [reconnected from ${oldPeerId}]` : ''}`);
+
             // 3. 중복 생성 방지를 위해 이전 피어 ID 정보 정리
             if (oldPeerId && oldPeerId !== peerId) {
                 delete this.participants[oldPeerId];
@@ -448,6 +460,7 @@ export class ParticipantManager {
                 });
             }
 
+            Logger.get().step('HostApprove', 2, 4, `Broadcasting updated user list to all peers`);
             this.broadcastUserList(); 
             
             // 승계된 쓰기 권한이 있는 경우 해당 피어에게 SET_PERMISSION을 즉시 발송하여 권한 복구 보장
@@ -456,9 +469,11 @@ export class ParticipantManager {
             }
 
             // 4. 승인 응답(JOIN_RESPONSE)을 파일 스냅샷 전송 전에 선제 발송하여 게스트의 대기 상태를 즉시 해제
+            Logger.get().step('HostApprove', 3, 4, `Sending JOIN_RESPONSE (approved=true) to ${peerId}`);
             this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
 
             // 5. 새로 들어온 게스트에게 현재 공유 중인 모든 파일 스냅샷 및 Yjs 상태 전송
+            Logger.get().step('HostApprove', 4, 4, `Sending initial snapshots and decorations to ${peerId}`);
             this.sendInitialSnapshotsToPeer(peerId);
 
             // 6. 현재 데코레이션 목록 전송 (비공개 처리 적용)
@@ -772,6 +787,7 @@ export class ParticipantManager {
                     if (!this.reconnectStartTimes.has(peerId)) {
                         this.reconnectStartTimes.set(peerId, Date.now());
                     }
+                    Logger.get().warn('Host', `Participant "${targetUser.name}" (${peerId}) disconnected. Entered 45s grace period.`);
                     this.engine.logToUI(`Peer ${targetUser.name} (${peerId}) temporarily disconnected. Entering grace period (45s)...`);
                     vscode.window.setStatusBarMessage(`P2P: ${targetUser.name}님의 연결이 일시 중단되었습니다. 재연결 대기 중...`, 4000);
                     this.broadcastUserList();
@@ -916,6 +932,7 @@ export class ParticipantManager {
         if (!this.engine.isHost) {
             this.stopJoinRequestRetry();
             if (msg.approved) {
+                Logger.get().step('GuestJoin', 5, 5, `Join approved! Establishing session for room "${this.engine.roomName}".`);
                 this.stopGuestReconnectGracePeriod();
                 this.engine.isConnected = true;
                 this.isAutoJoin = false;
@@ -925,6 +942,7 @@ export class ParticipantManager {
                 // 에디터 락 해제 및 최신 권한 적용
                 await this.engine.fileStorageManager.updateAllReadonlyStates();
             } else {
+                Logger.get().warn('GuestJoin', `Join rejected by host: ${msg.reason || 'No reason provided'}`);
                 this.stopGuestReconnectGracePeriod();
                 vscode.window.showErrorMessage(`방 참여가 거절되었습니다: ${msg.reason || '사유 없음'}`);
                 this.engine.reset();
@@ -1005,6 +1023,7 @@ export class ParticipantManager {
         this.isReconnecting = true;
         this.engine.isConnected = false;
         this.engine.updateStatus('Reconnecting...');
+        Logger.get().step('Reconnect', 1, 3, `Host connection lost. Entering 45s grace period and locking editor.`);
         this.engine.logToUI(`Host connection lost temporarily. Entering 45s grace period and locking editor...`);
 
         // 1. 게스트 에디터 일시 잠금 (오프라인 타이핑 유실 및 충돌 100% 방지)
@@ -1019,6 +1038,7 @@ export class ParticipantManager {
         // 2. 45초 전체 타임아웃 타이머 설정 (창 복구, 시그널링 서버 등록 지연 감안)
         if (this.reconnectDeadlineTimer) clearTimeout(this.reconnectDeadlineTimer);
         this.reconnectDeadlineTimer = setTimeout(async () => {
+            Logger.get().error('Reconnect', `Grace period timeout (45s) exceeded. Disposing session.`);
             this.engine.logToUI(`Host reconnection timeout exceeded (45s).`);
             vscode.window.showErrorMessage("호스트가 세션을 종료했거나 재연결 제한 시간(45초)을 초과했습니다.");
             this.stopGuestReconnectGracePeriod();
@@ -1088,6 +1108,7 @@ export class ParticipantManager {
      */
     public pauseGuestReconnectProbe(): void {
         if (!this.isReconnecting) return;
+        Logger.get().step('Reconnect', 2, 3, `WebRTC channel reconnected! Pausing retry probe, awaiting host approval.`);
         this.engine.logToUI(`WebRTC data channel connected during grace period. Pausing reconnect retry timer and waiting for host approval...`);
         this.isProbeInFlight = true;
         if (this.reconnectRetryTimer) {
@@ -1106,6 +1127,7 @@ export class ParticipantManager {
      */
     public onGuestReconnectProbeFailed(): void {
         if (!this.isReconnecting) return;
+        Logger.get().warn('Reconnect', `Probe attempt failed (host not ready). Scheduling next retry probe.`);
         this.isProbeInFlight = false;
         if (this.probeInFlightTimeout) {
             clearTimeout(this.probeInFlightTimeout);

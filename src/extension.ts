@@ -10,6 +10,7 @@ import { SidebarProvider } from './ui/SidebarProvider';
 import { HubManager } from './core/HubManager';
 import { SyncEngine } from './core/SyncEngine';
 import { ChatPanel } from './ui/ChatPanel';
+import { Logger } from './utils/Logger';
 
 /**
  * 확장 프로그램을 활성화합니다.
@@ -17,6 +18,9 @@ import { ChatPanel } from './ui/ChatPanel';
  * @param context VS Code 확장 프로그램 컨텍스트.
  */
 export function activate(context: vscode.ExtensionContext) {
+    // 개발 모드 시 VS Code 출력(Output) 패널 로거 초기화
+    const logger = Logger.initialize(context);
+
     // 확장 프로그램 활성화 시 에디터 마우스 휠 코드 줌 기능 자동 활성화
     try {
         const config = vscode.workspace.getConfiguration();
@@ -32,33 +36,35 @@ export function activate(context: vscode.ExtensionContext) {
     const hub = new HubManager();
     activeHub = hub;
     const engine = new SyncEngine(hub, context, (state) => {
+        // 로그 메시지는 엔진 웹뷰 및 OutputChannel로 전달하고 불필요한 setContext 및 사이드바 렌더링을 즉시 건너뜀
+        if (state.type === 'log') {
+            hub.sendToEngine({ type: 'log', message: state.message });
+            logger.info('Engine', state.message);
+            return;
+        }
+
         // P2P 연결 상태에 따라 VS Code 컨텍스트 상태 업데이트
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
         
         // 상태 업데이트를 사이드바에 알림
-        if (state.type === 'log') {
-            // 엔진 웹뷰(media/engine/engine.js)로 로그 전송
-            hub.sendToEngine({ type: 'log', message: state.message });
-        } else {
-            sidebar.postMessage({
-                type: 'renderState',
-                isConnected: state.isConnected,
-                isSetupMode: state.isSetupMode,
-                files: state.files,
-                participants: state,
-                roomName: state.roomName,
-                invitingSdp: state.invitingSdp,
-                connectionType: state.connectionType,
-                decorations: state.decorations,
-                cursorFilter: state.cursorFilter,
-                unreadChatCount: state.unreadChatCount,
-                isFollowMeMode: state.isFollowMeMode,
-                isAutoApprove: state.isAutoApprove,
-                isReconnecting: state.isReconnecting,
-                isSignalingConnected: state.isSignalingConnected
-            });
-        }
+        sidebar.postMessage({
+            type: 'renderState',
+            isConnected: state.isConnected,
+            isSetupMode: state.isSetupMode,
+            files: state.files,
+            participants: state,
+            roomName: state.roomName,
+            invitingSdp: state.invitingSdp,
+            connectionType: state.connectionType,
+            decorations: state.decorations,
+            cursorFilter: state.cursorFilter,
+            unreadChatCount: state.unreadChatCount,
+            isFollowMeMode: state.isFollowMeMode,
+            isAutoApprove: state.isAutoApprove,
+            isReconnecting: state.isReconnecting,
+            isSignalingConnected: state.isSignalingConnected
+        });
     });
     activeEngine = engine;
 
