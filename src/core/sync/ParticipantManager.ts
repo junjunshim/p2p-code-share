@@ -606,6 +606,18 @@ export class ParticipantManager {
                 if (d.creatorId === 'host') d.creatorName = trimmedNewName;
             });
             this.engine.decorationManager.broadcastDecorations();
+
+            // 호스트가 담당자로 지정된 파일의 assigneeName 갱신 및 브로드캐스트
+            this.engine.fileStorageManager.sharedFiles.forEach(f => {
+                if (f.assigneeId === 'host') {
+                    f.assigneeName = trimmedNewName;
+                    this.engine.sendMessage('FILE_ASSIGNEE_UPDATE', {
+                        fileName: f.name,
+                        assigneeId: 'host',
+                        assigneeName: trimmedNewName
+                    });
+                }
+            });
         } else { 
             // 게스트 이름 변경 및 서버에 알림
             this.engine.myName = trimmedNewName;

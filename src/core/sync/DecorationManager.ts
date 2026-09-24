@@ -328,7 +328,7 @@ export class DecorationManager {
         } else {
             const deco = this.decorations.find(d => d.id === id);
             if (deco && deco.creatorId === this.engine.myId) {
-                this.engine.sendMessage('DELETE_DECORATION', { id });
+                this.engine.sendMessage('DELETE_DECORATION', { id, creatorId: this.engine.myId });
                 // 게스트는 호스트 응답 전 로컬 상태를 우선 업데이트하여 화면 전환 반응성을 높임
                 this.decorations = this.decorations.filter(d => d.id !== id);
                 this.refreshDecorationsInEditors();

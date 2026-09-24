@@ -225,30 +225,46 @@ export class SyncEngine {
                         break;
                     case 'GUEST_RENAME':
                         const newName = msg.newName;
-                        if (peerId) {
-                            if (this.participantManager.participants[peerId]) {
-                                this.participantManager.participants[peerId].name = newName;
+                        const renameTargetId = msg.peerId || peerId;
+                        if (renameTargetId) {
+                            if (this.participantManager.participants[renameTargetId]) {
+                                this.participantManager.participants[renameTargetId].name = newName;
                             }
                             // 커서 상태 캐시에 저장된 닉네임도 즉시 갱신
-                            const cursorState = this.cursorManager['remoteCursorStates'].get(peerId);
+                            const cursorState = this.cursorManager['remoteCursorStates'].get(renameTargetId);
                             if (cursorState) {
                                 cursorState.userName = newName;
                             }
+                            // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경
+                            this.decorationManager.decorations.forEach(d => {
+                                if (d.creatorId === renameTargetId) d.creatorName = newName;
+                            });
+                            // 해당 게스트가 담당자인 파일의 assigneeName 로컬 갱신
+                            this.fileStorageManager.sharedFiles.forEach(f => {
+                                if (f.assigneeId === renameTargetId) f.assigneeName = newName;
+                            });
                         }
 
-                        if (this.isHost) { 
+                        if (this.isHost && renameTargetId) { 
                             this.participantManager.broadcastUserList(); 
-
-                            // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경 및 브로드캐스트
-                            this.decorationManager.decorations.forEach(d => {
-                                if (d.creatorId === peerId) d.creatorName = newName;
-                            });
                             this.decorationManager.broadcastDecorations();
+
+                            // 해당 게스트가 담당자로 지정된 파일의 assigneeName 갱신 및 브로드캐스트
+                            this.fileStorageManager.sharedFiles.forEach(f => {
+                                if (f.assigneeId === renameTargetId) {
+                                    f.assigneeName = newName;
+                                    this.sendMessage('FILE_ASSIGNEE_UPDATE', {
+                                        fileName: f.name,
+                                        assigneeId: renameTargetId,
+                                        assigneeName: newName
+                                    });
+                                }
+                            });
 
                             // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신
                             Object.keys(this.participantManager.participants).forEach(pId => {
-                                if (pId !== 'host' && pId !== peerId) {
-                                    this.sendMessageToPeer(pId, 'GUEST_RENAME', { newName, peerId });
+                                if (pId !== 'host' && pId !== renameTargetId) {
+                                    this.sendMessageToPeer(pId, 'GUEST_RENAME', { newName, peerId: renameTargetId });
                                 }
                             });
                         }
@@ -273,6 +289,13 @@ export class SyncEngine {
                         if (this.isHost && msg.decoration) {
                             const exists = this.decorationManager.decorations.some(d => d.id === msg.decoration.id);
                             if (!exists) {
+                                // 피어 ID 변조 방지 및 실제 접속자 닉네임 정합성 보장
+                                if (peerId && peerId !== 'host') {
+                                    msg.decoration.creatorId = peerId;
+                                    if (this.participantManager.participants[peerId]) {
+                                        msg.decoration.creatorName = this.participantManager.participants[peerId].name;
+                                    }
+                                }
                                 this.decorationManager.decorations.push(msg.decoration);
                                 this.decorationManager.broadcastDecorations();
                             }
@@ -281,7 +304,8 @@ export class SyncEngine {
                     case 'DELETE_DECORATION':
                         if (this.isHost) {
                             const deco = this.decorationManager.decorations.find(d => d.id === msg.id);
-                            if (deco && (deco.creatorId === peerId || peerId === 'host')) {
+                            const senderPeerId = peerId;
+                            if (deco && (deco.creatorId === senderPeerId || (msg.creatorId && deco.creatorId === msg.creatorId) || senderPeerId === 'host')) {
                                 this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.id !== msg.id);
                                 this.decorationManager.broadcastDecorations();
                             }
@@ -476,7 +500,12 @@ export class SyncEngine {
             this.cursorBroadcastThrottleMap.delete(senderId);
         }, 50));
 
-        this.hub.sendToEngine({ type: 'peerData', value: { type: 'CURSOR_UPDATE', ...msg } });
+        // 보낸 피어 및 호스트를 제외한 다른 게스트들에게만 커서 중계 (에코 차단 및 대역폭 절약)
+        Object.keys(this.participantManager.participants).forEach(pId => {
+            if (pId !== 'host' && pId !== senderId) {
+                this.sendMessageToPeer(pId, 'CURSOR_UPDATE', msg);
+            }
+        });
     }
 
     /**
@@ -1043,6 +1072,7 @@ export class SyncEngine {
         
         // 내 로컬 채팅창 갱신
         this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+        this.pushUIUpdate();
     }
 
     /**
