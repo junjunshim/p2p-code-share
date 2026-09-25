@@ -333,85 +333,84 @@ function renderRequests(m) {
 
 /**
 * 접속해 있는 참여자 목록을 화면에 렌더링합니다.
+* 30명 동시 접속 시 스크롤 튐 및 DOM 재생성 과부하를 방지하기 위해 Diff 갱신 적용
 */
 function renderUsers(m) {
     const udiv = document.getElementById('users');
-    if (!udiv) return;
-    udiv.innerHTML = '';
+    if (!udiv || !m.participants || !m.participants.others) return;
+    
     const myId = m.participants.myId;
     const isMeHost = myId === 'host';
-    Object.entries(m.participants.others).forEach(([id, data]) => {
+    const others = m.participants.others;
+    const currentPeerIds = new Set(Object.keys(others));
+
+    // 1. 퇴장한 피어의 DOM 엘리먼트 제거
+    const existingElements = udiv.querySelectorAll('.user-item[data-peer-id]');
+    existingElements.forEach(el => {
+        const peerId = el.getAttribute('data-peer-id');
+        if (peerId && !currentPeerIds.has(peerId)) {
+            el.remove();
+        }
+    });
+
+    // 2. 피어 목록 순회하며 신규 추가 또는 변경된 피어만 부분 갱신
+    Object.entries(others).forEach(([id, data]) => {
         const isMe = (id === myId || (id === 'default' && myId !== 'host'));
         const isHost = (id === 'host');
-
-        const name = data.name;
-        const canEdit = data.globalCanEdit;
-
+        const name = data.name || '';
+        const canEdit = !!data.globalCanEdit;
         const initials = name ? name.substring(0, 2) : '??';
 
-        // 연결 상태 (호스트 화면에서만 표시: 기본값은 connected, 게스트는 data.connectionStatus 기준)
+        let existingItem = udiv.querySelector('.user-item[data-peer-id="' + id + '"]');
+        if (!existingItem) {
+            existingItem = document.createElement('div');
+            existingItem.className = 'user-item';
+            existingItem.setAttribute('data-peer-id', id);
+            udiv.appendChild(existingItem);
+        }
+
+        // 상태 데이터 변경 여부를 판별하기 위한 지문(Fingerprint)
+        const statusClass = (isHost || isMe || data.connectionStatus !== 'reconnecting') ? 'connected' : 'reconnecting';
+        const fingerprint = `${name}|${canEdit}|${statusClass}|${isMe}|${isHost}|${isMeHost}`;
+        if (existingItem.getAttribute('data-fingerprint') === fingerprint) {
+            return; // 내용이 변경되지 않은 피어는 DOM 재생성 생략
+        }
+        existingItem.setAttribute('data-fingerprint', fingerprint);
+
         let statusDotHTML = '';
         if (isMeHost) {
-            let statusClass = 'connected';
-            let statusTitle = 'Connected';
-            if (isHost || isMe) {
-                statusClass = 'connected';
-                statusTitle = 'Connected';
-            } else if (data.connectionStatus === 'reconnecting') {
-            statusClass = 'reconnecting';
-            statusTitle = 'Reconnecting... (No ping response)';
-        } else {
-        statusClass = 'connected';
-        statusTitle = 'Connected';
-    }
-    statusDotHTML = '<span class="user-status-dot ' + statusClass + '" title="' + statusTitle + '"></span>';
-}
-
-const avatarHTML = '<div class="user-avatar-wrapper">' +
-'<div class="user-avatar">' + initials + '</div>' +
-statusDotHTML +
-'</div>';
-
-// 본인의 경우 이름 오른쪽에 연필 아이콘
-let editBtnHTML = '';
-if (isMe) {
-    editBtnHTML = '<span class="edit-name-btn" onclick="rename()" title="Rename">' +
-    '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">' +
-    '<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>' +
-    '</svg>' +
-    '</span>';
-}
-
-const nHTML = isMe ? '<b>' + name + '</b> &nbsp;(Me)' + editBtnHTML : name + (isHost ? ' <span class="host-badge">Host</span>' : '');
-
-// 쓰기 권한 토글 (호스트인 경우에만 게스트들을 대상으로 표시)
-let pHTML = '';
-if (isMeHost && !isMe && !isHost) {
-    pHTML = '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\'' + id + '\', \'' + name + '\', this.checked)"><span class="slider"></span></label>';
-}
-
-// 기여/손들기 버튼 및 강퇴 버튼
-let controlButtonsHTML = '';
-if (!isHost) {
-    // 게스트 및 내 화면
-    if (!isMe) {
-        if (isMeHost) {
-            controlButtonsHTML += pHTML;
-
-            // 강퇴 버튼 (마이너스 원형 아이콘)
-            controlButtonsHTML += '<button class="user-action-btn kick-btn" onclick="kick(\'' + id + '\')" title="Kick" style="margin-left: 6px;">' +
-            '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/></svg>' +
-            '</button>';
+            const statusTitle = statusClass === 'connected' ? 'Connected' : 'Reconnecting... (No ping response)';
+            statusDotHTML = '<span class="user-status-dot ' + statusClass + '" title="' + statusTitle + '"></span>';
         }
-    }
-}
 
-udiv.innerHTML += '<div class="user-item">' +
-avatarHTML +
-'<div class="user-name">' + nHTML + '</div>' +
-'<div class="action-area">' + controlButtonsHTML + '</div>' +
-'</div>';
-});
+        const avatarHTML = '<div class="user-avatar-wrapper">' +
+            '<div class="user-avatar">' + initials + '</div>' +
+            statusDotHTML +
+            '</div>';
+
+        let editBtnHTML = '';
+        if (isMe) {
+            editBtnHTML = '<span class="edit-name-btn" onclick="rename()" title="Rename">' +
+                '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">' +
+                '<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>' +
+                '</svg>' +
+                '</span>';
+        }
+
+        const nHTML = isMe ? '<b>' + name + '</b> &nbsp;(Me)' + editBtnHTML : name + (isHost ? ' <span class="host-badge">Host</span>' : '');
+
+        let controlButtonsHTML = '';
+        if (!isHost && !isMe && isMeHost) {
+            controlButtonsHTML += '<label class="switch" title="Toggle Write Permission"><input type="checkbox" ' + (canEdit ? 'checked' : '') + ' onchange="togglePermission(\'' + id + '\', \'' + name + '\', this.checked)"><span class="slider"></span></label>';
+            controlButtonsHTML += '<button class="user-action-btn kick-btn" onclick="kick(\'' + id + '\')" title="Kick" style="margin-left: 6px;">' +
+                '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/></svg>' +
+                '</button>';
+        }
+
+        existingItem.innerHTML = avatarHTML +
+            '<div class="user-name">' + nHTML + '</div>' +
+            '<div class="action-area">' + controlButtonsHTML + '</div>';
+    });
 }
 
 /**
@@ -534,185 +533,237 @@ resetForms();
 /**
 * 공유 중인 파일 목록을 화면에 렌더링합니다.
 */
+const fileIconCache = new Map();
+
+/**
+* 공유 중인 파일 목록의 아이콘 SVG를 반환합니다 (캐싱 적용).
+*/
 function getFileIconSvg(fileName) {
     if (!fileName) {
         return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
     }
 
     let base = fileName;
-
     if (base.endsWith('.shared')) {
         base = base.substring(0, base.length - 7);
         base = base.replace(new RegExp('_[0-9]+$'), '');
     } else {
-    const lastDot = base.lastIndexOf('.');
-    if (lastDot !== -1) {
-        const ext = base.substring(lastDot);
-        let nameWithoutExt = base.substring(0, lastDot);
-        nameWithoutExt = nameWithoutExt.replace(/_[0-9]+$/, '');
-        base = nameWithoutExt + ext;
+        const lastDot = base.lastIndexOf('.');
+        if (lastDot !== -1) {
+            const ext = base.substring(lastDot);
+            let nameWithoutExt = base.substring(0, lastDot);
+            nameWithoutExt = nameWithoutExt.replace(/_[0-9]+$/, '');
+            base = nameWithoutExt + ext;
+        }
     }
-}
 
-const lowerBase = base.toLowerCase();
-if (lowerBase === 'license') {
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm-3 3a3 3 0 0 1 5.1-2.1L12.5 8.3c.4.4.4 1 0 1.4l-.8.8a1 1 0 0 1-1.4 0L9.1 9.3 8.3 10.1A3 3 0 0 1 3 6z" fill="#cbcb41"/><path d="M9.5 7.5l1.5 1.5M10.5 6.5l1.5 1.5" stroke="#cbcb41" stroke-width="1.5"/></svg>';
-}
-if (lowerBase === '.gitignore') {
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 3.5C5 4.3 4.3 5 3.5 5S2 4.3 2 3.5 2.7 2 3.5 2 5 2.7 5 3.5zM14 12.5C14 13.3 13.3 14 12.5 14S11 13.3 11 12.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5zm-5.5-3.5c0-.8-.7-1.5-1.5-1.5S5.5 8.2 5.5 9s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5z" fill="#415a6b"/><path d="M3.5 5v6M12.5 11V7.5c0-1.4-1.1-2.5-2.5-2.5H7" stroke="#415a6b" stroke-width="1.5"/></svg>';
-}
-if (lowerBase === 'makefile') {
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#cbcb41" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="2" stroke="#cbcb41" stroke-width="1"/></svg>';
-}
+    const lowerBase = base.toLowerCase();
+    if (fileIconCache.has(lowerBase)) {
+        return fileIconCache.get(lowerBase);
+    }
 
-const extIdx = base.lastIndexOf('.');
-let ext = '';
-if (extIdx !== -1) {
-    ext = base.substring(extIdx + 1).toLowerCase();
-}
+    let svg = '';
+    if (lowerBase === 'license') {
+        svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm-3 3a3 3 0 0 1 5.1-2.1L12.5 8.3c.4.4.4 1 0 1.4l-.8.8a1 1 0 0 1-1.4 0L9.1 9.3 8.3 10.1A3 3 0 0 1 3 6z" fill="#cbcb41"/><path d="M9.5 7.5l1.5 1.5M10.5 6.5l1.5 1.5" stroke="#cbcb41" stroke-width="1.5"/></svg>';
+    } else if (lowerBase === '.gitignore') {
+        svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 3.5C5 4.3 4.3 5 3.5 5S2 4.3 2 3.5 2.7 2 3.5 2 5 2.7 5 3.5zM14 12.5C14 13.3 13.3 14 12.5 14S11 13.3 11 12.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5zm-5.5-3.5c0-.8-.7-1.5-1.5-1.5S5.5 8.2 5.5 9s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5z" fill="#415a6b"/><path d="M3.5 5v6M12.5 11V7.5c0-1.4-1.1-2.5-2.5-2.5H7" stroke="#415a6b" stroke-width="1.5"/></svg>';
+    } else if (lowerBase === 'makefile') {
+        svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#cbcb41" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#cbcb41" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="2" stroke="#cbcb41" stroke-width="1"/></svg>';
+    } else if (lowerBase === 'dockerfile') {
+        svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 7.5h12v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4z" fill="#519aba"/><rect x="3" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="9" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="1" width="2" height="2" rx="0.5" fill="#519aba"/></svg>';
+    } else {
+        const extIdx = base.lastIndexOf('.');
+        const ext = extIdx !== -1 ? base.substring(extIdx + 1).toLowerCase() : '';
+        switch (ext) {
+            case 'ts':
+            case 'tsx':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">TS</text></svg>';
+                break;
+            case 'js':
+            case 'jsx':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">JS</text></svg>';
+                break;
+            case 'c':
+            case 'h':
+            case 'hpp':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">C</text></svg>';
+                break;
+            case 'cpp':
+            case 'cc':
+            case 'cxx':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#f34b7d" text-anchor="middle">C++</text></svg>';
+                break;
+            case 'py':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M7.5 0.5C5.8 0.5 4.5 1.8 4.5 3.5V5.5H8.5V6H3C1.9 6 1 6.9 1 8C1 9.1 1.9 10 3 10H4.5V8.5C4.5 6.8 5.8 5.5 7.5 5.5H11.5V3.5C11.5 1.8 10.2 0.5 8.5 0.5H7.5Z" fill="#3572A5"/><path d="M8.5 15.5C10.2 15.5 11.5 14.2 11.5 12.5V10.5H7.5V10H13C14.1 10 15 9.1 15 8C15 6.9 14.1 6 13 6H11.5V7.5C11.5 9.2 10.2 10.5 8.5 10.5H4.5V12.5C4.5 14.2 5.8 15.5 7.5 15.5H8.5Z" fill="#F1E05A"/></svg>';
+                break;
+            case 'json':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="13" font-weight="bold" fill="#cbcb41" text-anchor="middle">{}</text></svg>';
+                break;
+            case 'html':
+            case 'htm':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 4L1 8L5 12M11 4L15 8L11 12" stroke="#e34c26" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                break;
+            case 'css':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="15" font-family="sans-serif" font-size="14" font-weight="900" fill="#519aba" text-anchor="middle">#</text></svg>';
+                break;
+            case 'md':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14" font-family="sans-serif" font-size="12" font-weight="bold" fill="#519aba" text-anchor="middle">M</text></svg>';
+                break;
+            case 'java':
+            case 'class':
+            case 'jar':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 5h9v6a3 3 0 01-3 3H5a3 3 0 01-3-3V5zm9 2h1.5a1.5 1.5 0 011.5 1.5v1a1.5 1.5 0 01-1.5 1.5H11" stroke="#cc3e44" stroke-width="1.5"/><path d="M4 1v2M7 1v2M10 1v2" stroke="#cc3e44" stroke-width="1.2" stroke-linecap="round"/></svg>';
+                break;
+            case 'go':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#00acd7" text-anchor="middle">GO</text></svg>';
+                break;
+            case 'rs':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#dea584" text-anchor="middle">RS</text></svg>';
+                break;
+            case 'yaml':
+            case 'yml':
+            case 'xml':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">⚙</text></svg>';
+                break;
+            case 'sh':
+            case 'bash':
+            case 'zsh':
+            case 'ps1':
+            case 'bat':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M3 3l6 5-6 5M9 13h5" stroke="#415a6b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                break;
+            case 'sql':
+            case 'db':
+            case 'sqlite':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-1.7 2.7-3 6-3s6 1.3 6 3v8c0 1.7-2.7 3-6 3s-6-1.3-6-3V4z" fill="#f34b7d" fill-opacity="0.1" stroke="#f34b7d" stroke-width="1.5"/><path d="M2 4c0 1.7 2.7 3 6 3s6-1.3 6-3M2 8c0 1.7 2.7 3 6 3s6-1.3 6-3" stroke="#f34b7d" stroke-width="1.5"/></svg>';
+                break;
+            case 'php':
+                svg = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#519aba" text-anchor="middle">PHP</text></svg>';
+                break;
+            case 'rb':
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M4 2h8l3 4-7 8-7-8 3-4z" fill="#cc3e44" stroke="#cc3e44" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+                break;
+            default:
+                svg = '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
+                break;
+        }
+    }
 
-if (lowerBase === 'dockerfile') {
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 7.5h12v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4z" fill="#519aba"/><rect x="3" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="9" y="4" width="2" height="2" rx="0.5" fill="#519aba"/><rect x="6" y="1" width="2" height="2" rx="0.5" fill="#519aba"/></svg>';
-}
-
-switch (ext) {
-    case 'ts':
-    case 'tsx':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">TS</text></svg>';
-    case 'js':
-    case 'jsx':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">JS</text></svg>';
-    case 'c':
-    case 'h':
-    case 'hpp':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#519aba" text-anchor="middle">C</text></svg>';
-    case 'cpp':
-    case 'cc':
-    case 'cxx':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#f34b7d" text-anchor="middle">C++</text></svg>';
-    case 'py':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M7.5 0.5C5.8 0.5 4.5 1.8 4.5 3.5V5.5H8.5V6H3C1.9 6 1 6.9 1 8C1 9.1 1.9 10 3 10H4.5V8.5C4.5 6.8 5.8 5.5 7.5 5.5H11.5V3.5C11.5 1.8 10.2 0.5 8.5 0.5H7.5Z" fill="#3572A5"/><path d="M8.5 15.5C10.2 15.5 11.5 14.2 11.5 12.5V10.5H7.5V10H13C14.1 10 15 9.1 15 8C15 6.9 14.1 6 13 6H11.5V7.5C11.5 9.2 10.2 10.5 8.5 10.5H4.5V12.5C4.5 14.2 5.8 15.5 7.5 15.5H8.5Z" fill="#F1E05A"/></svg>';
-    case 'json':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="13" font-weight="bold" fill="#cbcb41" text-anchor="middle">{}</text></svg>';
-    case 'html':
-    case 'htm':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M5 4L1 8L5 12M11 4L15 8L11 12" stroke="#e34c26" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    case 'css':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="15" font-family="sans-serif" font-size="14" font-weight="900" fill="#519aba" text-anchor="middle">#</text></svg>';
-    case 'md':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14" font-family="sans-serif" font-size="12" font-weight="bold" fill="#519aba" text-anchor="middle">M</text></svg>';
-    case 'java':
-    case 'class':
-    case 'jar':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 5h9v6a3 3 0 01-3 3H5a3 3 0 01-3-3V5zm9 2h1.5a1.5 1.5 0 011.5 1.5v1a1.5 1.5 0 01-1.5 1.5H11" stroke="#cc3e44" stroke-width="1.5"/><path d="M4 1v2M7 1v2M10 1v2" stroke="#cc3e44" stroke-width="1.2" stroke-linecap="round"/></svg>';
-    case 'go':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#00acd7" text-anchor="middle">GO</text></svg>';
-    case 'rs':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#dea584" text-anchor="middle">RS</text></svg>';
-    case 'yaml':
-    case 'yml':
-    case 'xml':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="11" font-weight="900" fill="#cbcb41" text-anchor="middle">⚙</text></svg>';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-    case 'ps1':
-    case 'bat':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M3 3l6 5-6 5M9 13h5" stroke="#415a6b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    case 'sql':
-    case 'db':
-    case 'sqlite':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-1.7 2.7-3 6-3s6 1.3 6 3v8c0 1.7-2.7 3-6 3s-6-1.3-6-3V4z" fill="#f34b7d" fill-opacity="0.1" stroke="#f34b7d" stroke-width="1.5"/><path d="M2 4c0 1.7 2.7 3 6 3s6-1.3 6-3M2 8c0 1.7 2.7 3 6 3s6-1.3 6-3" stroke="#f34b7d" stroke-width="1.5"/></svg>';
-    case 'php':
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><text x="10" y="14.5" font-family="sans-serif" font-size="9" font-weight="900" fill="#519aba" text-anchor="middle">PHP</text></svg>';
-    case 'rb':
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><path d="M4 2h8l3 4-7 8-7-8 3-4z" fill="#cc3e44" stroke="#cc3e44" stroke-width="1.5" stroke-linejoin="round"/></svg>';
-    default:
-    return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
-}
+    fileIconCache.set(lowerBase, svg);
+    return svg;
 }
 
 /**
-* 공유 중인 파일 목록을 화면에 렌더링합니다.
+* 공유 중인 파일 목록을 화면에 렌더링합니다 (Diff 갱신 적용).
 */
 function renderFiles(m) {
     const fdiv = document.getElementById('files');
-    if (fdiv) {
-        fdiv.innerHTML = '';
-        const isFinalHost = m.participants.myId === 'host';
-        m.files.forEach(f => {
-            const item = document.createElement('div');
+    if (!fdiv || !m.files) return;
+
+    const currentFiles = m.files || [];
+    const currentFileNames = new Set(currentFiles.map(f => f.name));
+
+    // 1. 제거된 파일 DOM 삭제
+    const existingItems = fdiv.querySelectorAll('.file-item[data-file-name]');
+    existingItems.forEach(el => {
+        const fn = el.getAttribute('data-file-name');
+        if (fn && !currentFileNames.has(fn)) {
+            el.remove();
+        }
+    });
+
+    const isFinalHost = m.participants && m.participants.myId === 'host';
+    const participantsListFingerprint = Object.entries(m.participants && m.participants.others || {})
+        .map(([id, d]) => `${id}:${d.name}`)
+        .sort()
+        .join(',');
+
+    currentFiles.forEach(f => {
+        let item = fdiv.querySelector(`.file-item[data-file-name="${CSS.escape(f.name)}"]`);
+        const fileFingerprint = `${f.name}|${f.assigneeId || ''}|${f.assigneeName || ''}|${isFinalHost}|${participantsListFingerprint}`;
+
+        if (item && item.getAttribute('data-fingerprint') === fileFingerprint) {
+            return; // 파일 정보 및 참여자 명단에 변동이 없으면 DOM 조작 스킵
+        }
+
+        if (!item) {
+            item = document.createElement('div');
             item.className = 'file-item';
+            item.setAttribute('data-file-name', f.name);
+            fdiv.appendChild(item);
+        }
+        item.setAttribute('data-fingerprint', fileFingerprint);
+        item.innerHTML = '';
 
-            const infoContainer = document.createElement('div');
-            infoContainer.style.display = 'flex';
-            infoContainer.style.flexDirection = 'column';
-            infoContainer.style.alignItems = 'flex-start';
-            infoContainer.style.gap = '4px';
-            infoContainer.style.flex = '1';
-            infoContainer.style.overflow = 'hidden';
+        const infoContainer = document.createElement('div');
+        infoContainer.style.display = 'flex';
+        infoContainer.style.flexDirection = 'column';
+        infoContainer.style.alignItems = 'flex-start';
+        infoContainer.style.gap = '4px';
+        infoContainer.style.flex = '1';
+        infoContainer.style.overflow = 'hidden';
 
-            const nameContainer = document.createElement('div');
-            nameContainer.className = 'file-name-container';
-            nameContainer.style.width = '100%';
-            nameContainer.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
+        const nameContainer = document.createElement('div');
+        nameContainer.className = 'file-name-container';
+        nameContainer.style.width = '100%';
+        nameContainer.onclick = () => vscode.postMessage({ type: 'openFile', path: f.path });
 
-            const fileIcon = document.createElement('span');
-            fileIcon.className = 'file-icon';
-            fileIcon.innerHTML = getFileIconSvg(f.name);
+        const fileIcon = document.createElement('span');
+        fileIcon.className = 'file-icon';
+        fileIcon.innerHTML = getFileIconSvg(f.name);
 
-            const nameSpan = document.createElement('span');
-            nameSpan.style.fontSize = '13px';
-            nameSpan.innerText = f.name;
+        const nameSpan = document.createElement('span');
+        nameSpan.style.fontSize = '13px';
+        nameSpan.innerText = f.name;
 
-            nameContainer.appendChild(fileIcon);
-            nameContainer.appendChild(nameSpan);
-            infoContainer.appendChild(nameContainer);
+        nameContainer.appendChild(fileIcon);
+        nameContainer.appendChild(nameSpan);
+        infoContainer.appendChild(nameContainer);
 
-            if (isFinalHost) {
-                const select = document.createElement('select');
-                select.style.marginLeft = '26px';
-                select.style.fontSize = '12px';
-                select.style.background = 'var(--vscode-dropdown-background)';
-                select.style.color = 'var(--vscode-dropdown-foreground)';
-                select.style.border = '1px solid var(--vscode-dropdown-border)';
-                select.style.borderRadius = '2px';
-                select.style.padding = '2px 4px';
-                select.style.maxWidth = '180px';
+        if (isFinalHost) {
+            const select = document.createElement('select');
+            select.style.marginLeft = '26px';
+            select.style.fontSize = '12px';
+            select.style.background = 'var(--vscode-dropdown-background)';
+            select.style.color = 'var(--vscode-dropdown-foreground)';
+            select.style.border = '1px solid var(--vscode-dropdown-border)';
+            select.style.borderRadius = '2px';
+            select.style.padding = '2px 4px';
+            select.style.maxWidth = '180px';
 
-                const optDefault = document.createElement('option');
-                optDefault.value = '';
-                optDefault.innerText = 'Anyone';
-                select.appendChild(optDefault);
+            const optDefault = document.createElement('option');
+            optDefault.value = '';
+            optDefault.innerText = 'Anyone';
+            select.appendChild(optDefault);
 
-                Object.entries(m.participants.others).forEach(([id, data]) => {
-                    const opt = document.createElement('option');
-                    opt.value = id;
-                    opt.innerText = id === 'host' ? data.name + ' (Host)' : data.name;
-                    if (f.assigneeId === id) {
-                        opt.selected = true;
-                    }
-                    select.appendChild(opt);
+            Object.entries(m.participants.others).forEach(([id, data]) => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.innerText = id === 'host' ? data.name + ' (Host)' : data.name;
+                if (f.assigneeId === id) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            });
+
+            select.onchange = (e) => {
+                vscode.postMessage({
+                    type: 'assignFileOwner',
+                    fileName: f.name,
+                    assigneeId: e.target.value
                 });
+            };
+            select.onclick = (e) => { e.stopPropagation(); };
+            infoContainer.appendChild(select);
 
-                select.onchange = (e) => {
-                    vscode.postMessage({
-                        type: 'assignFileOwner',
-                        fileName: f.name,
-                        assigneeId: e.target.value
-                    });
-                };
-                select.onclick = (e) => { e.stopPropagation(); };
-                infoContainer.appendChild(select);
+            item.appendChild(infoContainer);
 
-                item.appendChild(infoContainer);
-
-                const stopBtn = document.createElement('button');
-                stopBtn.className = 'stop-btn';
-                stopBtn.innerText = 'Stop';
-                stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
-                item.appendChild(stopBtn);
-            } else {
+            const stopBtn = document.createElement('button');
+            stopBtn.className = 'stop-btn';
+            stopBtn.innerText = 'Stop';
+            stopBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: 'stopFileSharing', fileName: f.name }); };
+            item.appendChild(stopBtn);
+        } else {
             const assigneeSpan = document.createElement('span');
             assigneeSpan.className = 'file-assignee-badge';
             assigneeSpan.style.marginLeft = '26px';
@@ -722,17 +773,15 @@ function renderFiles(m) {
                     assigneeSpan.innerText = 'Me (Owner)';
                     assigneeSpan.classList.add('owner');
                 } else {
-                assigneeSpan.innerText = f.assigneeName || f.assigneeId;
+                    assigneeSpan.innerText = f.assigneeName || f.assigneeId;
+                }
+            } else {
+                assigneeSpan.innerText = 'Anyone';
             }
-        } else {
-        assigneeSpan.innerText = 'Anyone';
-    }
-    infoContainer.appendChild(assigneeSpan);
-    item.appendChild(infoContainer);
-}
-fdiv.appendChild(item);
-});
-}
+            infoContainer.appendChild(assigneeSpan);
+            item.appendChild(infoContainer);
+        }
+    });
 }
 
 /**

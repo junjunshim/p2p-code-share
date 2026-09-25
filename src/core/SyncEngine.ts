@@ -91,6 +91,8 @@ export class SyncEngine {
 
     /** 사이드바 UI 갱신 쓰로틀/디바운스를 위한 타이머 */
     private uiUpdateTimeout?: NodeJS.Timeout;
+    /** 직전에 전송된 UI 페이로드 직렬화 해시 (중복 IPC 전송 방지) */
+    private lastUIPayloadString?: string;
 
     /** Follow-Me 모드 스크롤 브로드캐스트 쓰로틀링 타이머 및 대기 버퍼 */
     private followMeThrottleTimer?: NodeJS.Timeout;
@@ -876,7 +878,7 @@ export class SyncEngine {
             return true;
         });
 
-        this.updateUI({ 
+        const payload = { 
             type: 'renderParticipants', 
             myName: this.myName, 
             myId: this.myId, 
@@ -896,7 +898,13 @@ export class SyncEngine {
             isFollowMeMode: this.isFollowMeMode,
             isAutoApprove: this.participantManager.isAutoApprove,
             isReconnecting: this.participantManager.isReconnecting
-        });
+        };
+
+        const serialized = JSON.stringify(payload);
+        if (this.lastUIPayloadString !== serialized) {
+            this.lastUIPayloadString = serialized;
+            this.updateUI(payload);
+        }
         this.updateActiveFileSharedContext();
     }
 
@@ -1382,6 +1390,7 @@ export class SyncEngine {
         this.initialName = ''; 
         this.isSetupMode = false; 
         this.isFollowMeMode = false; 
+        this.lastUIPayloadString = undefined;
 
         if (!skipUIUpdate) {
             this.pushUIUpdate();
