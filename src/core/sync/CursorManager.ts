@@ -41,6 +41,17 @@ export class CursorManager {
     /** 불필요한 데코레이션 재생성을 방지하기 위한 피어별 데코레이션 캐시 정보 */
     private remoteCursorDecoTypes = new Map<string, { cursorDeco: vscode.TextEditorDecorationType; selectionDeco: vscode.TextEditorDecorationType; key: string }>();
 
+    /** Yjs 상대 좌표(RelativePosition) 계산 비용 절감을 위한 피어별 Position 캐시 */
+    private peerPositionCache = new Map<string, {
+        startRel: any;
+        endRel: any;
+        activeRel: any;
+        ytextLen: number;
+        activePos: vscode.Position;
+        startPos: vscode.Position;
+        endPos: vscode.Position;
+    }>();
+
     /** 커서 업데이트 전송 과부하 방지를 위한 쓰로틀 타이머 */
     private sendThrottleTimer?: NodeJS.Timeout;
     private pendingEditor?: vscode.TextEditor;
@@ -203,8 +214,29 @@ export class CursorManager {
         // Yjs 상대 좌표(RelativePosition)로부터 최신 실제 텍스트 오프셋 및 에디터 Position 계산
         const parsedPeers: { peerId: string; state: any; activePos: vscode.Position; startPos: vscode.Position; endPos: vscode.Position }[] = [];
         const yjsText = ytext.toString();
+        const currentDocLen = ytext.length;
+
         peersInFile.forEach(([peerId, state]) => {
             if (!state.startRel || !state.endRel || !state.activeRel) return;
+
+            // 캐시 확인: 상대 좌표 객체와 문서 길이가 변경되지 않았다면 이전 Position 재사용
+            const cachedPos = this.peerPositionCache.get(peerId);
+            if (
+                cachedPos &&
+                cachedPos.ytextLen === currentDocLen &&
+                cachedPos.activeRel === state.activeRel &&
+                cachedPos.startRel === state.startRel &&
+                cachedPos.endRel === state.endRel
+            ) {
+                parsedPeers.push({
+                    peerId,
+                    state,
+                    activePos: cachedPos.activePos,
+                    startPos: cachedPos.startPos,
+                    endPos: cachedPos.endPos
+                });
+                return;
+            }
 
             try {
                 const startRelPos = Y.createRelativePositionFromJSON(state.startRel);
@@ -216,12 +248,26 @@ export class CursorManager {
                 const activeAbs = Y.createAbsolutePositionFromRelativePosition(activeRelPos, ydoc);
 
                 if (startAbs && endAbs && activeAbs) {
+                    const activePos = this.engine.getPositionFromIndex(yjsText, activeAbs.index);
+                    const startPos = this.engine.getPositionFromIndex(yjsText, startAbs.index);
+                    const endPos = this.engine.getPositionFromIndex(yjsText, endAbs.index);
+
+                    this.peerPositionCache.set(peerId, {
+                        startRel: state.startRel,
+                        endRel: state.endRel,
+                        activeRel: state.activeRel,
+                        ytextLen: currentDocLen,
+                        activePos,
+                        startPos,
+                        endPos
+                    });
+
                     parsedPeers.push({
                         peerId,
                         state,
-                        activePos: this.engine.getPositionFromIndex(yjsText, activeAbs.index),
-                        startPos: this.engine.getPositionFromIndex(yjsText, startAbs.index),
-                        endPos: this.engine.getPositionFromIndex(yjsText, endAbs.index)
+                        activePos,
+                        startPos,
+                        endPos
                     });
                 }
             } catch (e) {}
@@ -419,6 +465,7 @@ export class CursorManager {
         }
 
         this.userColorMap.delete(peerId); 
+        this.peerPositionCache.delete(peerId);
         this.engine.pushUIUpdate(); 
     }
 
@@ -458,6 +505,7 @@ export class CursorManager {
         this.remoteCursorStates.clear();
         this.userColorMap.clear();
         this.remoteCursorDecoTypes.clear();
+        this.peerPositionCache.clear();
     }
 
     /**
