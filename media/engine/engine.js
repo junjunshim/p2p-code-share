@@ -12,6 +12,8 @@
     let pendingSdpMap = {};
     let remotePeerIdMap = {};
     let peerServer = null;
+    let isStoppingEngine = false; // stopEngine()에 의한 의도적 종료 중에는 disconnected 이벤트를 무시하기 위한 플래그
+    let hasActiveRoomSession = false; // 시그널링 서버에 방/세션이 성립되어 재연결이 필요한 상태인지 여부
     let guestSignalingConn = null; // 게스트가 호스트와 통신하기 위한 시그널링 커넥션
     let guestSignalingConnectTimer = null;
     let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
@@ -53,6 +55,10 @@
      */
     function stopEngine() {
         log('Stopping P2P engine and disposing connections...');
+        // PeerJS의 destroy()는 내부적으로 disconnect()를 호출해 'disconnected' 이벤트를 발생시키므로,
+        // 의도적 종료 중에는 시그널링 재연결/알림 로직이 동작하지 않도록 플래그를 세웁니다.
+        isStoppingEngine = true;
+        hasActiveRoomSession = false;
         if (guestSignalingConnectTimer) {
             clearTimeout(guestSignalingConnectTimer);
             guestSignalingConnectTimer = null;
@@ -342,6 +348,8 @@
         });
 
         p.on('connect', () => {
+            // WebRTC 데이터 채널이 열린 시점부터 방 세션이 성립된 것으로 간주합니다(게스트 입장 완료).
+            hasActiveRoomSession = true;
             log('SDP exchange success. WebRTC P2P channel connected.');
             let connType = 'Direct';
             const updateStatus = () => {
@@ -484,6 +492,9 @@
      */
     window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId, stunServers) {
         stopEngine(); // 기존 실행 중인 엔진 정지
+        // 새 세션 시작이므로 이전 엔진 정리 중 발생한 이벤트가 새 인스턴스에 영향을 주지 않도록 초기화합니다.
+        isStoppingEngine = false;
+        hasActiveRoomSession = false;
 
         currentInitiator = initiator;
         // 확장 호스트(Node)가 호스트 이름을 미리 IP로 해석해 전달한 STUN 목록을 우선 사용합니다.
@@ -518,6 +529,8 @@
                 wasOpened = true;
                 log('Successfully connected to PeerJS signaling server.');
                 if (currentInitiator) {
+                    // 호스트는 방이 시그널링 서버에 등록된 시점부터 '방에 입장한 상태'로 간주합니다.
+                    hasActiveRoomSession = true;
                     log('Created room: "' + rName + '". Waiting for guest connection...');
                     vscode.postMessage({ type: 'roomNameSuccess' });
                 } else {
@@ -547,11 +560,16 @@
             });
 
             peerServer.on('disconnected', () => {
-                if (wasOpened && peerServer && !peerServer.destroyed) {
-                    log('PeerJS connection to signaling server lost. Reconnecting...');
-                    vscode.postMessage({ type: 'logMessage', level: 'warning', text: 'PeerJS 시그널링 서버와의 연결이 끊어졌습니다. 자동으로 재연결을 시도합니다...' });
-                    peerServer.reconnect();
+                // stopEngine()의 destroy() 호출로 인한 의도적 종료라면 재연결/팝업을 수행하지 않습니다.
+                if (isStoppingEngine || !wasOpened || !peerServer || peerServer.destroyed) return;
+                // 방 세션이 성립된 상태(방에 입장해 있는 동안)에서만 자동 재연결을 시도합니다.
+                if (!hasActiveRoomSession) {
+                    log('Signaling server disconnected before an active room session. Skipping auto-reconnect.');
+                    return;
                 }
+                log('PeerJS connection to signaling server lost. Reconnecting...');
+                vscode.postMessage({ type: 'logMessage', level: 'warning', text: 'PeerJS 시그널링 서버와의 연결이 끊어졌습니다. 자동으로 재연결을 시도합니다...' });
+                peerServer.reconnect();
             });
 
             peerServer.on('error', (err) => {

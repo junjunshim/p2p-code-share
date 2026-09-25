@@ -64,7 +64,10 @@ function leaveRoom() {
 */
 function setVisible(id, visible) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', !visible);
+    if (!el) return;
+    // 외부 CSS(sidebar.css) 로드 전에도 숨김이 보장되도록 클래스와 hidden 속성을 함께 토글합니다.
+    el.classList.toggle('hidden', !visible);
+    el.toggleAttribute('hidden', !visible);
 }
 
 /**

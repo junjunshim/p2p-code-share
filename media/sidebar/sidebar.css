@@ -13,6 +13,9 @@ body {
 .hidden {
     display: none !important;
 }
+[hidden] {
+    display: none !important;
+}
 button {
     width: 100%;
     margin-bottom: 10px;
