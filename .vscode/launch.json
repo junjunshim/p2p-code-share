@@ -14,7 +14,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
-      ]
+      ],
+      "noDebug": true
     },
     {
       "name": "Guest (Window 2)",
@@ -29,7 +30,8 @@
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
-      ]
+      ],
+      "noDebug": true
     }
   ],
   "compounds": [
@@ -38,7 +40,8 @@
       "configurations": [
         "Host (Window 1)",
         "Guest (Window 2)"
-      ]
+      ],
+      "stopAll": true
     }
   ]
 }
