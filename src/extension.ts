@@ -113,13 +113,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 새 창이 열렸을 때 이전 창에서 넘어온 세션이 있는지 확인 (Reload Window / Open Folder 대응)
-        if (!engine.sessionRecoveryManager.isRestoringSession) {
+        if (!engine.sessionRecoveryManager.isRestoringSession && !engine.roomName) {
             const session = engine.sessionRecoveryManager.getRecoverableSession();
             if (session) {
                 await engine.sessionRecoveryManager.restoreSession(session);
             }
         }
-        engine.pushUIUpdate();
+        engine.pushUIUpdate(true);
     };
 
     // 게스트 초대 프로세스 시작
@@ -413,8 +413,8 @@ let activeEngine: SyncEngine | undefined;
  */
 export async function deactivate(): Promise<void> {
     try {
-        if (activeEngine && activeEngine.isConnected) {
-            // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 4초 지연 없이 즉시 복구되도록 보장)
+        if (activeEngine && (activeEngine.isConnected || (activeEngine.isHost && activeEngine.roomName && activeEngine.roomName !== 'Untitled Room'))) {
+            // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 지연 없이 즉시 복구되도록 보장)
             await activeEngine.sessionRecoveryManager.saveSession(true);
         }
         if (activeHub) {

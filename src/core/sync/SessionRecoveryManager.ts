@@ -75,12 +75,14 @@ export interface PersistentSessionData {
 
 /** globalState에 세션 정보를 저장할 때 사용하는 스토리지 키 */
 const GLOBAL_SESSION_KEY = 'p2p_code_share_active_session';
+/** workspaceState에 현재 창 고유 ID를 영속 저장할 때 사용하는 키 */
+const WORKSPACE_WINDOW_ID_KEY = 'p2p_code_share_workspace_window_id';
 /** 세션 생존 보고(하트비트) 주기 (밀리초) */
 const HEARTBEAT_INTERVAL_MS = 2000;
 /** 다른 창의 활성 상태를 판별하는 하트비트 만료 시간 (밀리초) */
 const HEARTBEAT_TIMEOUT_MS = 4000;
-/** 세션 유효 최대 수명 (1분 이상 경과 시 세션 폐기) */
-const SESSION_MAX_AGE_MS = 60000;
+/** 세션 유효 최대 수명 (5분 이상 경과 시 세션 폐기) */
+const SESSION_MAX_AGE_MS = 300000;
 
 /**
  * SessionRecoveryManager 클래스.
@@ -102,12 +104,17 @@ export class SessionRecoveryManager {
 
     /**
      * SessionRecoveryManager 인스턴스를 생성하고 창 고유 ID를 초기화합니다.
+     * workspaceState에 기존 창 고유 식별자가 있으면 이를 재사용하여 새로고침(Reload Window) 시 동일 창임을 보장합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
-     * @param context VS Code 확장 컨텍스트 (globalState 접근용).
+     * @param context VS Code 확장 컨텍스트 (globalState 및 workspaceState 접근용).
      */
     constructor(private engine: SyncEngine, private context: vscode.ExtensionContext) {
-        // 현재 창의 고유 ID 생성 (타임스탬프 + 난수)
-        this.currentWindowId = `win_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        let savedWindowId = this.context.workspaceState.get<string>(WORKSPACE_WINDOW_ID_KEY);
+        if (!savedWindowId) {
+            savedWindowId = `win_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+            this.context.workspaceState.update(WORKSPACE_WINDOW_ID_KEY, savedWindowId);
+        }
+        this.currentWindowId = savedWindowId;
     }
 
     /**
@@ -219,20 +226,26 @@ export class SessionRecoveryManager {
         const now = Date.now();
         const age = now - session.lastHeartbeat;
 
-        // 세션이 너무 오래되었으면(1분 초과) 이미 종료된 것으로 간주하고 폐기
+        // 세션이 너무 오래되었으면(5분 초과) 이미 종료된 것으로 간주하고 폐기
         if (age > SESSION_MAX_AGE_MS) {
             this.clearSession();
             return null;
         }
 
-        // 창 새로고침/종료 시점에 명시적으로 저장된 세션(isShuttingDown === true)인 경우
-        // 이전 창이 종료되었음이 확실하므로 4초 하트비트 검사를 생략하고 즉시 복구 허용
+        // 1. 현재 창의 식별자(workspaceState 기반)와 세션의 소유 창 식별자가 일치하는 경우 (창 새로고침)
+        // 같은 창에서 다시 로드된 것이므로 하트비트 경과 시간과 무관하게 100% 즉시 복구 허용
+        if (session.activeWindowId === this.currentWindowId) {
+            return session;
+        }
+
+        // 2. 창 새로고침/종료 시점에 명시적으로 저장된 세션(isShuttingDown === true)인 경우
+        // 이전 창이 종료되었음이 확실하므로 즉시 복구 허용
         if (session.isShuttingDown) {
             return session;
         }
 
-        // 다른 창이 아직 활발하게 하트비트를 보내고 있다면(4초 이내) 간섭하지 않음
-        if (session.activeWindowId !== this.currentWindowId && age < HEARTBEAT_TIMEOUT_MS) {
+        // 3. 다른 창이 아직 활발하게 하트비트를 보내고 있다면(4초 이내) 다른 활성 창으로 간주하여 충돌 방지
+        if (age < HEARTBEAT_TIMEOUT_MS) {
             return null;
         }
 
@@ -344,5 +357,7 @@ export class SessionRecoveryManager {
             this.engine.participantManager.isAutoJoin = true;
             this.engine.participantManager.sendJoinRequest(session.roomName, session.myName, session.myId);
         }
+
+        this.isRestoringSession = false;
     }
 }

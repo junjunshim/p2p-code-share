@@ -709,6 +709,8 @@ export class SyncEngine {
             if (this.roomName && this.roomName !== 'Untitled Room') {
                 this.hub.createHub(true, this.roomName, 'none'); 
                 this.participantManager.inviteGuest(true);
+                this.sessionRecoveryManager.startHeartbeat();
+                this.sessionRecoveryManager.saveSession();
             } else {
                 this.hub.createHub(true, '', 'none');
             }
@@ -1302,6 +1304,7 @@ export class SyncEngine {
         this.cursorManager.reset();
         this.decorationManager.reset();
         this.documentSyncManager.reset();
+        this.sessionRecoveryManager.stopHeartbeat();
 
         // 타이핑 락 상태 초기화 - 모든 에디터의 readonly 무조건 해제
         this.localTypingUnlockTimers.forEach(t => clearTimeout(t));
