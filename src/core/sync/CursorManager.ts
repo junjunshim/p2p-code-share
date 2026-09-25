@@ -59,12 +59,35 @@ export class CursorManager {
     /** 파일별 커서 렌더링 디바운스 타이머 맵 (동일 파일에 여러 커서 변경 시 렌더링 폭주 방지) */
     private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
 
+    /** 스크롤 시 커서 데코레이션 갱신 디바운스 타이머 */
+    private scrollDebounceTimer?: NodeJS.Timeout;
+    private visibleRangesDisposable?: vscode.Disposable;
+
     /**
-     * CursorManager 인스턴스를 생성하고 에디터 선택 이벤트 리스너를 바인딩합니다.
+     * CursorManager 인스턴스를 생성하고 에디터 선택 및 스크롤 이벤트 리스너를 바인딩합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
     constructor(private engine: SyncEngine) {
         this.setupSelectionListeners();
+        this.setupVisibleRangesListener();
+    }
+
+    /**
+     * 에디터 스크롤(가시 범위 변경) 시 화면 안의 커서 데코레이션을 갱신합니다.
+     */
+    private setupVisibleRangesListener(): void {
+        this.visibleRangesDisposable = vscode.window.onDidChangeTextEditorVisibleRanges(e => {
+            const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.textEditor.document.uri.fsPath));
+            if (!file) return;
+
+            if (this.scrollDebounceTimer) {
+                clearTimeout(this.scrollDebounceTimer);
+            }
+            this.scrollDebounceTimer = setTimeout(() => {
+                this.scrollDebounceTimer = undefined;
+                this.renderCursorsForFile(file);
+            }, 40);
+        });
     }
 
     /**
@@ -370,10 +393,28 @@ export class CursorManager {
         const selectionRange = [new vscode.Range(startPos, endPos)];
 
         // 현재 보이는 모든 해당 파일의 에디터에 데코레이션 적용
+        // 화면 밖 피어 커서로 인한 에디터 렌더러 과부하를 방지하기 위해 가시 범위(+상하 50줄 여유 버퍼)에 있는 피어만 주입
         const editors = vscode.window.visibleTextEditors.filter(e => isPathEqual(e.document.uri.fsPath, file.path));
+        const OVERSCAN_LINES = 50;
+
         editors.forEach(editor => {
-            editor.setDecorations(cursorDeco, cursorRange);
-            editor.setDecorations(selectionDeco, selectionRange);
+            const visibleRanges = editor.visibleRanges;
+            const docLineCount = editor.document.lineCount;
+
+            const isCursorVisible = !visibleRanges || visibleRanges.length === 0 || visibleRanges.some(vr => {
+                const minLine = Math.max(0, vr.start.line - OVERSCAN_LINES);
+                const maxLine = Math.min(docLineCount - 1, vr.end.line + OVERSCAN_LINES);
+                return activePos.line >= minLine && activePos.line <= maxLine;
+            });
+
+            const isSelectionVisible = !visibleRanges || visibleRanges.length === 0 || visibleRanges.some(vr => {
+                const minLine = Math.max(0, vr.start.line - OVERSCAN_LINES);
+                const maxLine = Math.min(docLineCount - 1, vr.end.line + OVERSCAN_LINES);
+                return endPos.line >= minLine && startPos.line <= maxLine;
+            });
+
+            editor.setDecorations(cursorDeco, isCursorVisible ? cursorRange : []);
+            editor.setDecorations(selectionDeco, isSelectionVisible ? selectionRange : []);
         });
     }
 
@@ -494,6 +535,10 @@ export class CursorManager {
         if (this.sendThrottleTimer) {
             clearTimeout(this.sendThrottleTimer);
             this.sendThrottleTimer = undefined;
+        }
+        if (this.scrollDebounceTimer) {
+            clearTimeout(this.scrollDebounceTimer);
+            this.scrollDebounceTimer = undefined;
         }
         this.renderDebounceTimers.forEach(t => clearTimeout(t));
         this.renderDebounceTimers.clear();

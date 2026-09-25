@@ -54,11 +54,26 @@ export class DecorationManager {
         backgroundColor: 'rgba(92, 184, 92, 0.22)'
     });
 
+    /** 스크롤 시 데코레이션 렌더링 디바운스를 위한 타이머 */
+    private scrollDebounceTimer?: NodeJS.Timeout;
+    /** 에디터 가시 범위(스크롤) 변경 이벤트 리스너 구독 객체 */
+    private visibleRangesDisposable?: vscode.Disposable;
+
     /**
-     * DecorationManager 인스턴스를 생성합니다.
+     * DecorationManager 인스턴스를 생성하고 에디터 스크롤(가시 범위 변경) 리스너를 바인딩합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
-    constructor(private engine: SyncEngine) {}
+    constructor(private engine: SyncEngine) {
+        this.visibleRangesDisposable = vscode.window.onDidChangeTextEditorVisibleRanges(() => {
+            if (this.scrollDebounceTimer) {
+                clearTimeout(this.scrollDebounceTimer);
+            }
+            this.scrollDebounceTimer = setTimeout(() => {
+                this.scrollDebounceTimer = undefined;
+                this.refreshDecorationsInEditors();
+            }, 40);
+        });
+    }
 
     /**
      * 빈번한 텍스트 편집 시 데코레이션 위치 재계산 부하를 줄이기 위해 디바운싱(200ms) 처리합니다.
@@ -159,11 +174,27 @@ export class DecorationManager {
 
             // 본인이 볼 수 있는 권한의 데코레이션 필터링 (Host 전용인 경우 Host 또는 작성자만 열람 가능)
             const fileDecos = this.decorations.filter(d => d.fileName === file.name);
-            const visibleDecos = fileDecos.filter(d => {
+            const authorizedDecos = fileDecos.filter(d => {
                 if (d.visibility === 'host') {
                     return this.engine.isHost || d.creatorId === this.engine.myId;
                 }
                 return true;
+            });
+
+            // 화면 가시 범위(visibleRanges) 기반 최적화:
+            // 현재 화면에 보이는 줄 번호에 위아래 50줄 여유 버퍼(Overscan)를 두어,
+            // 화면 밖 수천 줄에 있는 불필요한 데코레이션 렌더링 부하를 제거합니다.
+            const visibleRanges = editor.visibleRanges;
+            const OVERSCAN_LINES = 50;
+            const docLineCount = document.lineCount;
+
+            const visibleDecos = authorizedDecos.filter(d => {
+                if (!visibleRanges || visibleRanges.length === 0) return true;
+                return visibleRanges.some(vr => {
+                    const minLine = Math.max(0, vr.start.line - OVERSCAN_LINES);
+                    const maxLine = Math.min(docLineCount - 1, vr.end.line + OVERSCAN_LINES);
+                    return d.endLine >= minLine && d.startLine <= maxLine;
+                });
             });
 
             const decosByType: { [key: string]: vscode.DecorationOptions[] } = {
@@ -403,6 +434,10 @@ export class DecorationManager {
     public reset(): void {
         this.decorations = [];
         this.showDecorations = true;
+        if (this.scrollDebounceTimer) {
+            clearTimeout(this.scrollDebounceTimer);
+            this.scrollDebounceTimer = undefined;
+        }
         this.decorationRecalculateTimers.forEach(t => clearTimeout(t));
         this.decorationRecalculateTimers.clear();
         this.refreshDecorationsInEditors();
