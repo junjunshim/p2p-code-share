@@ -204,8 +204,12 @@ export class SyncEngine {
                             await this.handleFollowUpdate(msg.fileName, msg.startLine, msg.endLine);
                         }
                         break;
-                    case 'INIT_SNAPSHOT': 
-                        await this.fileStorageManager.handleGuestInitSnapshot(msg); 
+                    case 'INIT_SNAPSHOT':
+                        // INIT_SNAPSHOT은 호스트에서 게스트로 보내는 메시지이며,
+                        // 게스트 측 호스트 피어의 전송 ID는 로컬 ID 변경 후에도 'default'로 유지됩니다.
+                        if (!this.isHost && peerId === 'default') {
+                            await this.fileStorageManager.handleGuestInitSnapshot(msg);
+                        }
                         break;
                     case 'REQUEST_FILE_SYNC':
                         if (this.isHost && peerId) {

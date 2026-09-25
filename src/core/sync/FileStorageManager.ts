@@ -199,20 +199,41 @@ export class FileStorageManager {
      * @returns {Promise<void>}
      */
     public async handleGuestInitSnapshot(msg: any): Promise<void> {
+        // 스냅샷은 게스트에서만 유효합니다. 파일명을 경로 생성이나 공유 파일 목록에 사용하기 전에 검증합니다.
+        if (this.engine.isHost || typeof msg?.fileName !== 'string' || typeof msg?.content !== 'string') {
+            return;
+        }
+
+        const fileName = msg.fileName;
+        const trimmedFileName = fileName.replace(/[. ]+$/g, '');
+        if (!fileName || fileName === '.' || fileName === '..' ||
+            trimmedFileName === '.' || trimmedFileName === '..' ||
+            fileName.includes('/') || fileName.includes('\\') || path.basename(fileName) !== fileName) {
+            this.engine.logToUI('Rejected snapshot with an invalid file name.');
+            return;
+        }
+
         this.initializeStorage();
         if (!this.storagePath) return;
 
-        const filePath = path.join(this.storagePath, msg.fileName);
-        const normalizedContent = normalizeEOL(msg.content || '');
+        const storageRoot = path.resolve(this.storagePath);
+        const filePath = path.resolve(storageRoot, fileName);
+        const relativePath = path.relative(storageRoot, filePath);
+        if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+            this.engine.logToUI('Rejected snapshot that resolves outside local storage.');
+            return;
+        }
+
+        const normalizedContent = normalizeEOL(msg.content);
         
         // 로컬 임시 파일 작성 (LF 개행 유지)
         fs.writeFileSync(filePath, normalizedContent, 'utf8');
 
         // 공유 파일 목록에 추가 또는 업데이트
-        let file = this.sharedFiles.find(f => f.name === msg.fileName);
+        let file = this.sharedFiles.find(f => f.name === fileName);
         if (!file) {
             file = {
-                name: msg.fileName,
+                name: fileName,
                 path: filePath,
                 assigneeId: msg.assigneeId,
                 assigneeName: msg.assigneeName
@@ -225,8 +246,8 @@ export class FileStorageManager {
         }
 
         // Yjs 문서 생성 및 호스트 최신 상태로 완전 덮어쓰기 (무결성 보장)
-        this.engine.documentSyncManager.createDocForGuest(msg.fileName, msg.yjsState, msg.content);
-        await this.engine.documentSyncManager.queueUpdateEditor(msg.fileName);
+        this.engine.documentSyncManager.createDocForGuest(fileName, msg.yjsState, msg.content);
+        await this.engine.documentSyncManager.queueUpdateEditor(fileName);
 
         // 편집 권한에 따른 읽기 전용 상태 설정
         await this.updateReadonlyState(file);
@@ -236,13 +257,13 @@ export class FileStorageManager {
             const doc = await vscode.workspace.openTextDocument(filePath);
             await vscode.window.showTextDocument(doc, { preview: false });
         } catch (e) {
-            this.engine.logToUI(`Error opening document ${msg.fileName}: ${e}`);
+            this.engine.logToUI(`Error opening document ${fileName}: ${e}`);
         }
 
         // 호스트로부터 초기 파일 스냅샷을 수신했다는 것은 방 승인이 완료되었음을 의미하므로,
         // JOIN_RESPONSE가 누락되었더라도 즉시 연결 완료 상태로 전환
         if (!this.engine.isHost && !this.engine.isConnected) {
-            this.engine.logToUI(`INIT_SNAPSHOT received for ${msg.fileName}. Auto-finalizing room join...`);
+            this.engine.logToUI(`INIT_SNAPSHOT received for ${fileName}. Auto-finalizing room join...`);
             await this.engine.participantManager.handleJoinResponse({ approved: true });
         }
 
