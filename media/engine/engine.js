@@ -16,9 +16,30 @@
     let guestSignalingConnectTimer = null;
     let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
     let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
+    let srflxAttemptMap = {}; // 피어별 srflx(공인 IP) 후보 수집 재시도 횟수
+    let remoteSignalMap = {}; // 피어별 마지막 원격 signal (재시도 시 같은 offer 재적용용)
     let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
+
+    // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
+    const DEFAULT_STUN_URLS = [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302'
+    ];
+
+    /**
+     * simple-peer가 ICE 수집 완료를 기다리는 시간(ms).
+     * 기본값 5초보다 길게 잡아야 STUN 응답이 느린 네트워크에서도 srflx(공인 IP) 후보가 SDP에 포함됩니다.
+     */
+    const ICE_COMPLETE_TIMEOUT_MS = 5000;
+
+    /** SDP를 전달하기 전에 실제 ICE 수집 완료를 추가로 기다리는 최대 시간(ms) */
+    const ICE_GATHERING_WAIT_MS = 6000;
+
+    /** 공인 IP(srflx) 후보를 얻지 못했을 때 SDP 생성을 다시 시도하는 최대 횟수 */
+    const SRFLX_MAX_ATTEMPTS = 2;
 
     /**
      * 로그 메시지를 콘솔에 출력합니다.
@@ -42,6 +63,8 @@
         });
         pendingSignalingQueue = [];
         peerSignalingConnMap = {};
+        srflxAttemptMap = {};
+        remoteSignalMap = {};
         if (guestSignalingConn) {
             try { guestSignalingConn.close(); } catch(e) {}
             guestSignalingConn = null;
@@ -88,6 +111,202 @@
     }
 
     /**
+     * SDP에 담긴 ICE 후보를 유형별로 집계합니다.
+     */
+    function countCandidatesByType(sdp) {
+        const counts = {};
+        String(sdp || '').split('\n').forEach(line => {
+            const marker = line.indexOf(' typ ');
+            if (line.indexOf('a=candidate:') !== 0 || marker < 0) return;
+            const type = line.substring(marker + 5).trim().split(' ')[0];
+            if (!type) return;
+            counts[type] = (counts[type] || 0) + 1;
+        });
+        return counts;
+    }
+
+    /**
+     * 후보 집계 결과를 로그용 문자열로 변환합니다.
+     */
+    function formatCandidateCounts(counts) {
+        const keys = Object.keys(counts);
+        if (keys.length === 0) return 'none';
+        return keys.map(key => key + ' x' + counts[key]).join(', ');
+    }
+
+    /**
+     * 공인 IP(srflx) 후보 포함 여부를 함께 기록합니다.
+     */
+    function logCandidateSummary(kind, counts) {
+        log('[ICE Summary] ' + kind + ' SDP candidates -> ' + formatCandidateCounts(counts));
+        if (!counts.srflx) {
+            log('[ICE Warning] 공인 IP(srflx) 후보가 없습니다. STUN 응답을 받지 못했습니다.');
+        }
+    }
+
+    /**
+     * 실제 ICE 수집이 완료될 때까지 기다립니다(최대 timeoutMs).
+     */
+    function waitForIceGatheringComplete(pc, timeoutMs) {
+        return new Promise(resolve => {
+            if (!pc || pc.iceGatheringState === 'complete') { resolve(); return; }
+            let settled = false;
+            let timer = null;
+            function onChange() { if (pc.iceGatheringState === 'complete') finish(); }
+            function finish() {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                pc.removeEventListener('icegatheringstatechange', onChange);
+                resolve();
+            }
+            pc.addEventListener('icegatheringstatechange', onChange);
+            timer = setTimeout(finish, timeoutMs);
+        });
+    }
+
+    /**
+     * 원격 SDP에서 mDNS(.local) 후보를 제거합니다.
+     * mDNS 후보는 같은 네트워크의 피어가 즉시 연결되게 만들어 Chromium이 STUN(srflx) 수집을
+     * 조기에 끝내버립니다(공인 IP 후보 누락). mDNS 후보를 빼면 수집이 끝까지 진행되어 공인 IP를
+     * 받을 수 있고, 상대는 우리 후보를 이미 갖고 있으므로 연결은 그대로 성립합니다.
+     */
+    function stripMdnsCandidates(sdp) {
+        if (typeof sdp !== 'string' || sdp.indexOf('.local') < 0) return sdp;
+        return sdp.split(/\r?\n/).filter(line => !(line.indexOf('a=candidate:') === 0 && line.indexOf('.local') >= 0)).join('\r\n');
+    }
+
+    /**
+     * 게스트(비 initiator)가 원격 offer를 적용할 때 mDNS 후보를 제외한 signal을 만듭니다.
+     */
+    function parseSignalPayload(signal) {
+        if (typeof signal !== 'string') return signal;
+        try {
+            const parsed = JSON.parse(signal);
+            return (parsed && typeof parsed === 'object') ? parsed : signal;
+        } catch (e) {
+            return signal;
+        }
+    }
+
+    function prepareRemoteSignalFor(p, signal) {
+        const normalized = parseSignalPayload(signal);
+        if (!normalized || typeof normalized.sdp !== 'string') return normalized;
+        if (!p || p.initiator) return normalized;
+        const filteredSdp = stripMdnsCandidates(normalized.sdp);
+        if (filteredSdp !== normalized.sdp) {
+            log('[ICE] 원격 offer에서 mDNS 후보를 제외하고 적용합니다. (STUN 공인 IP 수집 유지)');
+            return { type: normalized.type, sdp: filteredSdp };
+        }
+        return normalized;
+    }
+
+    /**
+     * 공인 IP(srflx) 후보가 빠진 SDP만 확정된 경우, 같은 시그널링 정보로 연결을 새로 만들어
+     * 후보 수집을 다시 시도합니다. (STUN 응답이 일시적으로 누락된 경우 복구)
+     */
+    function retryPeerForPublicIp(peerId, p) {
+        const isInitiator = p.initiator;
+        const key = findPeerKey(p) || resolvePeerKey(peerId);
+        const remoteSignal = remoteSignalMap[key] || remoteSignalMap[peerId];
+        try { p.destroy(); } catch(e) {}
+        delete peers[key];
+        delete pendingSdpMap[key];
+        if (!isInitiator && !remoteSignal) {
+            return false;
+        }
+        addPeer(key, isInitiator);
+        if (!peers[key]) {
+            return false;
+        }
+        if (!isInitiator) {
+            try {
+                peers[key].signal(prepareRemoteSignalFor(peers[key], remoteSignal));
+            } catch (e) {
+                log('재시도 중 offer 적용 실패: ' + e.message);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 새 SDP가 기존 SDP보다 더 많은 후보(특히 공인 IP)를 담고 있는지 확인합니다.
+     */
+    function isBetterSdp(candidateSdp, currentSdp) {
+        const score = counts => Object.keys(counts).reduce((sum, key) => sum + counts[key], 0) + (counts.srflx ? 100 : 0);
+        return score(countCandidatesByType(candidateSdp)) > score(countCandidatesByType(currentSdp));
+    }
+
+    /**
+     * 생성된 SDP를 UI 및 시그널링 채널로 전달합니다.
+     */
+    function publishSdp(peerId, sdpStr) {
+        pendingSdpMap[peerId] = sdpStr;
+        vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId });
+
+        if (currentInitiator) {
+            flushPendingSignalingRequests();
+        }
+
+        const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
+        if (targetConn && targetConn.open) {
+            log('SDP generated. Sending SDP message to ' + (currentInitiator ? 'guest' : 'host') + ' via signaling channel.');
+            targetConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
+        }
+    }
+
+    /**
+     * simple-peer가 ICE 수집 완료 전에 SDP를 방출하면 공인 IP(srflx) 후보가 빠지므로,
+     * 실제 수집이 끝날 때까지 기다린 뒤 수집된 후보가 모두 담긴 SDP를 전달합니다.
+     */
+    function publishSignalWithFullCandidates(peerId, p, data) {
+        const baseSdp = typeof data.sdp === 'string' ? data.sdp : '';
+        const pc = p._pc;
+        const attempt = srflxAttemptMap[peerId] || 0;
+
+        function finalize(sdp) {
+            if (peers[peerId] !== p || p.destroyed) {
+                log('Peer was reset while waiting for ICE candidates. Discarding stale SDP.');
+                return;
+            }
+            const counts = countCandidatesByType(sdp);
+            logCandidateSummary(data.type, counts);
+            if (counts.srflx || attempt >= SRFLX_MAX_ATTEMPTS - 1) {
+                srflxAttemptMap[peerId] = 0;
+                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: sdp }));
+                return;
+            }
+            srflxAttemptMap[peerId] = attempt + 1;
+            log('공인 IP(srflx) 후보가 없어 후보 수집을 다시 시도합니다. (시도 ' + (attempt + 2) + '/' + SRFLX_MAX_ATTEMPTS + ')');
+            if (!retryPeerForPublicIp(peerId, p)) {
+                log('재시도가 불가능하여 수집된 후보만으로 SDP를 전달합니다.');
+                srflxAttemptMap[peerId] = 0;
+                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: sdp }));
+            }
+        }
+
+        if (!pc || pc.iceGatheringState === 'complete') {
+            finalize(baseSdp);
+            return;
+        }
+
+        log('ICE 수집이 끝나지 않아 공인 IP 후보가 누락될 수 있습니다. 수집 완료를 기다립니다...');
+        const waitMs = attempt === 0 ? ICE_GATHERING_WAIT_MS : Math.floor(ICE_GATHERING_WAIT_MS / 2);
+        const waitStarted = Date.now();
+        waitForIceGatheringComplete(pc, waitMs).then(() => {
+            log('ICE 수집 대기 종료 (' + (Date.now() - waitStarted) + 'ms, state=' + pc.iceGatheringState + ')');
+            const liveSdp = pc.localDescription && pc.localDescription.sdp;
+            if (liveSdp && isBetterSdp(liveSdp, baseSdp)) {
+                log('수집된 후보가 더 많은 SDP로 갱신하여 전달합니다.');
+                finalize(liveSdp);
+                return;
+            }
+            finalize(baseSdp);
+        });
+    }
+
+    /**
      * WebRTC 피어 연결 및 데이터 채널을 설정합니다.
      */
     function setupWebRTCPeer(peerId, p) {
@@ -95,6 +314,16 @@
         if (rawPc) {
             rawPc.addEventListener('icegatheringstatechange', () => {
                 log('ICE Gathering State: ' + rawPc.iceGatheringState);
+            });
+            // 수집되는 후보를 유형별로 기록하여 공인 IP(srflx) 수신 여부를 확인할 수 있게 합니다.
+            rawPc.addEventListener('icecandidate', ev => {
+                if (!ev.candidate) return;
+                const parts = String(ev.candidate.candidate).split(' ');
+                log('[ICE Candidate] typ=' + (parts[7] || '?') + ', protocol=' + (parts[2] || '?') + ', ip=' + (parts[4] || '?') + ':' + (parts[5] || '?'));
+            });
+            // STUN 조회 실패(701), 서버 응답 오류(400/401/500) 등 srflx 수집 실패 원인을 기록합니다.
+            rawPc.addEventListener('icecandidateerror', ev => {
+                log('[ICE Candidate Error] code=' + ev.errorCode + ', url=' + ev.url + ', text=' + ev.errorText);
             });
             rawPc.addEventListener('iceconnectionstatechange', () => {
                 log('ICE Connection State: ' + rawPc.iceConnectionState);
@@ -105,19 +334,11 @@
         }
 
         p.on('signal', data => {
-            const sdpStr = JSON.stringify(data);
-            pendingSdpMap[peerId] = sdpStr;
-            vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId });
-
-            if (currentInitiator) {
-                flushPendingSignalingRequests();
+            if (data && (data.type === 'offer' || data.type === 'answer')) {
+                publishSignalWithFullCandidates(peerId, p, data);
+                return;
             }
-
-            const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
-            if (targetConn && targetConn.open) {
-                log('SDP generated. Sending SDP message to ' + (currentInitiator ? 'guest' : 'host') + ' via signaling channel.');
-                targetConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
-            }
+            publishSdp(peerId, JSON.stringify(data));
         });
 
         p.on('connect', () => {
@@ -134,16 +355,40 @@
                 setTimeout(() => {
                     p.getStats((err, stats) => {
                         if (!err && stats) {
-                            let activePair = null;
+                            let selectedPair = null;
+                            let nominatedPair = null;
+                            let succeededPair = null;
+                            const statsById = {};
                             stats.forEach(report => {
-                                if (report.type === 'candidate-pair' && (report.selected || report.nominated || report.state === 'succeeded')) {
-                                    activePair = report;
-                                }
+                                if (!report) return;
+                                if (report.id) statsById[report.id] = report;
+                                if (report.type !== 'candidate-pair') return;
+                                if (report.selected) selectedPair = report;
+                                else if (report.nominated) nominatedPair = report;
+                                else if (report.state === 'succeeded') succeededPair = report;
                             });
+                            const activePair = selectedPair || nominatedPair || succeededPair;
                             if (activePair) {
-                                if (activePair.remoteCandidateType === 'relay' || activePair.localCandidateType === 'relay') {
+                                // simple-peer는 getStats 결과를 배열로 변환해 전달하므로 id로 직접 인덱싱합니다.
+                                const candById = id => (id && (statsById[id] || (typeof stats.get === 'function' ? stats.get(id) : null))) || null;
+                                const describeCand = (cand, fallbackType, id) => {
+                                    const kind = (cand && cand.candidateType) || fallbackType || 'unknown';
+                                    const addr = cand && (cand.address || cand.ip);
+                                    return kind + (addr ? ' ' + addr + ':' + (cand.port || '?') : ' (id=' + id + ')');
+                                };
+                                const localCand = candById(activePair.localCandidateId);
+                                const remoteCand = candById(activePair.remoteCandidateId);
+                                const localCandType = (localCand && localCand.candidateType) || activePair.localCandidateType;
+                                const remoteCandType = (remoteCand && remoteCand.candidateType) || activePair.remoteCandidateType;
+                                if (localCandType === 'relay' || remoteCandType === 'relay') {
                                     connType = 'TURN';
                                 }
+                                const pairText = '[ICE Selected Pair] local=' + describeCand(localCand, activePair.localCandidateType, activePair.localCandidateId)
+                                    + ', remote=' + describeCand(remoteCand, activePair.remoteCandidateType, activePair.remoteCandidateId)
+                                    + ', protocol=' + ((localCand && localCand.protocol) || (remoteCand && remoteCand.protocol) || activePair.protocol || '?')
+                                    + ', state=' + (activePair.state || '?');
+                                log(pairText);
+                                vscode.postMessage({ type: 'logMessage', level: 'debug', text: pairText });
                             }
                         }
                         updateStatus();
@@ -174,22 +419,50 @@
 
         p.on('error', err => {
             log('P2P connection error: ' + err.message);
-            delete peers[peerId];
+            // 후보 재수집을 위해 교체된 이전 연결의 이벤트는 현재 피어를 건드리지 않도록 무시합니다.
+            const key = findPeerKey(p);
+            if (!key) return;
+            delete peers[key];
+            delete pendingSdpMap[key];
+            delete remoteSignalMap[key];
+            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
-            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
+            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
 
         p.on('close', () => {
             log('P2P connection closed.');
-            delete peers[peerId];
+            const key = findPeerKey(p);
+            if (!key) return;
+            delete peers[key];
+            delete pendingSdpMap[key];
+            delete remoteSignalMap[key];
+            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
-            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId });
+            vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
     }
 
     /**
      * 새로운 피어 연결 객체를 생성하고 관리 목록에 추가합니다.
      */
+    /**
+     * ASSIGN_PEER_ID 로 peers 키가 'default' -> 'guest_...' 로 바뀌어도 현재 살아있는 피어를 찾도록 키를 보정합니다.
+     */
+    function resolvePeerKey(id) {
+        if (peers[id]) return id;
+        const keys = Object.keys(peers);
+        if (keys.length === 1) return keys[0];
+        return id;
+    }
+
+    /**
+     * 후보 재수집 등으로 교체되어 peers 맵에서 빠진 이전 피어 객체는 null 을 돌려줍니다.
+     */
+    function findPeerKey(target) {
+        return Object.keys(peers).find(id => peers[id] === target) || null;
+    }
+
     function addPeer(peerId, isInitiator) {
         if (peers[peerId]) return;
         try {
@@ -197,6 +470,7 @@
             const p = new SimplePeer({
                 initiator: isInitiator,
                 trickle: false,
+                iceCompleteTimeout: ICE_COMPLETE_TIMEOUT_MS,
                 config: { iceServers: iceServers }
             });
 
@@ -208,15 +482,14 @@
     /**
      * P2P 엔진 연결을 활성화합니다.
      */
-    window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId) {
+    window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId, stunServers) {
         stopEngine(); // 기존 실행 중인 엔진 정지
 
         currentInitiator = initiator;
-        iceServers = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' }
-        ];
+        // 확장 호스트(Node)가 호스트 이름을 미리 IP로 해석해 전달한 STUN 목록을 우선 사용합니다.
+        const stunUrls = (Array.isArray(stunServers) && stunServers.length > 0) ? stunServers : DEFAULT_STUN_URLS;
+        iceServers = stunUrls.map(url => ({ urls: url }));
+        log('STUN 서버 ' + iceServers.length + '개: ' + stunUrls.join(', '));
         if (turnConfig && turnConfig.url) {
             iceServers.push({
                 urls: turnConfig.url,
@@ -405,7 +678,7 @@
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnConfig, m.peerId);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnConfig, m.peerId, m.stunServers);
             return;
         }
         if (m.type === 'stopEngine') {
@@ -427,8 +700,12 @@
         if (m.type === 'updatePeerId' && peers[m.oldId]) {
             peers[m.newId] = peers[m.oldId];
             pendingSdpMap[m.newId] = pendingSdpMap[m.oldId];
+            remoteSignalMap[m.newId] = remoteSignalMap[m.oldId];
+            srflxAttemptMap[m.newId] = srflxAttemptMap[m.oldId];
             delete peers[m.oldId];
             delete pendingSdpMap[m.oldId];
+            delete remoteSignalMap[m.oldId];
+            delete srflxAttemptMap[m.oldId];
         }
         if (m.type === 'disconnectPeer') {
             const pId = m.peerId;
@@ -441,7 +718,14 @@
             return;
         }
         if (m.type === 'addNewPeer') addPeer(m.peerId, m.initiator);
-        if (m.type === 'signal' && peers[targetId]) peers[targetId].signal(m.sdp);
+        if (m.type === 'signal') {
+            const key = resolvePeerKey(targetId);
+            if (peers[key]) {
+                remoteSignalMap[key] = m.sdp;
+                srflxAttemptMap[key] = 0;
+                peers[key].signal(prepareRemoteSignalFor(peers[key], m.sdp));
+            }
+        }
         if (m.type === 'peerData') {
             const data = new TextEncoder().encode(JSON.stringify(m.value));
 
@@ -468,7 +752,8 @@
             }
 
             if (m.targetPeerId) {
-                if (peers[m.targetPeerId]) safeSend(peers[m.targetPeerId], data);
+                const key = resolvePeerKey(m.targetPeerId);
+                if (peers[key]) safeSend(peers[key], data);
             } else {
                 Object.values(peers).forEach(p => safeSend(p, data));
             }

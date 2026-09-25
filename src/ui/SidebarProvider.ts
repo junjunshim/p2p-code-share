@@ -177,6 +177,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // P2P 엔진 시그널링 및 상태 메시지 라우팅
                 case 'sendData':
                 case 'statusUpdate':
+                case 'logMessage':
                 case 'requireInvite':
                 case 'roomNameSuccess':
                 case 'roomNameError':

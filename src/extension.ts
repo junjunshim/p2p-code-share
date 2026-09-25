@@ -102,7 +102,12 @@ export function activate(context: vscode.ExtensionContext) {
             } else if (msg.level === 'info') {
                 vscode.window.showInformationMessage(msg.text);
             }
-            engine.logToUI(msg.text);
+            if (msg.level === 'debug') {
+                // 웹뷰 엔진이 이미 콘솔에 출력한 진단 로그는 전용 Logger(Output 패널)로만 남깁니다.
+                logger.info('Engine', msg.text);
+            } else {
+                engine.logToUI(msg.text);
+            }
         }
     };
 

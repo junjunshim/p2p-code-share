@@ -1063,6 +1063,8 @@ export class ParticipantManager {
                 Logger.get().step('GuestJoin', 5, 5, `Join approved! Establishing session for room "${this.engine.roomName}".`);
                 this.stopGuestReconnectGracePeriod();
                 this.engine.isConnected = true;
+                // 수동 SDP 교환 화면(isSetupMode)에 머무르지 않고 승인 즉시 방 화면으로 전환합니다.
+                this.engine.isSetupMode = false;
                 this.isAutoJoin = false;
                 this.engine.updateStatus('Connected');
                 this.engine.pushUIUpdate();

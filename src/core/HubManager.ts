@@ -8,6 +8,21 @@
 import * as vscode from 'vscode';
 // 공유 P2P 메시지 타입
 import { P2PMessage } from '../types';
+// WebView(Chromium) 대신 Node에서 STUN 서버 주소를 미리 해석하기 위한 모듈
+import * as dns from 'dns';
+
+/**
+ * WebView(Chromium)의 STUN 호스트 조회 실패(ICE error 701)를 피하기 위해
+ * 확장 호스트(Node)에서 미리 IP로 해석해 전달하는 STUN 서버 목록입니다.
+ */
+const STUN_SERVER_ENDPOINTS: ReadonlyArray<{ host: string; port: number }> = [
+    { host: 'stun.l.google.com', port: 19302 },
+    { host: 'stun.cloudflare.com', port: 3478 },
+    { host: 'stun.nextcloud.com', port: 443 }
+];
+
+/** STUN 서버 호스트 이름 해석 제한 시간(ms) */
+const STUN_LOOKUP_TIMEOUT_MS = 1500;
 
 /**
  * HubManager 클래스.
@@ -50,6 +65,46 @@ export class HubManager {
      */
     constructor() {}
 
+    /** Node에서 IP로 해석된 STUN 서버 URL 캐시 */
+    private _stunServerUrls: string[] | null = null;
+
+    /** STUN 서버 URL 해석 진행 중 프로미스 (중복 해석 방지) */
+    private _stunServerResolving: Promise<string[]> | null = null;
+
+    /**
+     * STUN 서버 주소를 Node의 DNS로 미리 IP 리터럴로 해석합니다.
+     * WebView에서 호스트 이름 조회가 실패(ICE error 701)하면 srflx(공인 IP) 후보를 받을 수 없으므로,
+     * 확장 호스트에서 해석한 IP를 WebView 엔진에 전달합니다. 해석에 실패한 항목은 호스트 이름을 그대로 사용합니다.
+     */
+    private resolveStunServers(): Promise<string[]> {
+        if (this._stunServerUrls) {
+            return Promise.resolve(this._stunServerUrls);
+        }
+        if (!this._stunServerResolving) {
+            this._stunServerResolving = Promise.all(STUN_SERVER_ENDPOINTS.map(async endpoint => {
+                try {
+                    const address = await Promise.race([
+                        dns.promises.lookup(endpoint.host, { family: 4 }).then(result => result.address),
+                        new Promise<string | undefined>(resolve => setTimeout(() => resolve(undefined), STUN_LOOKUP_TIMEOUT_MS))
+                    ]);
+                    if (address) {
+                        return `stun:${address}:${endpoint.port}`;
+                    }
+                } catch {
+                    // 해석 실패 시 아래에서 호스트 이름을 그대로 사용합니다.
+                }
+                return `stun:${endpoint.host}:${endpoint.port}`;
+            })).then(urls => {
+                // 서로 다른 호스트가 같은 IP로 해석되면 중복 STUN 서버는 효과가 없으므로 제거합니다.
+                const uniqueUrls = urls.filter((url, index) => urls.indexOf(url) === index);
+                this._stunServerUrls = uniqueUrls;
+                this._stunServerResolving = null;
+                return uniqueUrls;
+            });
+        }
+        return this._stunServerResolving;
+    }
+
     /**
      * P2P 허브에 대응하는 사이드바 Webview 인스턴스를 설정합니다.
      * @param webview VS Code Webview 인스턴스.
@@ -84,13 +139,17 @@ export class HubManager {
 
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
         if (peerId === 'none' || peerId === 'default') {
-            this.sendToEngine({
-                type: 'startEngine',
-                initiator,
-                autoStart: !initiator,
-                roomName,
-                turnConfig,
-                peerId
+            // STUN 서버 주소를 미리 IP로 해석해 전달하여 WebView의 STUN 호스트 조회 실패(701)를 방지합니다.
+            void this.resolveStunServers().then(stunServers => {
+                this.sendToEngine({
+                    type: 'startEngine',
+                    initiator,
+                    autoStart: !initiator,
+                    roomName,
+                    turnConfig,
+                    peerId,
+                    stunServers
+                });
             });
         } else {
             // 이미 엔진이 실행 중인 상태에서 새로운 게스트 피어를 추가하는 경우
