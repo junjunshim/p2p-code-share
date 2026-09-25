@@ -218,6 +218,17 @@ export class SyncEngine {
                         }
                         break;
                     case 'YJS_UPDATE':
+                        if (this.isHost) {
+                            // 호스트는 실제 전송 피어가 등록되어 있고 대상 파일 편집 권한이 있는지 확인합니다.
+                            const isSharedFile = typeof msg.fileName === 'string' &&
+                                this.fileStorageManager.sharedFiles.some(file => file.name === msg.fileName);
+                            if (!peerId || !this.participantManager.participants[peerId] ||
+                                !isSharedFile || !this.participantManager.canPeerEdit(peerId, msg.fileName)) {
+                                this.logToUI(`Blocked unauthorized edit from peer ${peerId || 'unknown'} on ${msg.fileName || 'unknown file'}`);
+                                break;
+                            }
+                        }
+
                         await this.documentSyncManager.handleYjsUpdate(msg);
                         if (this.isHost) {
                             // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외)
