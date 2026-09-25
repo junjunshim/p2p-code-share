@@ -750,51 +750,82 @@ export class SyncEngine {
         this.hub.sendToEngine({ type: 'peerData', value: { type, ...data } }, peerId); 
     }
 
+    private lineStartsCache: { textRef: string; lineStarts: number[] } | null = null;
+
     /**
-     * Yjs 텍스트와 인덱스로부터 안전한 vscode.Position을 계산합니다.
+     * 텍스트의 각 라인 시작 인덱스 배열을 캐싱하여 반환합니다.
      */
-    public getPositionFromIndex(text: string, index: number): vscode.Position {
-        let line = 0;
-        let character = 0;
-        const len = Math.min(index, text.length);
+    private getLineStarts(text: string): number[] {
+        if (this.lineStartsCache && this.lineStartsCache.textRef === text) {
+            return this.lineStartsCache.lineStarts;
+        }
+        const lineStarts: number[] = [0];
+        const len = text.length;
         for (let i = 0; i < len; i++) {
-            const ch = text[i];
-            if (ch === '\n') {
-                line++;
-                character = 0;
-            } else {
-                character++;
+            if (text[i] === '\n') {
+                lineStarts.push(i + 1);
             }
         }
+        this.lineStartsCache = { textRef: text, lineStarts };
+        return lineStarts;
+    }
+
+    /**
+     * Yjs 텍스트와 인덱스로부터 안전한 vscode.Position을 이진 탐색으로 고속 계산합니다. O(log N)
+     */
+    public getPositionFromIndex(text: string, index: number): vscode.Position {
+        if (!text || index <= 0) {
+            return new vscode.Position(0, 0);
+        }
+        const lineStarts = this.getLineStarts(text);
+        const clampedIndex = Math.min(index, text.length);
+
+        let low = 0;
+        let high = lineStarts.length - 1;
+        let line = 0;
+
+        while (low <= high) {
+            const mid = (low + high) >> 1;
+            if (lineStarts[mid] <= clampedIndex) {
+                line = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        const character = clampedIndex - lineStarts[line];
         return new vscode.Position(line, character);
     }
 
     /**
-     * Yjs 텍스트와 vscode.Position(line, character)으로부터 정확한 인덱스를 계산합니다.
+     * Yjs 텍스트와 vscode.Position(line, character)으로부터 인덱스를 O(1)로 고속 계산합니다.
      */
     public getIndexFromPosition(text: string, position: vscode.Position): number {
-        let currentLine = 0;
-        let lineStartIndex = 0;
-        const len = text.length;
-
-        for (let i = 0; i < len; i++) {
-            if (currentLine === position.line) {
-                const lineEndIndex = text.indexOf('\n', lineStartIndex);
-                const currentLineLen = (lineEndIndex === -1 ? len : lineEndIndex) - lineStartIndex;
-                return lineStartIndex + Math.min(position.character, currentLineLen);
-            }
-            if (text[i] === '\n') {
-                currentLine++;
-                lineStartIndex = i + 1;
-            }
+        if (!text) {
+            return 0;
+        }
+        const lineStarts = this.getLineStarts(text);
+        if (position.line < 0) {
+            return 0;
+        }
+        if (position.line >= lineStarts.length) {
+            return text.length;
         }
 
-        if (currentLine === position.line) {
-            const currentLineLen = len - lineStartIndex;
-            return lineStartIndex + Math.min(position.character, currentLineLen);
-        }
+        const lineStart = lineStarts[position.line];
+        const nextLineStart = (position.line + 1 < lineStarts.length)
+            ? lineStarts[position.line + 1]
+            : (text.length + 1);
 
-        return len;
+        let lineEnd = nextLineStart - 1;
+        if (lineEnd > lineStart && text[lineEnd - 1] === '\r') {
+            lineEnd--;
+        }
+        const lineLength = Math.max(0, lineEnd - lineStart);
+        const clampedCharacter = Math.min(Math.max(0, position.character), lineLength);
+
+        return lineStart + clampedCharacter;
     }
 
 
