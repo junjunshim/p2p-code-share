@@ -343,7 +343,7 @@ export class SyncEngine {
                         this.pushUIUpdate();
                         break;
                     case 'GUEST_LEAVE':
-                        this.handleGuestLeave(msg, peerId);
+                        this.handleGuestLeave(peerId);
                         break;
                     case 'PING':
                         if (!this.isHost) {
@@ -386,7 +386,10 @@ export class SyncEngine {
             Logger.get().info('Host', `WebRTC data channel opened with peer: ${peerId}`);
             if (this.participantManager.pendingInvites.has(peerId)) {
                 this.isSetupMode = false;
-                this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', { peerId });
+                this.sendMessageToPeer(peerId, 'ASSIGN_PEER_ID', {
+                    peerId,
+                    reconnectToken: this.participantManager.getOrCreatePeerReconnectToken(peerId)
+                });
                 this.participantManager.pendingInvites.delete(peerId);
             }
         } else {
@@ -417,6 +420,7 @@ export class SyncEngine {
         if (!this.isHost) {
             this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
             Logger.get().info('GuestJoin', `Assigned peer ID from host: ${msg.peerId}`);
+            this.participantManager.rememberMyReconnectToken(msg.reconnectToken);
             const oldId = this.myId || 'default';
             this.myId = msg.peerId;
             const requestedName = (this.participantManager.pendingJoinRequest && this.participantManager.pendingJoinRequest.userName) 
@@ -436,11 +440,15 @@ export class SyncEngine {
                 this.participantManager.startJoinRequestWithAck({
                     name: this.myName,
                     peerId: this.myId,
-                    previousPeerId: req.previousPeerId
+                    previousPeerId: req.previousPeerId,
+                    reconnectToken: this.participantManager.myReconnectToken
                 });
             } else if (!this.participantManager.isAutoJoin) {
                 // 수동 연결 게스트: 호스트에게 참여자 등록 메시지 전송
-                this.sendMessage('GUEST_JOIN', { name: this.myName }); 
+                this.sendMessage('GUEST_JOIN', {
+                    name: this.myName,
+                    reconnectToken: this.participantManager.myReconnectToken
+                });
             }
             
             this.pushUIUpdate();
@@ -1128,23 +1136,25 @@ export class SyncEngine {
 
     /**
      * 게스트가 방을 퇴장할 때 호스트가 수신하여 해당 게스트의 리소스(커서, 데코레이션, 참가자 목록)를 정리합니다.
-     * @param msg 게스트 퇴장 메시지.
      * @param peerId 퇴장한 피어 ID.
      * @returns {void}
      */
-    private handleGuestLeave(msg: any, peerId: string): void {
-        if (this.isHost) {
-            const actualPeerId = msg.userId || peerId;
-            this.logToUI(`GUEST_LEAVE received from: ${actualPeerId}`);
-
-            // 1. 이 게스트가 생성한 데코레이션 완전히 삭제 및 전송
-            this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.creatorId !== actualPeerId);
-            this.decorationManager.refreshDecorationsInEditors();
-            this.decorationManager.broadcastDecorations();
-
-            // 2. 해당 피어 즉시 영구 연결 정리 (커서 정리, 참가자 리스트 제거, 파일 잠금 해제, 유저 리스트 브로드캐스트)
-            this.participantManager.removePeerPermanently(actualPeerId);
+    private handleGuestLeave(peerId: string): void {
+        if (!this.isHost) return;
+        if (!peerId || !this.participantManager.participants[peerId]) {
+            this.logToUI(`Blocked GUEST_LEAVE from unregistered peer ${peerId || 'unknown'}`);
+            return;
         }
+
+        this.logToUI(`GUEST_LEAVE received from: ${peerId}`);
+
+        // 1. 실제 퇴장한 게스트가 생성한 데코레이션만 삭제 및 전송
+        this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.creatorId !== peerId);
+        this.decorationManager.refreshDecorationsInEditors();
+        this.decorationManager.broadcastDecorations();
+
+        // 2. 실제 전송 피어의 연결 정리 (커서, 참가자 목록, 파일 잠금 등)
+        this.participantManager.removePeerPermanently(peerId);
     }
 
     /**

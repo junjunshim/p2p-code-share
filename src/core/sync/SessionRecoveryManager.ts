@@ -45,6 +45,10 @@ export interface PersistentSessionData {
     myName: string;
     /** 현재 사용자의 고유 피어 ID */
     myId: string;
+    /** 게스트가 재접속 시 본인 확인에 사용하는 비밀 토큰 */
+    reconnectToken?: string;
+    /** 호스트가 참가자별 재접속 토큰을 비공개로 저장하는 맵 */
+    participantReconnectTokens?: { [peerId: string]: string };
     /** 자동 승인 활성화 여부 */
     isAutoApprove: boolean;
     /** 팔로우 모드(호스트 화면 추종) 활성화 여부 */
@@ -174,6 +178,10 @@ export class SessionRecoveryManager {
             isHost: this.engine.isHost,
             myName: this.engine.myName,
             myId: this.engine.myId,
+            reconnectToken: this.engine.isHost ? undefined : this.engine.participantManager.myReconnectToken,
+            participantReconnectTokens: this.engine.isHost
+                ? Object.fromEntries(this.engine.participantManager.peerReconnectTokens)
+                : undefined,
             isAutoApprove: this.engine.isAutoApprove,
             isFollowMeMode: this.engine.isFollowMeMode,
             cursorFilter: this.engine.cursorManager.cursorFilter,
@@ -252,6 +260,15 @@ export class SessionRecoveryManager {
         this.engine.isHost = session.isHost;
         this.engine.myName = session.myName;
         this.engine.myId = session.myId;
+        if (session.isHost) {
+            this.engine.participantManager.myReconnectToken = '';
+            this.engine.participantManager.peerReconnectTokens = new Map(
+                Object.entries(session.participantReconnectTokens || {})
+            );
+        } else {
+            this.engine.participantManager.peerReconnectTokens.clear();
+            this.engine.participantManager.myReconnectToken = session.reconnectToken || '';
+        }
         this.engine.isFollowMeMode = session.isFollowMeMode;
         this.engine.cursorManager.cursorFilter = session.cursorFilter;
         if (session.showDecorations !== undefined) {

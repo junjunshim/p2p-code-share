@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import * as Y from 'yjs';
 import { PeerPermission } from '../../types';
 import { SyncEngine } from '../SyncEngine';
@@ -29,6 +30,12 @@ export class ParticipantManager {
 
     /** 게스트가 방 참여를 시도 중인지 여부 플래그 */
     public isAutoJoin = false;
+
+    /** 게스트가 재접속 시 본인임을 증명하기 위한 비밀 토큰 */
+    public myReconnectToken = '';
+
+    /** 호스트가 참가자별 재접속 토큰을 비공개로 보관하는 맵 */
+    public peerReconnectTokens = new Map<string, string>();
 
     /** 새 참가자 참여 시 즉시 승인할지 여부 플래그 (호스트 전용) */
     public isAutoApprove = false;
@@ -83,6 +90,31 @@ export class ParticipantManager {
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
     constructor(private engine: SyncEngine) {}
+
+    /**
+     * 초대 피어에 연결할 비밀 재접속 토큰을 발급하거나 기존 토큰을 반환합니다.
+     * @param peerId 토큰을 연결할 피어 ID.
+     * @returns 256비트 난수 기반 토큰.
+     */
+    public getOrCreatePeerReconnectToken(peerId: string): string {
+        let token = this.peerReconnectTokens.get(peerId);
+        if (!token) {
+            token = randomBytes(32).toString('hex');
+            this.peerReconnectTokens.set(peerId, token);
+        }
+        return token;
+    }
+
+    /**
+     * 호스트가 발급한 재접속 토큰을 게스트 로컬 상태에 보관합니다.
+     * 기존 토큰이 있으면 재접속 시 사용할 수 있도록 유지합니다.
+     * @param token 호스트가 연결 ID 할당과 함께 전달한 토큰.
+     */
+    public rememberMyReconnectToken(token: unknown): void {
+        if (!this.myReconnectToken && typeof token === 'string' && /^[a-f0-9]{64}$/i.test(token)) {
+            this.myReconnectToken = token;
+        }
+    }
 
     /**
      * 특정 피어가 특정 파일에 대한 쓰기/편집 권한이 있는지 확인합니다.
@@ -193,10 +225,10 @@ export class ParticipantManager {
     /**
      * ACK 확인 기반으로 호스트에게 방 참여 요청(JOIN_REQUEST)을 발송하고,
      * ACK가 올 때까지 주기적으로 재전송합니다 (게스트 전용).
-     * @param reqData 요청 데이터 (사용자 이름, 피어 ID, 이전 피어 ID).
+     * @param reqData 요청 데이터 (사용자 이름, 피어 ID, 이전 피어 ID, 재접속 토큰).
      * @returns {void}
      */
-    public startJoinRequestWithAck(reqData: { name: string, peerId: string, previousPeerId?: string }): void {
+    public startJoinRequestWithAck(reqData: { name: string, peerId: string, previousPeerId?: string, reconnectToken: string }): void {
         this.stopJoinRequestRetry();
         this.isJoinRequestAckReceived = false;
 
@@ -284,8 +316,14 @@ export class ParticipantManager {
         
         // 승인 시 게스트를 참가자로 추가
         const request = this.joinRequests.find(req => req.peerId === peerId);
-        if (request) {
-            this.handleGuestJoin({ name: request.name, previousPeerId: request.previousPeerId }, peerId);
+        if (!request || !this.handleGuestJoin({
+            name: request.name,
+            previousPeerId: request.previousPeerId,
+            reconnectToken: request.reconnectToken
+        }, peerId)) {
+            this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
+            this.engine.pushUIUpdate();
+            return;
         }
         
         // 요청 목록에서 제거
@@ -320,7 +358,12 @@ export class ParticipantManager {
         requestsToApprove.forEach((req, index) => {
             // 30명 동시 승인 시 호스트 CPU 및 DataChannel 버퍼 과부하 방지를 위해 30ms 간격으로 스케줄링
             setTimeout(() => {
-                this.handleGuestJoin({ name: req.name, previousPeerId: req.previousPeerId }, req.peerId);
+                const approved = this.handleGuestJoin({
+                    name: req.name,
+                    previousPeerId: req.previousPeerId,
+                    reconnectToken: req.reconnectToken
+                }, req.peerId);
+                if (!approved) return;
                 
                 // 승인 응답 다중 전송 (네트워크 버퍼링 및 패킷 유실 원천 방지)
                 this.engine.sendMessageToPeer(req.peerId, 'JOIN_RESPONSE', { approved: true });
@@ -366,6 +409,7 @@ export class ParticipantManager {
         
         // 요청 목록에서 제거
         this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
+        this.peerReconnectTokens.delete(peerId);
         
         // 거절 메시지 전송
         this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: false, reason: '호스트가 요청을 거절했습니다.' });
@@ -411,25 +455,50 @@ export class ParticipantManager {
 
     /**
      * 호스트가 방에 참여한 게스트를 참가자 명단에 등록하고 최신 공유 파일 스냅샷과 데코레이션을 전송합니다.
-     * 창 새로고침 등으로 재연결된 게스트인 경우 이전 피어 ID의 권한과 파일 담당자 상태를 승계합니다.
-     * @param msg 게스트 참여 메시지 (사용자 이름, 이전 피어 ID 등).
+     * 창 새로고침 등으로 재연결된 게스트인 경우 비밀 토큰을 확인한 뒤 이전 권한과 파일 담당자 상태를 승계합니다.
+     * @param msg 게스트 참여 메시지 (사용자 이름, 이전 피어 ID, 재접속 토큰 등).
      * @param peerId 신규 접속한 게스트의 피어 ID.
-     * @returns {void}
+     * @returns 참가자 등록 성공 여부.
      */
-    public handleGuestJoin(msg: any, peerId: string): void {
+    public handleGuestJoin(msg: any, peerId: string): boolean {
         if (this.engine.isHost) { 
             const rawGuestName = msg.name || peerId;
-            const previousPeerId = msg.previousPeerId;
+            const previousPeerId = typeof msg.previousPeerId === 'string' ? msg.previousPeerId : undefined;
+            const requestToken = typeof msg.reconnectToken === 'string' ? msg.reconnectToken : '';
+            const assignedToken = this.peerReconnectTokens.get(peerId);
 
-            // 1. 이전 피어 ID 탐색 (재연결 시 전송받은 previousPeerId가 participants에 유효할 때만 승계)
-            const oldPeerId = (previousPeerId && previousPeerId !== peerId && this.participants[previousPeerId]) ? previousPeerId : undefined;
+            // 1. 재접속 토큰이 일치하는 이전 참가자만 권한을 승계합니다.
+            const oldPeerId = previousPeerId && previousPeerId !== peerId && this.participants[previousPeerId] &&
+                this.peerReconnectTokens.get(previousPeerId) === requestToken
+                ? previousPeerId
+                : undefined;
+            const isCurrentPeer = !!this.participants[peerId] && assignedToken === requestToken;
+            if (assignedToken !== requestToken && !oldPeerId) {
+                this.engine.logToUI(`Rejected guest join from ${peerId}: invalid reconnect token.`);
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', {
+                    approved: false,
+                    reason: '재접속 인증 정보가 유효하지 않습니다.'
+                });
+                return false;
+            }
+
+            const reconnectToken = oldPeerId ? this.peerReconnectTokens.get(oldPeerId) : assignedToken;
+            if (!reconnectToken) {
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', {
+                    approved: false,
+                    reason: '재접속 인증 정보가 유효하지 않습니다.'
+                });
+                return false;
+            }
 
             // 2. 세션 복원 시 기존 권한 승계 또는 신규 생성 (동일 이름 중복 방지를 위해 자동 넘버링 적용)
-            const existingPermission = this.participants[peerId] || (oldPeerId ? this.participants[oldPeerId] : undefined);
+            const existingPermission = (isCurrentPeer ? this.participants[peerId] : undefined) ||
+                (oldPeerId ? this.participants[oldPeerId] : undefined);
             const guestName = existingPermission ? (existingPermission.name || rawGuestName) : this.getUniqueParticipantName(rawGuestName, peerId);
             this.participants[peerId] = existingPermission 
                 ? { ...existingPermission, name: guestName, connectionStatus: 'connected' }
                 : { name: guestName, globalCanEdit: false, filePermissions: {}, connectionStatus: 'connected' };
+            this.peerReconnectTokens.set(peerId, reconnectToken);
             this.lastPongTimes.set(peerId, Date.now());
             this.reconnectStartTimes.delete(peerId);
 
@@ -438,6 +507,7 @@ export class ParticipantManager {
             // 3. 중복 생성 방지를 위해 이전 피어 ID 정보 정리
             if (oldPeerId && oldPeerId !== peerId) {
                 delete this.participants[oldPeerId];
+                this.peerReconnectTokens.delete(oldPeerId);
                 this.lastPongTimes.delete(oldPeerId);
                 this.reconnectStartTimes.delete(oldPeerId);
                 this.engine.cursorManager.clearPeerCursor(oldPeerId);
@@ -482,7 +552,9 @@ export class ParticipantManager {
             // 6. 현재 데코레이션 목록 전송 (비공개 처리 적용)
             const peerDecos = this.engine.decorationManager.decorations.filter(d => d.visibility !== 'host' || d.creatorId === peerId);
             this.engine.sendMessageToPeer(peerId, 'SYNC_DECORATIONS', { decorations: peerDecos });
+            return true;
         }
+        return false;
     }
 
     /**
@@ -635,6 +707,7 @@ export class ParticipantManager {
         if (!this.engine.isHost) return;
         // 새로운 피어 ID 생성
         const newPeerId = 'guest_' + Date.now();
+        this.getOrCreatePeerReconnectToken(newPeerId);
         this.pendingInvites.add(newPeerId);
         
         // 수동 연결(+ 버튼 클릭) 시에만 설정 모드로 전환
@@ -828,6 +901,11 @@ export class ParticipantManager {
                 this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId);
                 this.engine.pushUIUpdate();
             }
+
+            if (!isParticipant) {
+                this.peerReconnectTokens.delete(peerId);
+                this.pendingInvites.delete(peerId);
+            }
         }
     }
 
@@ -857,6 +935,7 @@ export class ParticipantManager {
             this.engine.chatPanel?.updateHistory(this.engine.chatHistory, this.engine.myId, this.participants);
 
             delete this.participants[peerId];
+            this.peerReconnectTokens.delete(peerId);
             this.lastPongTimes.delete(peerId);
             this.reconnectStartTimes.delete(peerId);
             
@@ -882,32 +961,49 @@ export class ParticipantManager {
 
     /**
      * 게스트로부터 방 참여 요청을 수신했을 때 ACK를 전송하고 자동 승인 또는 요청 대기열에 추가합니다 (호스트 전용).
-     * @param msg 수신된 참여 요청 메시지 (이름, 이전 피어 ID 등).
+     * @param msg 수신된 참여 요청 메시지 (이름, 이전 피어 ID, 재접속 토큰 등).
      * @param peerId 요청한 게스트 피어 ID.
      * @returns {void}
      */
     public handleJoinRequest(msg: any, peerId: string): void {
         if (this.engine.isHost) {
             const rawGuestName = msg.name || peerId;
-            const previousPeerId = msg.previousPeerId;
+            const previousPeerId = typeof msg.previousPeerId === 'string' ? msg.previousPeerId : undefined;
+            const reconnectToken = typeof msg.reconnectToken === 'string' ? msg.reconnectToken : '';
+            const assignedToken = this.peerReconnectTokens.get(peerId);
+            const tokenMatchesPreviousPeer = !!previousPeerId && previousPeerId !== peerId &&
+                !!this.participants[previousPeerId] &&
+                this.peerReconnectTokens.get(previousPeerId) === reconnectToken;
+
+            if (assignedToken !== reconnectToken && !tokenMatchesPreviousPeer) {
+                this.engine.logToUI(`Rejected JOIN_REQUEST from ${peerId}: invalid reconnect token.`);
+                this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', {
+                    approved: false,
+                    reason: '재접속 인증 정보가 유효하지 않습니다.'
+                });
+                return;
+            }
 
             // 0. 게스트에게 요청이 정상 도착했음을 알리는 ACK 즉시 회신 (게스트 재전송 중지 유도)
             this.engine.sendMessageToPeer(peerId, 'JOIN_REQUEST_ACK', { received: true });
 
-            // 기존 참가자 판정: peerId 또는 previousPeerId로만 식별 (동일 이름 게스트를 기존 참가자로 오인하지 않음)
-            const existingParticipant = this.participants[peerId] || 
-                (previousPeerId && this.participants[previousPeerId]);
+            // 같은 피어 ID이거나 이전 피어의 비밀 토큰이 확인된 경우에만 기존 참가자로 판정합니다.
+            const existingParticipant = (assignedToken === reconnectToken ? this.participants[peerId] : undefined) ||
+                (tokenMatchesPreviousPeer ? this.participants[previousPeerId!] : undefined);
 
             // 호스트 창 전환 후 재접속한 기존 게스트이거나 자동 승인 모드인 경우 즉시 승인
             if (existingParticipant || this.isAutoApprove) {
                 // 이전 대기열에 동일 피어 ID나 이전 피어 ID의 요청이 남아있다면 정리
-                this.joinRequests = this.joinRequests.filter(req => req.peerId !== peerId && req.peerId !== previousPeerId);
+                this.joinRequests = this.joinRequests.filter(req =>
+                    req.peerId !== peerId && (!tokenMatchesPreviousPeer || req.peerId !== previousPeerId)
+                );
 
                 const finalName = existingParticipant 
                     ? (existingParticipant.name || rawGuestName) 
                     : this.getUniqueParticipantName(rawGuestName, peerId);
 
-                this.handleGuestJoin({ name: finalName, previousPeerId }, peerId);
+                const approved = this.handleGuestJoin({ name: finalName, previousPeerId, reconnectToken }, peerId);
+                if (!approved) return;
                 this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
                 setTimeout(() => {
                     if (this.engine.isHost && this.participants[peerId]) {
@@ -937,6 +1033,7 @@ export class ParticipantManager {
                         peerId,
                         name: finalName,
                         previousPeerId,
+                        reconnectToken,
                         timestamp: Date.now()
                     };
                 } else {
@@ -944,6 +1041,7 @@ export class ParticipantManager {
                         peerId,
                         name: finalName,
                         previousPeerId,
+                        reconnectToken,
                         timestamp: Date.now()
                     });
                     vscode.window.showInformationMessage(`방 참여 요청: ${finalName} (${peerId})`);
@@ -1335,6 +1433,8 @@ export class ParticipantManager {
         this.participants = {};
         this.joinRequests = [];
         this.pendingInvites.clear();
+        this.peerReconnectTokens.clear();
+        this.myReconnectToken = '';
         this.isAutoJoin = false;
         this.isAutoApprove = false;
         this.pendingJoinRequest = null;
