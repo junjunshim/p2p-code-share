@@ -137,14 +137,14 @@ export class HubManager {
     public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default'): void {
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
         if (peerId === 'none' || peerId === 'default') {
-            // STUN 서버 주소를 미리 IP로 해석해 전달하여 WebView의 STUN 호스트 조회 실패(701)를 방지합니다.
+            // 1단계: STUN 서버 주소만 미리 IP로 해석하여 전달 (Worker 호출 0회)
             void this.resolveStunServers().then(stunServers => {
                 this.sendToEngine({
                     type: 'startEngine',
                     initiator,
                     autoStart: !initiator,
                     roomName,
-                    turnConfig: undefined, // 1단계는 순수 P2P (Worker 호출 0회)
+                    turnServers: undefined, // 1단계는 순수 P2P (Worker 호출 0회)
                     peerId,
                     stunServers
                 });

@@ -181,6 +181,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'requireInvite':
                 case 'roomNameSuccess':
                 case 'roomNameError':
+                case 'iceFailed':
+                case 'requestTurnFallback':
                 case 'sdpGenerated':
                     this.onEngineMessage?.(msg);
                     break;

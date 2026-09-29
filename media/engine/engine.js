@@ -24,6 +24,8 @@
     let iceServers = [];
     let currentInitiator = false;
     let turnFallbackAttempted = {}; // 피어별 TURN Fallback 시도 여부 (최대 1회 제한 서킷 브레이커)
+    let signalingTurnFallbackAttempted = false; // 게스트 시그널링 채널 TURN Fallback 시도 여부 (최대 1회 제한)
+    let currentRoomName = '';       // 게스트 시그널링 재연결을 위한 방 이름
     let directP2pTimeoutMap = {};   // 피어별 사설/공인 P2P 홀펀칭 12초 타임아웃 타이머
     let hasExchangedSdpMap = {};    // 피어별 실제 원격 SDP 신호를 수신했는지 여부 (단순 시그널링 미응답과 구분)
 
@@ -71,6 +73,8 @@
         });
         directP2pTimeoutMap = {};
         turnFallbackAttempted = {};
+        signalingTurnFallbackAttempted = false;
+        currentRoomName = '';
         hasExchangedSdpMap = {};
         Object.keys(peers).forEach(id => {
             try { peers[id].destroy(); } catch(e) {}
@@ -383,16 +387,22 @@
             vscode.postMessage({ type: 'requestTurnFallback', peerId: targetPeerId });
         }
 
-        // SDP 교환이 일어난 시점부터 12초 동안 P2P가 열리지 않으면 '대칭형 NAT / 방화벽 차단'으로 최종 판정
+        // SDP 교환이 일어난 시점부터 P2P 물리 채널 개방 대기
+        // 시그널링 단계에서 이미 TURN이 주입된 경우 SimplePeer도 이미 TURN을 사용하므로 지연 Fallback 불필요
+        // 시그널링이 STUN으로 성공한 경우 6초 내에 P2P가 열리지 않으면 차단으로 간주하고 TURN Fallback 실행
         function startDirectP2pTimeout(targetPeerId) {
             if (directP2pTimeoutMap[targetPeerId] || turnFallbackAttempted[targetPeerId]) return;
+            // 이미 TURN 서버가 iceServers에 주입되어 있다면 SimplePeer 자체가 TURN 릴레이를 포함하므로 추가 Fallback 불필요
+            const hasTurnInConfig = iceServers.some(s => s && s.urls && (Array.isArray(s.urls) ? s.urls.some(u => u.startsWith('turn:')) : s.urls.startsWith('turn:')));
+            if (hasTurnInConfig) return;
+
             directP2pTimeoutMap[targetPeerId] = setTimeout(() => {
                 delete directP2pTimeoutMap[targetPeerId];
                 const targetPeer = peers[targetPeerId];
                 if (targetPeer && !targetPeer.connected && !targetPeer.destroyed) {
-                    triggerTurnFallbackIfEligible(targetPeerId, 'P2P hole punching timeout (12s) reached without connection');
+                    triggerTurnFallbackIfEligible(targetPeerId, 'P2P hole punching timeout (6s) reached without connection');
                 }
-            }, 12000);
+            }, 6000);
         }
 
         p.on('signal', data => {
@@ -565,12 +575,16 @@
         const stunUrls = (Array.isArray(stunServers) && stunServers.length > 0) ? stunServers : DEFAULT_STUN_URLS;
         iceServers = stunUrls.map(url => ({ urls: url }));
         log('STUN 서버 ' + iceServers.length + '개: ' + stunUrls.join(', '));
-        if (turnConfig && turnConfig.url) {
+        if (Array.isArray(turnConfig)) {
+            turnConfig.forEach(ts => iceServers.push(ts));
+            log('[TURN] Cloudflare TURN 서버 ' + turnConfig.length + '개 주입 완료');
+        } else if (turnConfig && turnConfig.url) {
             iceServers.push({
                 urls: turnConfig.url,
                 username: turnConfig.username,
                 credential: turnConfig.credential
             });
+            log('[TURN] TURN 서버 1개 주입 완료');
         }
 
         log('Starting P2P Engine...');
@@ -598,29 +612,40 @@
                     log('Created room: "' + rName + '". Waiting for guest connection...');
                     vscode.postMessage({ type: 'roomNameSuccess' });
                 } else {
+                    currentRoomName = rName;
+                    const destSafeId = toSafeId(rName);
                     log('Connecting to room host for room: "' + rName + '"...');
-                    const conn = peerServer.connect(toSafeId(rName));
+                    const conn = peerServer.connect(destSafeId);
                     handleSignalingConn(conn);
 
-                    // 게스트 시그널링 채널 조기 타임아웃(10초) 설정
-                    // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
+                    // 게스트 시그널링 채널 조기 감시 및 2단계 TURN Fallback 연동
+                    // 1차 STUN 연결에 8초간 충분한 직접 연결 기회를 부여합니다.
+                    // 대칭형 NAT/학교 방화벽으로 인해 ICE disconnected/failed 발생 시 즉시 감지하여 TURN 요청,
+                    // 8초 내 미연결 시 Cloudflare TURN을 발급받아 재시도합니다.
                     if (guestSignalingConnectTimer) {
                         clearTimeout(guestSignalingConnectTimer);
                     }
+                    const signalingTimeoutMs = signalingTurnFallbackAttempted ? 12000 : 8000;
                     guestSignalingConnectTimer = setTimeout(() => {
                         guestSignalingConnectTimer = null;
-                        // 이미 WebRTC 피어가 연결 중이거나 연결된 상태라면 타이머로 인한 강제 종료를 건너뜁니다.
                         const hasOngoingPeer = Object.values(peers).some(p => p && !p.destroyed && (p.connected || p._pc));
                         if (!currentInitiator && guestSignalingConn === conn && !conn.open && !hasOngoingPeer) {
-                            log('Guest signaling connection early timeout (10s): Host not responding yet. Closing connection...');
+                            if (!signalingTurnFallbackAttempted) {
+                                signalingTurnFallbackAttempted = true;
+                                log('[Signaling TURN Fallback] 1차 STUN 시그널링 8초 타임아웃 도달: 학교 방화벽/대칭형 NAT 환경 감지. Cloudflare TURN 릴레이를 요청합니다...');
+                                try { conn.close(); } catch(e) {}
+                                vscode.postMessage({ type: 'requestTurnFallback', peerId: 'signaling' });
+                                return;
+                            }
+                            log('Guest signaling connection timeout (host offline or connection blocked). Closing connection...');
                             try { conn.close(); } catch(e) {}
                             vscode.postMessage({
                                 type: 'roomNameError',
                                 errorType: 'signaling-timeout',
-                                reason: '시그널링 응답 시간 초과(10초): 호스트가 응답하지 않거나 오프라인 상태입니다.'
+                                reason: '시그널링 응답 시간 초과: 호스트가 응답하지 않거나 네트워크 방화벽에 의해 차단되었습니다.'
                             });
                         }
-                    }, 10000);
+                    }, signalingTimeoutMs);
                 }
             });
 
@@ -688,6 +713,37 @@
             if (!currentInitiator) {
                 guestSignalingConn = conn;
             }
+
+            // PeerJS DataConnection 내부 RTCPeerConnection의 ICE 상태 감시
+            // 대칭형 NAT/방화벽으로 인해 ICE disconnected/failed 발생 시 조기 감지
+            const attachIceWatcher = () => {
+                const pc = conn.peerConnection;
+                if (pc && !pc._hasIceWatcher) {
+                    pc._hasIceWatcher = true;
+                    pc.addEventListener('iceconnectionstatechange', () => {
+                        log('Signaling PeerConnection ICE State: ' + pc.iceConnectionState);
+                        if (!currentInitiator && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+                            if (!signalingTurnFallbackAttempted && !conn.open) {
+                                signalingTurnFallbackAttempted = true;
+                                if (guestSignalingConnectTimer) {
+                                    clearTimeout(guestSignalingConnectTimer);
+                                    guestSignalingConnectTimer = null;
+                                }
+                                log('[Signaling TURN Fallback] ICE 상태 ' + pc.iceConnectionState + ' 감지 (방화벽 차단). Cloudflare TURN Fallback을 요청합니다...');
+                                try { conn.close(); } catch(e) {}
+                                vscode.postMessage({ type: 'requestTurnFallback', peerId: 'signaling' });
+                            }
+                        }
+                    });
+                }
+            };
+            if (conn.peerConnection) {
+                attachIceWatcher();
+            } else {
+                // PeerConnection이 비동기로 초기화되는 경우를 위해 짧은 딜레이 후 바인딩
+                setTimeout(attachIceWatcher, 100);
+            }
+
             conn.on('open', () => {
                 if (guestSignalingConnectTimer) {
                     clearTimeout(guestSignalingConnectTimer);
@@ -778,7 +834,7 @@
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnConfig, m.peerId, m.stunServers);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnServers || m.turnConfig, m.peerId, m.stunServers);
             return;
         }
         if (m.type === 'stopEngine') {
@@ -830,6 +886,36 @@
             }
         }
         if (m.type === 'reconnectWithTurn') {
+            // 1) 게스트 시그널링 채널에 대한 TURN 주입인 경우
+            if (m.peerId === 'signaling') {
+                log('[Signaling TURN Fallback] Received Cloudflare TURN credentials for signaling channel.');
+                if (Array.isArray(m.turnServers)) {
+                    m.turnServers.forEach(ts => {
+                        iceServers.push(ts);
+                    });
+                }
+                if (!currentInitiator && currentRoomName) {
+                    const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
+                    const destSafeId = toSafeId(currentRoomName);
+                    log('[Signaling TURN Fallback] Retrying signaling connection to room "' + currentRoomName + '" with PeerJS and TURN servers...');
+                    
+                    if (guestSignalingConn) {
+                        try { guestSignalingConn.close(); } catch(e) {}
+                        guestSignalingConn = null;
+                    }
+                    if (guestSignalingConnectTimer) {
+                        clearTimeout(guestSignalingConnectTimer);
+                        guestSignalingConnectTimer = null;
+                    }
+
+                    if (peerServer && !peerServer.destroyed) {
+                        const newConn = peerServer.connect(destSafeId);
+                        handleSignalingConn(newConn);
+                    }
+                }
+                return;
+            }
+
             const key = resolvePeerKey(m.peerId || 'default');
             log('[TURN Fallback] Received Cloudflare TURN credentials from VS Code. Recreating peer connection for "' + key + '"...');
             
