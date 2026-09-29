@@ -23,6 +23,9 @@
     let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
+    let turnFallbackAttempted = {}; // 피어별 TURN Fallback 시도 여부 (최대 1회 제한 서킷 브레이커)
+    let directP2pTimeoutMap = {};   // 피어별 사설/공인 P2P 홀펀칭 12초 타임아웃 타이머
+    let hasExchangedSdpMap = {};    // 피어별 실제 원격 SDP 신호를 수신했는지 여부 (단순 시그널링 미응답과 구분)
 
     // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
     const DEFAULT_STUN_URLS = [
@@ -63,6 +66,12 @@
             clearTimeout(guestSignalingConnectTimer);
             guestSignalingConnectTimer = null;
         }
+        Object.keys(directP2pTimeoutMap).forEach(k => {
+            if (directP2pTimeoutMap[k]) clearTimeout(directP2pTimeoutMap[k]);
+        });
+        directP2pTimeoutMap = {};
+        turnFallbackAttempted = {};
+        hasExchangedSdpMap = {};
         Object.keys(peers).forEach(id => {
             try { peers[id].destroy(); } catch(e) {}
             delete peers[id];
@@ -333,10 +342,57 @@
             });
             rawPc.addEventListener('iceconnectionstatechange', () => {
                 log('ICE Connection State: ' + rawPc.iceConnectionState);
-                if (rawPc.iceConnectionState === 'failed') {
+                if (rawPc.iceConnectionState === 'connected' || rawPc.iceConnectionState === 'completed') {
+                    // 사설 또는 공인 IP로 P2P 연결 성공 시 타임아웃 해제
+                    if (directP2pTimeoutMap[peerId]) {
+                        clearTimeout(directP2pTimeoutMap[peerId]);
+                        delete directP2pTimeoutMap[peerId];
+                    }
+                } else if (rawPc.iceConnectionState === 'failed') {
                     vscode.postMessage({ type: 'iceFailed', peerId });
+                    // 사설/공인 IP 바인딩 체크가 완전히 실패(failed)한 경우에만 TURN Fallback 트리거
+                    triggerTurnFallbackIfEligible(peerId, 'ICE Connection State: failed');
                 }
             });
+        }
+
+        /**
+         * 사설/공인 IP P2P 연결이 확실히 실패했는지 엄격히 검증한 후 1회에 한해 TURN Fallback을 요청합니다.
+         */
+        function triggerTurnFallbackIfEligible(targetPeerId, reason) {
+            if (turnFallbackAttempted[targetPeerId]) {
+                log('[TURN Fallback] 이미 TURN Fallback을 시도했으므로 서킷 브레이커가 작동합니다 (중복 요청 차단).');
+                return;
+            }
+            if (!hasExchangedSdpMap[targetPeerId]) {
+                log('[TURN Fallback] 상대방과 SDP를 교환하지 못했으므로 단순 네트워크/호스트 오프라인으로 판정하여 TURN 호출을 건너뜁니다.');
+                return;
+            }
+            const targetPeer = peers[targetPeerId];
+            if (targetPeer && targetPeer.connected) {
+                return; // 이미 연결됨
+            }
+
+            turnFallbackAttempted[targetPeerId] = true;
+            if (directP2pTimeoutMap[targetPeerId]) {
+                clearTimeout(directP2pTimeoutMap[targetPeerId]);
+                delete directP2pTimeoutMap[targetPeerId];
+            }
+
+            log('[TURN Fallback] 사설/공인 IP 홀펀칭 불가 감지 (' + reason + '). VS Code 확장에 Cloudflare TURN Fallback을 요청합니다...');
+            vscode.postMessage({ type: 'requestTurnFallback', peerId: targetPeerId });
+        }
+
+        // SDP 교환이 일어난 시점부터 12초 동안 P2P가 열리지 않으면 '대칭형 NAT / 방화벽 차단'으로 최종 판정
+        function startDirectP2pTimeout(targetPeerId) {
+            if (directP2pTimeoutMap[targetPeerId] || turnFallbackAttempted[targetPeerId]) return;
+            directP2pTimeoutMap[targetPeerId] = setTimeout(() => {
+                delete directP2pTimeoutMap[targetPeerId];
+                const targetPeer = peers[targetPeerId];
+                if (targetPeer && !targetPeer.connected && !targetPeer.destroyed) {
+                    triggerTurnFallbackIfEligible(targetPeerId, 'P2P hole punching timeout (12s) reached without connection');
+                }
+            }, 12000);
         }
 
         p.on('signal', data => {
@@ -351,6 +407,10 @@
             if (guestSignalingConnectTimer) {
                 clearTimeout(guestSignalingConnectTimer);
                 guestSignalingConnectTimer = null;
+            }
+            if (directP2pTimeoutMap[peerId]) {
+                clearTimeout(directP2pTimeoutMap[peerId]);
+                delete directP2pTimeoutMap[peerId];
             }
             // WebRTC 데이터 채널이 열린 시점부터 방 세션이 성립된 것으로 간주합니다(게스트 입장 완료).
             hasActiveRoomSession = true;
@@ -760,11 +820,66 @@
         if (m.type === 'addNewPeer') addPeer(m.peerId, m.initiator);
         if (m.type === 'signal') {
             const key = resolvePeerKey(targetId);
+            hasExchangedSdpMap[key] = true;
             if (peers[key]) {
                 remoteSignalMap[key] = m.sdp;
                 srflxAttemptMap[key] = 0;
                 peers[key].signal(prepareRemoteSignalFor(peers[key], m.sdp));
+                // 실제 원격 SDP 신호를 적용한 시점부터 12초 동안 P2P 연결 타이머 가동
+                startDirectP2pTimeout(key);
             }
+        }
+        if (m.type === 'reconnectWithTurn') {
+            const key = resolvePeerKey(m.peerId || 'default');
+            log('[TURN Fallback] Received Cloudflare TURN credentials from VS Code. Recreating peer connection for "' + key + '"...');
+            
+            // 기존 피어 안전 리셋
+            if (peers[key]) {
+                try { peers[key].destroy(); } catch(e) {}
+                delete peers[key];
+            }
+            delete pendingSdpMap[key];
+
+            // TURN 서버 목록 결합 (기존 STUN 목록 + Cloudflare TURN)
+            const combinedIceServers = [...iceServers];
+            if (Array.isArray(m.turnServers)) {
+                m.turnServers.forEach(ts => {
+                    combinedIceServers.push(ts);
+                });
+            }
+
+            log('[TURN Fallback] Re-initializing SimplePeer with ' + combinedIceServers.length + ' ICE servers (including TURN)...');
+            try {
+                const newPeer = new SimplePeer({
+                    initiator: currentInitiator,
+                    trickle: false,
+                    iceCompleteTimeout: ICE_COMPLETE_TIMEOUT_MS,
+                    config: { iceServers: combinedIceServers }
+                });
+
+                setupWebRTCPeer(key, newPeer);
+                peers[key] = newPeer;
+
+                // 게스트는 이미 저장된 호스트의 원격 Offer가 있다면 즉시 다시 주입하여 재응답(Answer) 생성 유도
+                if (!currentInitiator && remoteSignalMap[key]) {
+                    log('[TURN Fallback] Re-applying cached host offer with new TURN peer...');
+                    setTimeout(() => {
+                        if (peers[key] && !peers[key].destroyed) {
+                            try {
+                                peers[key].signal(prepareRemoteSignalFor(peers[key], remoteSignalMap[key]));
+                            } catch(e) {
+                                log('[TURN Fallback] Failed to re-apply signal: ' + e.message);
+                            }
+                        }
+                    }, 50);
+                } else if (currentInitiator) {
+                    // 호스트는 새 Offer가 생성되면 publishSdp를 통해 게스트에게 전달됨
+                    log('[TURN Fallback] Host is generating new Offer with TURN candidates...');
+                }
+            } catch (err) {
+                log('[TURN Fallback] Error recreating peer: ' + err.message);
+            }
+            return;
         }
         if (m.type === 'peerData') {
             const data = new TextEncoder().encode(JSON.stringify(m.value));

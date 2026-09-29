@@ -10,6 +10,7 @@ import { SharedFile, P2PMessage, PeerPermission, FileDecoration, ChatMessage } f
 import { ChatPanel } from '../ui/ChatPanel';
 import { isPathEqual } from '../utils/helpers';
 import { Logger } from '../utils/Logger';
+import { TurnService, TurnServerConfig } from './turn/TurnService';
 
 import { FileStorageManager } from './sync/FileStorageManager';
 import { ParticipantManager } from './sync/ParticipantManager';
@@ -375,6 +376,31 @@ export class SyncEngine {
                         break;
                 }
             } catch (e) {}
+        };
+
+        // Webview P2P 엔진에서 사설/공인 IP 홀펀칭 불가 감지 시 TURN Fallback 처리
+        this.hub.onTurnFallbackRequested = async (peerId: string) => {
+            Logger.get().warn('TURN Fallback', `P2P direct hole punching failed for peer "${peerId}". Initiating Cloudflare TURN Fallback...`);
+            this.logToUI(`P2P direct connection failed. Falling back to Cloudflare TURN relay for peer "${peerId}"...`);
+
+            try {
+                let turnServers: TurnServerConfig[] | null = null;
+                if (this.isHost) {
+                    turnServers = await TurnService.get().getHostTurnConfig();
+                } else {
+                    turnServers = await TurnService.get().getGuestTurnConfig(this.participantManager.isReconnecting);
+                }
+
+                if (turnServers && turnServers.length > 0) {
+                    Logger.get().info('TURN Fallback', `Applying Cloudflare TURN servers to WebRTC engine: ${JSON.stringify(turnServers.map(s => s.urls))}`);
+                    this.hub.reconnectWithTurn(peerId, turnServers);
+                } else {
+                    Logger.get().error('TURN Fallback', `Failed to obtain TURN token from Cloudflare Worker for peer "${peerId}".`);
+                    this.logToUI(`Cloudflare TURN 자격 증명 발급에 실패하여 릴레이 연결을 진행할 수 없습니다.`);
+                }
+            } catch (err: any) {
+                Logger.get().error('TURN Fallback', `Error during TURN Fallback: ${err.message}`);
+            }
         };
     }
 
@@ -1391,6 +1417,7 @@ export class SyncEngine {
         this.isSetupMode = false; 
         this.isFollowMeMode = false; 
         this.lastUIPayloadString = undefined;
+        TurnService.get().clearCache();
 
         if (!skipUIUpdate) {
             this.pushUIUpdate();

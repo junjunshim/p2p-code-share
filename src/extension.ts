@@ -93,6 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
         else if (msg.type === 'roomNameSuccess') hub.onRoomNameSuccess?.();
         else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType, msg.reason);
         else if (msg.type === 'iceFailed') hub.onIceFailed?.(pid);
+        else if (msg.type === 'requestTurnFallback') hub.onTurnFallbackRequested?.(pid);
         else if (msg.type === 'sdpGenerated') {
             hub.sdpMap.set(pid, msg.sdp);
             hub.onSdpGenerated?.(msg.sdp, pid);
