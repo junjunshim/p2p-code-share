@@ -348,6 +348,10 @@
         });
 
         p.on('connect', () => {
+            if (guestSignalingConnectTimer) {
+                clearTimeout(guestSignalingConnectTimer);
+                guestSignalingConnectTimer = null;
+            }
             // WebRTC 데이터 채널이 열린 시점부터 방 세션이 성립된 것으로 간주합니다(게스트 입장 완료).
             hasActiveRoomSession = true;
             log('SDP exchange success. WebRTC P2P channel connected.');
@@ -538,19 +542,25 @@
                     const conn = peerServer.connect(toSafeId(rName));
                     handleSignalingConn(conn);
 
-                    // 게스트 시그널링 채널 조기 타임아웃(3.5초) 설정
+                    // 게스트 시그널링 채널 조기 타임아웃(10초) 설정
                     // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
                     if (guestSignalingConnectTimer) {
                         clearTimeout(guestSignalingConnectTimer);
                     }
                     guestSignalingConnectTimer = setTimeout(() => {
                         guestSignalingConnectTimer = null;
-                        if (!currentInitiator && guestSignalingConn === conn && !conn.open) {
-                            log('Guest signaling connection early timeout (3.5s): Host not responding yet. Closing connection to trigger retry probe...');
+                        // 이미 WebRTC 피어가 연결 중이거나 연결된 상태라면 타이머로 인한 강제 종료를 건너뜁니다.
+                        const hasOngoingPeer = Object.values(peers).some(p => p && !p.destroyed && (p.connected || p._pc));
+                        if (!currentInitiator && guestSignalingConn === conn && !conn.open && !hasOngoingPeer) {
+                            log('Guest signaling connection early timeout (10s): Host not responding yet. Closing connection...');
                             try { conn.close(); } catch(e) {}
-                            vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
+                            vscode.postMessage({
+                                type: 'roomNameError',
+                                errorType: 'signaling-timeout',
+                                reason: '시그널링 응답 시간 초과(10초): 호스트가 응답하지 않거나 오프라인 상태입니다.'
+                            });
                         }
-                    }, 3500);
+                    }, 10000);
                 }
             });
 
@@ -580,9 +590,17 @@
                         guestSignalingConnectTimer = null;
                     }
                     if (err.type === 'peer-unavailable') {
-                        vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
+                        vscode.postMessage({
+                            type: 'roomNameError',
+                            errorType: 'unavailable',
+                            reason: '해당 방 이름의 호스트가 오프라인이거나 존재하지 않습니다.'
+                        });
                     } else if (err.type === 'server-error' || err.type === 'network') {
-                        vscode.postMessage({ type: 'roomNameError', errorType: 'server' });
+                        vscode.postMessage({
+                            type: 'roomNameError',
+                            errorType: 'server',
+                            reason: '시그널링 서버 연결 실패(' + err.type + '): 서버와 통신할 수 없습니다.'
+                        });
                     }
                 }
                 if (currentInitiator) {
@@ -623,6 +641,10 @@
             });
 
             conn.on('data', (data) => {
+                if (guestSignalingConnectTimer) {
+                    clearTimeout(guestSignalingConnectTimer);
+                    guestSignalingConnectTimer = null;
+                }
                 if (data.type === 'REQ_OFFER') {
                     // 아직 시그널링 커넥션이 바인딩되지 않았고, SDP가 준비된 오퍼 슬롯 검색
                     const targetId = Object.keys(peers).find(id => 

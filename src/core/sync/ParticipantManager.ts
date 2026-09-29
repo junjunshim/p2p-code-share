@@ -198,9 +198,9 @@ export class ParticipantManager {
         if (!this.isReconnecting) {
             this.joinTimeout = setTimeout(() => {
                 if (!this.engine.isConnected && this.isAutoJoin && !this.isReconnecting) {
-                    Logger.get().error('GuestJoin', `Initial connection handshake timeout (30s) reached for room "${roomName}".`);
-                    this.engine.logToUI("Initial connection handshake timeout (30s) reached.");
-                    vscode.window.showErrorMessage("호스트와의 연결 시도 시간이 초과되었습니다. 방 이름이 올바른지 혹은 호스트가 온라인인지 확인해주세요.");
+                    Logger.get().error('GuestJoin', `Initial connection handshake timeout (30s) reached for room "${roomName}". P2P ICE hole punching failed.`);
+                    this.engine.logToUI("Initial connection handshake timeout (30s) reached: WebRTC P2P 홀펀칭(방화벽/대칭형 NAT 차단)에 실패했습니다.");
+                    vscode.window.showErrorMessage("호스트와 P2P 연결 실패: 네트워크 방화벽 또는 대칭형 NAT(Symmetric NAT)로 인해 P2P 홀펀칭에 실패했습니다. (30초 초과)");
                     this.engine.reset();
                     this.engine.hub.dispose();
                 }

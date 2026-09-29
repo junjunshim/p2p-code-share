@@ -55,7 +55,7 @@ export class HubManager {
     public onRoomNameSuccess?: () => void;
 
     /** 방 이름 중복 등의 오류가 발생했을 때 호출되는 콜백 */
-    public onRoomNameError?: (errorType: string) => void;
+    public onRoomNameError?: (errorType: string, reason?: string) => void;
 
     /** WebRTC ICE 연결 실패가 감지되었을 때 호출되는 콜백 */
     public onIceFailed?: (peerId: string) => void;
