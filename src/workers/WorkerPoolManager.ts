@@ -16,6 +16,16 @@ export class WorkerPoolManager {
     /** 작업 응답 대기 상한(ms). 워커가 응답 없이 멈춰도 호출측 프라미스가 영구 대기하지 않도록 한다. */
     private static readonly TASK_TIMEOUT_MS = 15000;
 
+    /**
+     * 페이로드 1MB 당 추가로 허용하는 시간(ms).
+     * 대용량 패킷이 워커에서 늦게 처리되어 타임아웃으로 떨어지면 호출측이 메인 스레드에서
+     * JSON.parse 로 폴백해 확장 호스트가 길게 멈추므로, 크기에 비례해 여유를 둡니다.
+     */
+    private static readonly TASK_TIMEOUT_PER_MB_MS = 6000;
+
+    /** 크기 보정을 포함한 워치독 상한(ms) */
+    private static readonly TASK_TIMEOUT_MAX_MS = 60000;
+
     private workers: Worker[] = [];
     private workerBusyMap = new Map<Worker, boolean>();
     /** 각 워커가 현재 실행 중인 작업 (크래시 시 해당 작업을 즉시 실패 처리하기 위함) */
@@ -160,6 +170,13 @@ export class WorkerPoolManager {
         };
 
         const startedAt = Date.now();
+        // 대용량 문자열 페이로드는 워커에서도 파싱 시간이 길어지므로 크기에 비례해 감시 시간을 늘린다.
+        const payloadLength = typeof payload === 'string' ? payload.length : 0;
+        const timeoutMs = Math.min(
+            WorkerPoolManager.TASK_TIMEOUT_MAX_MS,
+            WorkerPoolManager.TASK_TIMEOUT_MS
+                + Math.ceil(payloadLength / (1024 * 1024)) * WorkerPoolManager.TASK_TIMEOUT_PER_MB_MS
+        );
         return new Promise((resolve) => {
             // 워커가 응답 없이 멈춰도 호출측이 영구 대기하지 않도록 감시 타이머를 둔다.
             const watchdog = setTimeout(() => {
@@ -174,7 +191,7 @@ export class WorkerPoolManager {
                         durationMs: Date.now() - startedAt
                     });
                 }
-            }, WorkerPoolManager.TASK_TIMEOUT_MS);
+            }, timeoutMs);
 
             this.pendingCallbacks.set(taskId, (response) => {
                 clearTimeout(watchdog);

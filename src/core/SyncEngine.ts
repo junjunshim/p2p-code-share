@@ -205,6 +205,11 @@ export class SyncEngine {
                 // 워커 풀이 dispose되었거나 응답 없이 실패한 경우 아래 폴백으로 진행
             }
         }
+        if (text.length > 1024) {
+            // 워커 없이(또는 타임아웃으로) 메인 스레드에서 큰 패킷을 파싱할 때는 이벤트 루프에 한 번 양보해
+            // 대기 중인 IPC 메시지/타이머가 먼저 처리되게 합니다(체감 멈춤 완화).
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
         return JSON.parse(text) as P2PMessage;
     }
 

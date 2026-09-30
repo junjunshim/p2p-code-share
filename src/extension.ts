@@ -252,9 +252,17 @@ export function activate(context: vscode.ExtensionContext) {
         engine.inviteGuest(true);
     };
 
+    // 게스트가 '방 없음' 응답을 받아도 호스트의 시그널링 서버 등록(고스트 ID 정리)이 아직 끝나지 않았을 수 있고,
+    // 호스트도 이전 창의 소켓이 서버에서 정리되는 중이라 '이미 사용 중' 응답을 받을 수 있습니다.
+    // 두 경우 모두 곧바로 실패 처리하지 않고 짧게 재시도한 뒤 최종 에러를 보여줍니다.
+    let guestUnavailableRetryCount = 0;
+    let hostDuplicateRetryCount = 0;
+
     // 방 이름 선점 성공 시 화면 전환 및 게스트 수락 대기열(Invite Slot) 자동 생성
     hub.onRoomNameSuccess = () => {
         engine.sessionRecoveryManager.isRestoringSession = false;
+        guestUnavailableRetryCount = 0;
+        hostDuplicateRetryCount = 0;
         engine.sessionRecoveryManager.restoreRetryCount = 0;
         engine.isConnected = true;
         engine.isSignalingConnected = true; // 시그널링 서버 연결 완료 상태 플래그 설정
@@ -283,10 +291,15 @@ export function activate(context: vscode.ExtensionContext) {
 
     // WebRTC ICE 바인딩 실패 시 조기 감지 및 빠른 재시도
     hub.onIceFailed = (peerId: string) => {
-        if (!engine.isHost && engine.participantManager.isReconnecting) {
+        if (engine.isHost) return;
+        if (engine.participantManager.isReconnecting) {
             engine.logToUI(`ICE connection failed for peer ${peerId}. Triggering early reconnection probe...`);
             engine.participantManager.onGuestReconnectProbeFailed();
+            return;
         }
+        // 최초 입장 중 ICE 가 실패하면 30초 타임아웃을 기다리지 않고 즉시 핸드셰이크 재시도를 트리거합니다.
+        engine.logToUI(`ICE connection failed for peer ${peerId}. Triggering early join retry...`);
+        engine.participantManager.onGuestIceFailedEarly();
     };
 
     // 방 이름 중복 또는 서버 에러 처리
@@ -316,6 +329,21 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
+            if (errorType === 'unavailable' && guestUnavailableRetryCount < 2) {
+                guestUnavailableRetryCount++;
+                const retryDelay = 1200 + Math.floor(Math.random() * 600);
+                engine.logToUI(`Host room not found yet. Retrying connection (${guestUnavailableRetryCount}/2) in ${retryDelay}ms...`);
+                hub.dispose();
+                setTimeout(() => {
+                    if (engine.isHost || engine.isConnected) return;
+                    const targetRoom = engine.roomName;
+                    if (!targetRoom || targetRoom === 'Untitled Room') return;
+                    void engine.participantManager.sendJoinRequest(targetRoom, engine.myName || '');
+                }, retryDelay);
+                return;
+            }
+            guestUnavailableRetryCount = 0;
+
             let msg = "호스트 연결에 실패했습니다.";
             if (errorType === 'unavailable') {
                 msg = "호스트가 오프라인이거나 존재하지 않는 방 이름입니다.";
@@ -344,6 +372,20 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
         }
+
+        // 세션 복구 중이 아니어도 이전 창의 소켓이 서버에서 정리되는 중(고스트 ID)일 수 있으므로 짧게 재시도합니다.
+        if (errorType === 'duplicate' && hostDuplicateRetryCount < 2) {
+            hostDuplicateRetryCount++;
+            const retryDelay = 1500 + Math.floor(Math.random() * 700);
+            engine.logToUI(`Room name is still held by a previous session on the server. Retrying in ${retryDelay}ms (${hostDuplicateRetryCount}/2)...`);
+            hub.dispose();
+            setTimeout(() => {
+                if (!engine.isHost || !engine.roomName) return;
+                hub.createHub(true, engine.roomName, 'none');
+            }, retryDelay);
+            return;
+        }
+        hostDuplicateRetryCount = 0;
 
         engine.sessionRecoveryManager.isRestoringSession = false;
         let msg = "";

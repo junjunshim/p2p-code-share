@@ -19,6 +19,15 @@ import { Logger } from '../../utils/Logger';
  * 실시간 Ping-Pong 연결 모니터링 및 네트워크 단절 시 30초 재연결 유예(Grace Period) 처리를 전담합니다.
  */
 export class ParticipantManager {
+    /** 게스트 초기 핸드셰이크(제어 채널 + 데이터 채널 수립) 제한 시간(ms) */
+    private static readonly JOIN_HANDSHAKE_TIMEOUT_MS = 30000;
+
+    /** 초기 핸드셰이크 자동 재시도 시의 제한 시간(ms) */
+    private static readonly JOIN_HANDSHAKE_RETRY_TIMEOUT_MS = 20000;
+
+    /** 초기 핸드셰이크 자동 재시도 최대 횟수(사용자 개입 없이 1회 복구 시도) */
+    private static readonly MAX_JOIN_HANDSHAKE_RETRIES = 1;
+
     /** 피어 ID별 권한 및 상태 정보 맵 */
     public participants: { [key: string]: PeerPermission } = {};
 
@@ -49,8 +58,11 @@ export class ParticipantManager {
     /** 게스트 재연결 유예 모드 진입 시 본래 피어 ID 보존 (프로브 실패로 임시 ID가 바뀌어도 영속 유지) */
     public reconnectOriginalPeerId?: string;
 
-    /** 게스트 방 입장 시도 전체 제한시간(20초) 타이머 */
+    /** 게스트 방 입장 시도 전체 제한시간 타이머 */
     private joinTimeout?: NodeJS.Timeout;
+
+    /** 초기 핸드셰이크 자동 재시도 횟수 */
+    private joinHandshakeRetries = 0;
 
     /** 게스트 네트워크 일시 단절 시 30초 재연결 유예 모드 활성화 여부 플래그 */
     public isReconnecting = false;
@@ -194,21 +206,13 @@ export class ParticipantManager {
         this.engine.fileStorageManager.cleanOldRoomStorages(roomName);
         this.engine.pushUIUpdate();
 
-        // 30초 내에 호스트와의 초기 WebRTC 물리적 채널이 열리지 않으면 에러 및 리셋 처리
-        // (채널이 열리거나 호스트 응답이 오면 clearJoinTimeout()으로 즉시 해제되어 무한정 승인 대기 가능)
-        if (this.joinTimeout) {
-            clearTimeout(this.joinTimeout);
-        }
+        // 초기 WebRTC 물리 채널이 제한 시간 안에 열리지 않으면 같은 방으로 한 번 더 자동 재시도하고,
+        // 재시도까지 실패해야 에러/리셋 처리합니다. (간헐적 첫 시도 실패를 사용자 개입 없이 복구)
         if (!this.isReconnecting) {
-            this.joinTimeout = setTimeout(() => {
-                if (!this.engine.isConnected && this.isAutoJoin && !this.isReconnecting) {
-                    Logger.get().error('GuestJoin', `Initial connection handshake timeout (30s) reached for room "${roomName}". P2P ICE hole punching failed.`);
-                    this.engine.logToUI("Initial connection handshake timeout (30s): STUN/TURN 연결 시도가 제한 시간을 초과했습니다.");
-                    vscode.window.showErrorMessage("호스트 연결 시간이 초과되었습니다. 호스트 상태와 네트워크 연결을 확인해 주세요. (STUN/TURN 연결 30초 초과)");
-                    this.engine.reset();
-                    this.engine.hub.dispose();
-                }
-            }, 30000);
+            const attemptTimeout = this.joinHandshakeRetries > 0
+                ? ParticipantManager.JOIN_HANDSHAKE_RETRY_TIMEOUT_MS
+                : ParticipantManager.JOIN_HANDSHAKE_TIMEOUT_MS;
+            this.armJoinHandshakeTimeout(roomName, userName, attemptTimeout, previousPeerId);
         }
 
         // 허브 생성 (게스트 모드)
@@ -224,6 +228,82 @@ export class ParticipantManager {
             clearTimeout(this.joinTimeout);
             this.joinTimeout = undefined;
         }
+        // 핸드셰이크가 진전(ACK 수신/연결 성공)했으므로 재시도 카운터를 초기화합니다.
+        this.joinHandshakeRetries = 0;
+    }
+
+    /**
+     * 게스트 초기 핸드셰이크(제어 채널 + 데이터 채널 수립) 감시 타이머를 설정합니다.
+     * 제한 시간 안에 연결되지 않으면 같은 방으로 한 번 더 자동 재시도하고, 재시도까지 실패하면 세션을 리셋합니다.
+     * @param roomName 참여할 방 이름.
+     * @param userName 사용자 닉네임.
+     * @param timeoutMs 이번 시도의 제한 시간(ms).
+     * @param previousPeerId 세션 복원 시 사용할 이전 피어 ID.
+     * @returns {void}
+     */
+    private armJoinHandshakeTimeout(roomName: string, userName: string, timeoutMs: number, previousPeerId?: string): void {
+        if (this.joinTimeout) {
+            clearTimeout(this.joinTimeout);
+        }
+        this.joinTimeout = setTimeout(() => {
+            this.joinTimeout = undefined;
+            if (this.engine.isConnected || !this.isAutoJoin || this.isReconnecting) return;
+            if (this.joinHandshakeRetries < ParticipantManager.MAX_JOIN_HANDSHAKE_RETRIES) {
+                this.retryJoinHandshake(roomName, userName, previousPeerId, `timeout ${timeoutMs}ms`);
+                return;
+            }
+            this.failJoinHandshake(roomName);
+        }, timeoutMs);
+    }
+
+    /**
+     * 최초 입장 중 데이터 채널 ICE 가 실패(또는 원격 signal 미수신)했을 때 호출됩니다.
+     * 30초 타임아웃을 기다리지 않고 즉시 핸드셰이크 재시도를 트리거합니다.
+     * @returns {void}
+     */
+    public onGuestIceFailedEarly(): void {
+        if (this.engine.isHost || this.engine.isConnected || !this.isAutoJoin || this.isReconnecting) return;
+        if (this.joinHandshakeRetries >= ParticipantManager.MAX_JOIN_HANDSHAKE_RETRIES) return;
+        const roomName = this.pendingJoinRequest?.roomName || this.engine.roomName;
+        const userName = this.pendingJoinRequest?.userName || this.engine.myName || '';
+        if (!roomName || roomName === 'Untitled Room') return;
+        if (this.joinTimeout) {
+            clearTimeout(this.joinTimeout);
+            this.joinTimeout = undefined;
+        }
+        this.retryJoinHandshake(roomName, userName, this.pendingJoinRequest?.previousPeerId, 'ICE failure');
+    }
+
+    /**
+     * 같은 방으로 초기 핸드셰이크를 한 번 더 시도합니다. 재시도 타이머는 sendJoinRequest 가 다시 설정합니다.
+     * @param roomName 참여할 방 이름.
+     * @param userName 사용자 닉네임.
+     * @param previousPeerId 세션 복원 시 사용할 이전 피어 ID.
+     * @param reason 재시도 사유(로그용).
+     * @returns {void}
+     */
+    private retryJoinHandshake(roomName: string, userName: string, previousPeerId: string | undefined, reason: string): void {
+        this.joinHandshakeRetries++;
+        const attemptNo = this.joinHandshakeRetries + 1;
+        Logger.get().warn('GuestJoin', `Initial handshake retry (reason: ${reason}). Auto-retrying connection (attempt ${attemptNo}).`);
+        this.engine.logToUI(`초기 연결이 지연되어 자동으로 재시도합니다. (사유: ${reason}, 시도 ${attemptNo}회)`);
+        // 이전 시도의 소켓/피어를 정리하고 같은 방으로 새로 연결합니다.
+        this.engine.hub.dispose();
+        void this.sendJoinRequest(roomName, userName, previousPeerId);
+    }
+
+    /**
+     * 초기 핸드셰이크가 자동 재시도까지 실패했을 때 세션을 정리하고 사용자에게 알립니다.
+     * @param roomName 참여하려던 방 이름.
+     * @returns {void}
+     */
+    private failJoinHandshake(roomName: string): void {
+        const totalSec = Math.round((ParticipantManager.JOIN_HANDSHAKE_TIMEOUT_MS + ParticipantManager.JOIN_HANDSHAKE_RETRY_TIMEOUT_MS) / 1000);
+        Logger.get().error('GuestJoin', `Initial connection handshake timeout (${totalSec}s) reached for room "${roomName}" after auto-retry. P2P ICE hole punching failed.`);
+        this.engine.logToUI(`Initial connection handshake timeout (${totalSec}s): STUN/TURN 연결 시도가 제한 시간을 초과했습니다.`);
+        vscode.window.showErrorMessage(`호스트 연결 시간이 초과되었습니다. 호스트 상태와 네트워크 연결을 확인해 주세요. (STUN/TURN 연결 ${totalSec}초 초과)`);
+        this.engine.reset();
+        this.engine.hub.dispose();
     }
 
     /**

@@ -18,7 +18,6 @@
     let guestSignalingConnectTimer = null;
     let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
     let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
-    let srflxAttemptMap = {}; // 피어별 srflx(공인 IP) 후보 수집 재시도 횟수
     let pendingPeerAdds = {};  // 피어 생성 진행 중 플래그(중복 생성 및 TURN 요청 폭주 방지)
     let pendingIceServersPromise = null; // 진행 중인 iceServers 준비 Promise 공유용
     let remoteSignalMap = {}; // 피어별 마지막 원격 signal (재시도 시 같은 offer 재적용용)
@@ -133,6 +132,90 @@
         'stun:stun2.l.google.com:19302'
     ];
 
+    // 제어 채널(PeerJS 시그널링 DataConnection) 수명주기 계측: 간헐 실패 원인을 로그만으로 구분하기 위함.
+    let signalingSocketOpens = 0;        // 세션 내 시그널링 소켓 open 횟수
+    let signalingSocketReconnects = 0;   // 세션 내 시그널링 소켓 재연결 횟수(고스트/교체 창 추정 지표)
+    let lastSignalingReconnectAt = 0;    // 마지막 재연결 시도 시각
+    let signalingWasReconnecting = false; // 실패 시점에 재연결 진행 중이었는지 여부
+    let activeRoomName = '';             // 현재 세션의 방 이름(제어 채널 재시도에 사용)
+    let activeRoomPeerId = '';           // 현재 방의 PeerJS 피어 ID
+    let controlChannelRetryCount = 0;    // 세션 내 제어 채널 재생성 횟수
+    let guestSignalingConnOpenedAt = 0;  // 현재 게스트 제어 채널을 만든 시각(소켓 재연결 시 중복 connect 방지)
+    let renamedPeerIds = {};             // updatePeerId 로 바뀐 이전 피어 키 -> 새 키(늦게 도착한 signal 라우팅용)
+    let receivedRemoteSignalAt = 0;      // 이번 세션에서 원격 SDP signal 을 처음 적용한 시각(제어 채널 조기 종료 복구 판단용)
+    let controlChannelProbeTimer = null; // 제어 채널 재생성 프로브 예약 타이머(이전 세션 지연 콜백 방지를 위해 세션 종료 시 정리)
+
+    /** 분할 전송 조립 버퍼 키: peerId 는 세션 중 바뀔 수 있으므로 피어 객체에 고정 키를 부여합니다. */
+    const peerTransferKeys = new WeakMap();
+    let peerTransferKeySeq = 0;
+
+    /** 피어 객체별로 세션 동안 변하지 않는 전송 조립 키를 돌려줍니다. */
+    function getPeerTransferKey(peer) {
+        let key = peerTransferKeys.get(peer);
+        if (!key) {
+            key = 'pk' + (++peerTransferKeySeq);
+            peerTransferKeys.set(peer, key);
+        }
+        return key;
+    }
+
+    /** 원격 description을 받은 뒤 이 시간 동안 원격 후보가 0건이면 제어 채널이 멈춘 것으로 본다. */
+    const CONTROL_CANDIDATE_WATCHDOG_MS = 4000;
+
+    /** 세션당 제어 채널 재생성 최대 횟수(무한 재시도 방지) */
+    const CONTROL_CHANNEL_RETRY_MAX = 3;
+
+    /** 게스트 제어 채널이 진전을 보이지 않을 때 재생성 프로브를 트리거하는 시간(ms) */
+    const GUEST_CONTROL_GUARD_MS = 8000;
+
+    /** 이미 만든 제어 채널을 재사용할 최대 나이(ms). 이보다 오래됐고 아직 안 열렸으면 새로 만듭니다. */
+    const GUEST_CONTROL_CONNECT_STALE_MS = 25000;
+
+    /** 데이터 피어가 이 시간 동안 원격 signal 조차 받지 못하면 조기 실패로 보고합니다(30초 타임아웃 대기 방지). */
+    const DATA_PEER_WATCHDOG_MS = 12000;
+
+    /** SDP 재전송 간격/횟수: 시그널링 채널이 아직 열리지 않았을 때 SDP 를 잃지 않도록 재시도합니다. */
+    const SDP_RESEND_INTERVAL_MS = 700;
+    const SDP_RESEND_MAX_ATTEMPTS = 8;
+
+    /** peerId -> { attempts, timer } : 시그널링 채널 미개방 상태의 SDP 재전송 상태 */
+    const sdpResendState = {};
+
+    /** peerId -> { conn, sdp } : 같은 시그널링 채널로 같은 SDP 를 두 번 보내지 않기 위한 기록 */
+    const sentSdpMap = {};
+
+    /** peerId 의 SDP 전송 기록을 지웁니다(피어 종료/키 변경 시). */
+    function clearSentSdp(peerId) {
+        delete sentSdpMap[peerId];
+    }
+
+    /**
+     * 시그널링 채널로 SDP 를 전송합니다.
+     * 같은 채널에 같은 SDP 를 두 번 보내면 상대가 answer 를 두 번 만들어 setLocalDescription 이
+     * wrong state(stable) 로 실패하므로, 중복 전송을 건너뜁니다.
+     * @returns 실제로 전송했으면 true, 중복이라 건너뛰었으면 false.
+     */
+    function sendSdpToConn(peerId, conn, sdpStr, label) {
+        const last = sentSdpMap[peerId];
+        if (last && last.conn === conn && last.sdp === sdpStr) {
+            log('중복 SDP 전송 생략 (' + label + ', peer ' + peerId + ')');
+            clearSdpResend(peerId);
+            return false;
+        }
+        conn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
+        sentSdpMap[peerId] = { conn: conn, sdp: sdpStr };
+        clearSdpResend(peerId);
+        return true;
+    }
+
+    /** SDP 재전송 타이머를 정리합니다(전송 성공/피어 종료 시). */
+    function clearSdpResend(peerId) {
+        const state = sdpResendState[peerId];
+        if (!state) return;
+        if (state.timer) clearTimeout(state.timer);
+        delete sdpResendState[peerId];
+    }
+
     /**
      * simple-peer가 ICE 수집 완료를 기다리는 시간(ms).
      * 기본값 5초보다 길게 잡아야 STUN 응답이 느린 네트워크에서도 srflx(공인 IP) 후보가 SDP에 포함됩니다.
@@ -144,9 +227,6 @@
 
     /** Worker TURN 자격 증명 응답을 기다리는 최대 시간(ms). 초과하면 STUN만으로 SDP 교환을 진행합니다. */
     const TURN_REQUEST_TIMEOUT_MS = 6000;
-
-    /** 공인 IP(srflx) 후보를 얻지 못했을 때 SDP 생성을 다시 시도하는 최대 횟수 */
-    const SRFLX_MAX_ATTEMPTS = 2;
 
     /**
      * mDNS(*.local)로 난독화된 host 후보인지 판별합니다.
@@ -333,20 +413,27 @@
         if (pendingIceServersPromise) {
             return pendingIceServersPromise;
         }
-        pendingIceServersPromise = requestTurnCredentials()
+        const generation = engineGeneration;
+        const pending = requestTurnCredentials()
             .then(turnConfigs => {
                 const servers = buildIceServers(turnConfigs);
                 log('ICE servers - STUN ' + iceServers.length + ', TURN ' + (servers.length - iceServers.length));
                 return servers;
             })
             .then(result => {
-                pendingIceServersPromise = null;
+                // 엔진이 재시작되었거나 이미 새 요청으로 교체되었다면 공유 캐시를 건드리지 않습니다.
+                if (generation === engineGeneration && pendingIceServersPromise === pending) {
+                    pendingIceServersPromise = null;
+                }
                 return result;
             }, error => {
-                pendingIceServersPromise = null;
+                if (generation === engineGeneration && pendingIceServersPromise === pending) {
+                    pendingIceServersPromise = null;
+                }
                 throw error;
             });
-        return pendingIceServersPromise;
+        pendingIceServersPromise = pending;
+        return pending;
     }
 
     /** TURN 자격 증명을 기다리는 동안 도착한 원격 signal 을 보관합니다. */
@@ -370,12 +457,27 @@
         log('Stopping P2P engine and disposing connections...');
         myLocalIps = [];
         controlExpandStats = { offer: 0, answer: 0, candidate: 0 };
+        signalingSocketOpens = 0;
+        signalingSocketReconnects = 0;
+        lastSignalingReconnectAt = 0;
+        signalingWasReconnecting = false;
+        activeRoomName = '';
+        activeRoomPeerId = '';
+        controlChannelRetryCount = 0;
+        guestSignalingConnOpenedAt = 0;
+        renamedPeerIds = {};
+        receivedRemoteSignalAt = 0;
+        if (controlChannelProbeTimer) {
+            clearTimeout(controlChannelProbeTimer);
+            controlChannelProbeTimer = null;
+        }
+        Object.keys(sdpResendState).forEach(id => clearSdpResend(id));
+        Object.keys(sentSdpMap).forEach(id => clearSentSdp(id));
         // 진행 중이던 비동기 작업(TURN 조회 등)의 결과가 새 세션에 영향을 주지 않도록 세대를 올립니다.
         engineGeneration++;
         sessionIceServers = [];
         pendingTurnRequests = {};
         pendingRemoteSignals = {};
-        srflxAttemptMap = {};
         pendingPeerAdds = {};
         pendingIceServersPromise = null;
         // PeerJS의 destroy()는 내부적으로 disconnect()를 호출해 'disconnected' 이벤트를 발생시키므로,
@@ -393,7 +495,6 @@
         peerSendQueues.clear();
         pendingSignalingQueue = [];
         peerSignalingConnMap = {};
-        srflxAttemptMap = {};
         remoteSignalMap = {};
         if (guestSignalingConn) {
             try { guestSignalingConn.close(); } catch(e) {}
@@ -432,7 +533,7 @@
                     log('Dispatching queued SDP offer to guest (targetId: ' + readyTargetId + ')...');
                     peerSignalingConnMap[readyTargetId] = req.conn;
                     connPeerIdMap.set(req.conn, readyTargetId);
-                    req.conn.send({ type: 'SDP', sdp: sdp, peerId: readyTargetId });
+                    sendSdpToConn(readyTargetId, req.conn, sdp, 'invite flush');
                 }
             } catch (err) {
                 log('Failed to send SDP to queued connection: ' + err.message);
@@ -475,7 +576,7 @@
      * 제어 P2P의 ICE 상태 변화와 로컬 후보 구성을 로그로 남깁니다.
      * 제어 채널이 어떤 후보로 열렸는지 확인할 수 없던 부분을 채웁니다.
      */
-    function attachControlConnectionDiagnostics(conn) {
+    function attachControlConnectionDiagnostics(conn, onStalled) {
         if (!conn || conn.__controlDiagnosticsAttached) return;
         conn.__controlDiagnosticsAttached = true;
         const tag = currentInitiator ? 'host' : 'guest';
@@ -499,6 +600,39 @@
                         + ' / 전송 시 주입한 LAN IP ' + myLocalIps.length + '개');
                 }
             });
+            // 원격 후보 수신 계측: ANSWER까지 받고도 원격 후보가 0건인 실패를 로그만으로 구분하기 위함.
+            const stats = conn.__controlStats || { remoteCandidates: 0, remoteDescriptionAt: 0, firstRemoteCandidateAt: 0 };
+            conn.__controlStats = stats;
+
+            if (typeof pc.setRemoteDescription === 'function' && !pc.__remoteDescWrapped) {
+                pc.__remoteDescWrapped = true;
+                const originalSetRemoteDescription = pc.setRemoteDescription.bind(pc);
+                pc.setRemoteDescription = function (description) {
+                    try {
+                        if (description && description.type) {
+                            stats.remoteDescriptionAt = Date.now();
+                            log('[Control Timeline] 원격 description 적용 (type=' + description.type
+                                + ', 후보 ' + formatCandidateCounts(countCandidatesByType(description.sdp)) + ')');
+                        }
+                    } catch (e) {}
+                    return originalSetRemoteDescription(description);
+                };
+            }
+
+            if (typeof pc.addIceCandidate === 'function' && !pc.__addCandidateWrapped) {
+                pc.__addCandidateWrapped = true;
+                const originalAddIceCandidate = pc.addIceCandidate.bind(pc);
+                pc.addIceCandidate = function (candidate) {
+                    stats.remoteCandidates++;
+                    if (stats.remoteCandidates === 1) {
+                        stats.firstRemoteCandidateAt = Date.now();
+                        const line = (candidate && candidate.candidate) ? String(candidate.candidate) : 'unknown';
+                        log('[Control Timeline] 첫 원격 후보 수신: ' + line.slice(0, 100));
+                    }
+                    return originalAddIceCandidate(candidate);
+                };
+            }
+
             const timer = setInterval(() => {
                 const state = pc.iceConnectionState;
                 if (state === 'connected' || state === 'completed') {
@@ -509,6 +643,24 @@
                 }
             }, 500);
             setTimeout(() => clearInterval(timer), 45000);
+
+            // 워치독: 원격 description 이 적용된 뒤 CONTROL_CANDIDATE_WATCHDOG_MS 동안 원격 후보가 0건이면
+            // 소켓 교체/고스트 창에 handshake 가 걸린 것으로 보고 재생성 콜백을 호출한다.
+            const watchdogStartedAt = Date.now();
+            const watchdog = setInterval(() => {
+                const state = pc.iceConnectionState;
+                const hasRemote = !!pc.remoteDescription || stats.remoteDescriptionAt > 0;
+                if (stats.remoteCandidates > 0 || conn.open || state === 'connected' || state === 'completed'
+                    || state === 'failed' || state === 'closed' || pc.signalingState === 'closed') {
+                    clearInterval(watchdog);
+                    return;
+                }
+                if (hasRemote && Date.now() - watchdogStartedAt >= CONTROL_CANDIDATE_WATCHDOG_MS) {
+                    clearInterval(watchdog);
+                    if (typeof onStalled === 'function') onStalled(conn, stats);
+                }
+            }, 500);
+            setTimeout(() => clearInterval(watchdog), 20000);
         }
         attach();
     }
@@ -607,38 +759,6 @@
     }
 
     /**
-     * 공인 IP(srflx) 후보가 빠진 SDP만 확정된 경우, 같은 시그널링 정보로 연결을 새로 만들어
-     * 후보 수집을 다시 시도합니다. (STUN 응답이 일시적으로 누락된 경우 복구)
-     */
-    function retryPeerForPublicIp(peerId, p) {
-        if (!p || p.destroyed) return false;
-        // 이미 데이터 채널이 열렸거나 ICE 가 성립한 연결은 후보 재수집을 위해 파괴하지 않습니다.
-        const livePc = p._pc;
-        if (p.connected === true || (livePc && (livePc.iceConnectionState === 'connected' || livePc.iceConnectionState === 'completed'))) {
-            return false;
-        }
-        const isInitiator = p.initiator;
-        const key = findPeerKey(p) || resolvePeerKey(peerId);
-        const remoteSignal = remoteSignalMap[key] || remoteSignalMap[peerId];
-        // 재시도 중에는 시도 횟수를 유지해야 무한 재시도 루프가 생기지 않습니다.
-        const attempt = srflxAttemptMap[key] || srflxAttemptMap[peerId] || 0;
-        try { p.destroy(); } catch(e) {}
-        delete peers[key];
-        delete pendingSdpMap[key];
-        delete pendingPeerAdds[key];
-        if (!isInitiator && !remoteSignal) {
-            return false;
-        }
-        addPeer(key, isInitiator);
-        srflxAttemptMap[key] = attempt;
-        if (!isInitiator) {
-            // 피어 생성(TURN 자격 증명 조회 포함)이 끝난 뒤 적용되도록 보관합니다.
-            queueRemoteSignal(key, remoteSignal);
-        }
-        return true;
-    }
-
-    /**
      * 새 SDP가 기존 SDP보다 더 많은 후보(특히 공인 IP)를 담고 있는지 확인합니다.
      */
     function isBetterSdp(candidateSdp, currentSdp) {
@@ -667,8 +787,46 @@
         const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
         if (targetConn && targetConn.open) {
             log('SDP generated. Sending SDP message to ' + (currentInitiator ? 'guest' : 'host') + ' via signaling channel.');
-            targetConn.send({ type: 'SDP', sdp: sdpStr, peerId: remotePeerIdMap[peerId] || peerId });
+            try {
+                sendSdpToConn(peerId, targetConn, sdpStr, 'publish');
+            } catch (e) {
+                log('SDP 전송 실패, 재전송을 예약합니다: ' + (e && e.message ? e.message : e));
+                scheduleSdpResend(peerId);
+            }
+            return;
         }
+        // SDP 생성이 시그널링 채널 수립보다 빠르거나 전송 직전에 채널이 닫힌 경우, SDP 를 조용히 버리지 않고
+        // 시그널링 채널이 열릴 때까지 재전송을 예약합니다.
+        log('SDP 전송 보류: 시그널링 채널이 아직 열리지 않았습니다. (peer ' + peerId + ', connOpen=' + !!(targetConn && targetConn.open) + ')');
+        scheduleSdpResend(peerId);
+    }
+
+    /**
+     * 시그널링 채널이 열리기 전에 만들어진 SDP 를 잃지 않도록 재전송을 예약합니다.
+     * 전송에 성공하면 clearSdpResend 로 정리되고, 한도를 넘으면 로그를 남기고 포기합니다.
+     */
+    function scheduleSdpResend(peerId) {
+        const existing = sdpResendState[peerId];
+        if (existing && existing.timer) return;
+        const state = existing || { attempts: 0, timer: null };
+        sdpResendState[peerId] = state;
+        if (state.attempts >= SDP_RESEND_MAX_ATTEMPTS) {
+            log('SDP 재전송 한도(' + SDP_RESEND_MAX_ATTEMPTS + '회)를 초과했습니다. (peer ' + peerId + ')');
+            clearSdpResend(peerId);
+            return;
+        }
+        state.attempts++;
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            if (sdpResendState[peerId] !== state) return;
+            const sdp = pendingSdpMap[peerId];
+            const peer = peers[peerId];
+            if (!sdp || !peer || peer.destroyed || peer.connected) {
+                clearSdpResend(peerId);
+                return;
+            }
+            publishSdp(peerId, sdp);
+        }, SDP_RESEND_INTERVAL_MS);
     }
 
     /**
@@ -678,7 +836,6 @@
     function publishSignalWithFullCandidates(peerId, p, data) {
         const baseSdp = typeof data.sdp === 'string' ? data.sdp : '';
         const pc = p._pc;
-        const attempt = srflxAttemptMap[peerId] || 0;
 
         function finalize(sdp) {
             if (peers[peerId] !== p || p.destroyed) {
@@ -690,22 +847,11 @@
             const counts = countCandidatesByType(expandedSdp);
             const hasLanDirect = myLocalIps.length > 0;
             logCandidateSummary(data.type, counts, hasLanDirect);
-            const iceState = pc ? pc.iceConnectionState : null;
-            const connectionUp = p.connected === true || iceState === 'connected' || iceState === 'completed';
-            // 직결 경로(LAN 사설 IP / 공인 IP / TURN)가 확보됐거나 연결이 이미 성립한 뒤에는 피어를 재생성하지 않습니다.
-            // 연결된 피어를 srflx 재시도로 파괴하면 성립한 직결이 끊기고 시그널링 ufrag 만 바뀌어 협상이 어긋납니다.
-            if (hasLanDirect || counts.srflx || counts.relay || connectionUp || attempt >= SRFLX_MAX_ATTEMPTS - 1) {
-                srflxAttemptMap[peerId] = 0;
-                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandedSdp }));
-                return;
-            }
-            srflxAttemptMap[peerId] = attempt + 1;
-            log('공인 IP(srflx) 후보가 없어 후보 수집을 다시 시도합니다. (시도 ' + (attempt + 2) + '/' + SRFLX_MAX_ATTEMPTS + ')');
-            if (!retryPeerForPublicIp(peerId, p)) {
-                log('재시도가 불가능하여 수집된 후보만으로 SDP를 전달합니다.');
-                srflxAttemptMap[peerId] = 0;
-                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandedSdp }));
-            }
+            // ICE 수집이 끝난 SDP 를 '한 번만' 전달합니다.
+            // 예전에는 srflx 후보가 없으면 피어를 파괴하고 새 offer 를 만들었는데, 그 사이 상대가
+            // 이전 offer 로 answer 를 만들면 'wrong state: stable' 오류로 데이터 채널이 실패했습니다.
+            // 수집 완료를 기다린 SDP 하나만 보내는 편이 훨씬 안전합니다.
+            publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandedSdp }));
         }
 
         if (!pc || pc.iceGatheringState === 'complete') {
@@ -714,9 +860,8 @@
         }
 
         log('ICE 수집이 끝나지 않아 공인 IP 후보가 누락될 수 있습니다. 수집 완료를 기다립니다...');
-        const waitMs = attempt === 0 ? ICE_GATHERING_WAIT_MS : Math.floor(ICE_GATHERING_WAIT_MS / 2);
         const waitStarted = Date.now();
-        waitForIceGatheringComplete(pc, waitMs).then(() => {
+        waitForIceGatheringComplete(pc, ICE_GATHERING_WAIT_MS).then(() => {
             log('ICE 수집 대기 종료 (' + (Date.now() - waitStarted) + 'ms, state=' + pc.iceGatheringState + ')');
             const liveSdp = pc.localDescription && pc.localDescription.sdp;
             if (liveSdp && isBetterSdp(liveSdp, baseSdp)) {
@@ -776,6 +921,18 @@
             publishSdp(peerId, JSON.stringify(data));
         });
 
+        // 데이터 피어 워치독: 제한 시간 안에 연결되지 않았고 원격 signal 조차 적용되지 않았다면
+        // (오퍼 유실/제어 채널 스톨) ICE 가 시작될 수 없으므로 확장 호스트에 조기 실패를 알린다.
+        const dataWatchdogGeneration = engineGeneration;
+        setTimeout(() => {
+            if (dataWatchdogGeneration !== engineGeneration) return;
+            if (!findPeerKey(p)) return;            // 이미 교체/정리된 피어
+            if (p.destroyed || p.connected) return;
+            if (p.__lastAppliedSignal) return;      // 원격 신호는 도착했으므로 ICE 진행 중으로 본다
+            log('데이터 피어가 ' + DATA_PEER_WATCHDOG_MS + 'ms 동안 원격 signal 을 받지 못했습니다. 조기 실패로 보고합니다.');
+            vscode.postMessage({ type: 'iceFailed', peerId: peerId });
+        }, DATA_PEER_WATCHDOG_MS);
+
         p.on('connect', () => {
             if (guestSignalingConnectTimer) {
                 clearTimeout(guestSignalingConnectTimer);
@@ -783,6 +940,7 @@
             }
             // WebRTC 데이터 채널이 열린 시점부터 방 세션이 성립된 것으로 간주합니다(게스트 입장 완료).
             hasActiveRoomSession = true;
+            controlChannelRetryCount = 0;
             log('SDP exchange success. WebRTC P2P channel connected.');
             let connType = 'Direct';
             const updateStatus = () => {
@@ -861,7 +1019,8 @@
             if (text.startsWith('{"__isChunk":true,')) {
                 try {
                     const chunkInfo = JSON.parse(text);
-                    const bufferKey = peerId + '_' + chunkInfo.id;
+                    // peerId 는 세션 중 'guest_xxx' 로 바뀔 수 있으므로 피어 객체에 고정된 키를 사용합니다.
+                    const bufferKey = getPeerTransferKey(p) + '_' + chunkInfo.id;
                     let buf = incomingChunkBuffers.get(bufferKey);
                     if (!buf) {
                         buf = {
@@ -898,11 +1057,12 @@
             const key = findPeerKey(p);
             if (!key) return;
             delete peers[key];
+            clearSdpResend(key);
+            clearSentSdp(key);
             // 연결이 끊긴 피어의 대기 큐는 더 이상 전송할 수 없으므로 정리한다.
             dropSendQueue(p, 'P2P 연결 오류로 대기 중인 패킷을 폐기했습니다.');
             delete pendingSdpMap[key];
             delete remoteSignalMap[key];
-            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
             vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
@@ -912,11 +1072,12 @@
             const key = findPeerKey(p);
             if (!key) return;
             delete peers[key];
+            clearSdpResend(key);
+            clearSentSdp(key);
             // 연결이 닫힌 피어의 대기 큐와 재시도 타이머를 정리한다.
             dropSendQueue(p);
             delete pendingSdpMap[key];
             delete remoteSignalMap[key];
-            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
             vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
@@ -930,6 +1091,10 @@
      */
     function resolvePeerKey(id) {
         if (peers[id]) return id;
+        // 'default' -> 'guest_xxx' 로 키가 바뀐 뒤 늦게 도착한 시그널이 이전 키로 라우팅되어
+        // 유실되지 않도록 별칭을 따라갑니다.
+        const alias = renamedPeerIds[id];
+        if (alias && peers[alias]) return alias;
         // 게스트의 경우 자신이 연결된 유일한 호스트 피어가 존재하면 반환 (게스트는 호스트와만 1:1)
         if (!currentInitiator) {
             const keys = Object.keys(peers);
@@ -1012,6 +1177,9 @@
         function setupPeerJS(rName) {
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
             const pjsId = currentInitiator ? toSafeId(rName) : null;
+            // 제어 채널 재생성 시 같은 방으로 다시 연결할 수 있도록 보관합니다.
+            activeRoomName = rName;
+            activeRoomPeerId = toSafeId(rName);
 
             log('Connecting to PeerJS signaling server...');
             peerServer = new Peer(pjsId, {
@@ -1023,34 +1191,41 @@
 
             peerServer.on('open', (id) => {
                 if (wasOpened) {
+                    signalingSocketReconnects++;
                     vscode.postMessage({ type: 'logMessage', level: 'info', text: 'PeerJS 시그널링 서버와의 재연결에 성공했습니다.' });
                 }
                 wasOpened = true;
+                signalingSocketOpens++;
+                signalingWasReconnecting = false;
+                // PeerJS 는 재연결할 때 내부 소켓 객체를 새로 만들기 때문에 이전에 설치한 mDNS 후보 확장 훅이 사라집니다.
+                // 소켓이 열린 시점에 다시 설치합니다.
+                installSignalingCandidateRewrite(peerServer);
+                const reconnectedAfterSec = (signalingSocketReconnects > 0 && lastSignalingReconnectAt > 0)
+                    ? Math.round((Date.now() - lastSignalingReconnectAt) / 1000) : -1;
                 log('Successfully connected to PeerJS signaling server.');
+                log('[Control Timeline] 시그널링 소켓 open (open #' + signalingSocketOpens + ', reconnects=' + signalingSocketReconnects
+                    + (reconnectedAfterSec >= 0 ? ', 직전 재연결 후 ' + reconnectedAfterSec + 's' : '') + ')');
                 if (currentInitiator) {
                     // 호스트는 방이 시그널링 서버에 등록된 시점부터 '방에 입장한 상태'로 간주합니다.
                     hasActiveRoomSession = true;
                     log('Created room: "' + rName + '". Waiting for guest connection...');
                     vscode.postMessage({ type: 'roomNameSuccess' });
-                } else {
-                    log('Connecting to room host for room: "' + rName + '"...');
-                    const conn = peerServer.connect(toSafeId(rName));
-                    handleSignalingConn(conn);
-
-                    // 게스트 시그널링 채널 조기 타임아웃(10초) 설정
-                    // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
-                    if (guestSignalingConnectTimer) {
-                        clearTimeout(guestSignalingConnectTimer);
-                    }
-                    guestSignalingConnectTimer = setTimeout(() => {
-                        guestSignalingConnectTimer = null;
-                        if (!currentInitiator && guestSignalingConn === conn && !conn.open && !Object.values(peers).some(p => p && !p.destroyed && (p.connected || p._pc))) {
-                            log('Guest signaling connection early timeout (10s): Host not responding yet. Closing connection...');
-                            try { conn.close(); } catch(e) {}
-                            vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
-                        }
-                    }, 10000);
+                    return;
                 }
+                // 소켓이 재연결될 때마다 connect() 를 다시 호출하면 같은 방에 제어 DataConnection 이 중복 생성되어
+                // SDP 가 두 번 교환되고(상대가 answer 를 두 번 만들어 wrong state: stable) 유령 피어가 남습니다.
+                // 이미 살아있거나 방금 만든 제어 채널이 있으면 그대로 사용합니다.
+                if (hasActiveRoomSession) {
+                    log('[Control Timeline] 제어 채널 connect() 생략 (이미 방에 입장함)');
+                    return;
+                }
+                const existing = guestSignalingConn;
+                const existingAge = guestSignalingConnOpenedAt > 0 ? (Date.now() - guestSignalingConnOpenedAt) : -1;
+                if (existing && (existing.open || (existingAge >= 0 && existingAge < GUEST_CONTROL_CONNECT_STALE_MS))) {
+                    log('[Control Timeline] 제어 채널 connect() 생략 (기존 채널 재사용, open=' + !!existing.open + ', age=' + existingAge + 'ms)');
+                    return;
+                }
+                connectGuestControlChannel('최초 연결');
             });
 
             peerServer.on('connection', (conn) => {
@@ -1061,12 +1236,13 @@
             peerServer.on('disconnected', () => {
                 // stopEngine()의 destroy() 호출로 인한 의도적 종료라면 재연결/팝업을 수행하지 않습니다.
                 if (isStoppingEngine || !wasOpened || !peerServer || peerServer.destroyed) return;
-                // 방 세션이 성립된 상태(방에 입장해 있는 동안)에서만 자동 재연결을 시도합니다.
-                if (!hasActiveRoomSession) {
-                    log('Signaling server disconnected before an active room session. Skipping auto-reconnect.');
-                    return;
-                }
+                // 게스트는 데이터 채널이 아직 열리지 않았어도(제어 채널 수립 중) 재연결해야 합니다.
+                // hasActiveRoomSession 은 데이터 채널이 열린 시점에만 true 가 되므로 이를 조건으로 걸면
+                // 초기 연결 중 소켓이 끊긴 게스트가 아무 이벤트 없이 30초 타임아웃까지 멈춥니다.
                 log('PeerJS connection to signaling server lost. Reconnecting...');
+                signalingWasReconnecting = true;
+                lastSignalingReconnectAt = Date.now();
+                log('[Control Timeline] 시그널링 소켓 재연결 시도 (reconnects=' + (signalingSocketReconnects + 1) + ')');
                 vscode.postMessage({ type: 'logMessage', level: 'warning', text: 'PeerJS 시그널링 서버와의 연결이 끊어졌습니다. 자동으로 재연결을 시도합니다...' });
                 peerServer.reconnect();
             });
@@ -1107,11 +1283,16 @@
 
         function handleSignalingConn(conn) {
             // 제어 P2P가 어떤 후보(host/srflx/relay)로 열렸는지 확인할 수 있도록 진단을 붙입니다.
-            attachControlConnectionDiagnostics(conn);
+            // 원격 후보가 전혀 도착하지 않는 실패(고스트/소켓 교체 창)는 reportControlChannelStall 로 보고됩니다.
+            attachControlConnectionDiagnostics(conn, reportControlChannelStall);
             if (!currentInitiator) {
                 guestSignalingConn = conn;
             }
             conn.on('open', () => {
+                const controlAttempt = controlChannelRetryCount;
+                const stats = conn.__controlStats;
+                log('[Control Timeline] 제어 채널 open (제어 채널 시도 ' + (controlAttempt + 1) + '회'
+                    + (stats ? ', 원격 후보 ' + stats.remoteCandidates + '건' : '') + ')');
                 if (guestSignalingConnectTimer) {
                     clearTimeout(guestSignalingConnectTimer);
                     guestSignalingConnectTimer = null;
@@ -1120,7 +1301,9 @@
                 log('[mDNS Expand] 제어 채널 후보 확장 누적: offer ' + controlExpandStats.offer + ', answer ' + controlExpandStats.answer + ', candidate ' + controlExpandStats.candidate);
                 if (!currentInitiator) {
                     log('Requesting SDP offer from host...');
-                    conn.send({ type: 'REQ_OFFER' });
+                    try { conn.send({ type: 'REQ_OFFER' }); } catch (e) { log('REQ_OFFER 전송 실패: ' + (e && e.message ? e.message : e)); }
+                    // 채널은 열렸지만 호스트가 SDP 를 보내지 않으면(슬롯 부족/고스트 창) 재생성 프로브로 복구합니다.
+                    scheduleGuestConnectGuard(conn, GUEST_CONTROL_GUARD_MS);
                 }
             });
 
@@ -1141,13 +1324,14 @@
                         log('Sending SDP offer to guest immediately (targetId: ' + targetId + ')...');
                         peerSignalingConnMap[targetId] = conn;
                         connPeerIdMap.set(conn, targetId);
-                        conn.send({ type: 'SDP', sdp: pendingSdpMap[targetId], peerId: targetId });
+                        sendSdpToConn(targetId, conn, pendingSdpMap[targetId], 'req-offer');
                     } else {
                         log('No unassigned SDP offer ready yet. Queuing signaling connection and requesting invite slot from host...');
                         pendingSignalingQueue.push({ conn, timestamp: Date.now() });
                         vscode.postMessage({ type: 'requireInvite' });
                     }
                 } else if (data.type === 'SDP') {
+                    receivedRemoteSignalAt = Date.now();
                     let targetId;
                     if (currentInitiator) {
                         targetId = data.peerId || connPeerIdMap.get(conn);
@@ -1164,6 +1348,8 @@
                         remotePeerIdMap['default'] = data.peerId;
                     }
 
+                    // updatePeerId 로 키가 바뀐 뒤 늦게 도착한 SDP 도 찾을 수 있도록 별칭을 해석합니다.
+                    targetId = resolvePeerKey(targetId);
                     if (!targetId || !peers[targetId]) {
                         log('Target peer not found for SDP signal (targetId: ' + targetId + ')');
                         return;
@@ -1179,6 +1365,21 @@
                 log('Signaling channel connection closed.');
                 if (!currentInitiator && guestSignalingConn === conn) {
                     guestSignalingConn = null;
+                    guestSignalingConnOpenedAt = 0;
+                    if (guestSignalingConnectTimer) {
+                        clearTimeout(guestSignalingConnectTimer);
+                        guestSignalingConnectTimer = null;
+                    }
+                    // 호스트가 SDP 를 보내기 전에 제어 채널이 닫히면(고스트 소켓/호스트 초기화) 아무 신호도 없이
+                    // 멈추므로 재생성 프로브를 예약합니다. SDP 를 이미 받은 뒤라면 데이터 채널 협상을 방해하지 않도록
+                    // 재생성하지 않습니다.
+                    if (!hasActiveRoomSession && !receivedRemoteSignalAt) {
+                        log('제어 채널이 SDP 교환 전에 닫혔습니다. 재생성 프로브를 예약합니다.');
+                        scheduleControlChannelProbe('SDP 수신 전 제어 채널 종료', 600, () => {
+                            return !currentInitiator && !hasActiveRoomSession && !receivedRemoteSignalAt
+                                && !guestSignalingConn && peerServer && !peerServer.destroyed && peerServer.open;
+                        });
+                    }
                 }
                 const boundPeerId = connPeerIdMap.get(conn);
                 if (boundPeerId && peerSignalingConnMap[boundPeerId] === conn) {
@@ -1189,6 +1390,97 @@
             conn.on('error', (err) => {
                 log('Signaling channel error: ' + err.message);
             });
+        }
+
+        /**
+         * 제어 채널이 원격 description 까지는 받았는데 원격 ICE 후보가 전혀 도착하지 않은 경우를 처리합니다.
+         * 소켓 교체/고스트 창에 handshake 가 걸렸을 때 발생하며, 게스트는 제어 채널을 재생성해 빠르게 복구합니다.
+         * @param conn 멈춘 것으로 판단된 제어 채널(PeerJS DataConnection).
+         * @param stats 원격 후보 수신 계측값.
+         */
+        function reportControlChannelStall(conn, stats) {
+            const elapsed = (stats && stats.remoteDescriptionAt) ? Math.round((Date.now() - stats.remoteDescriptionAt) / 1000) : -1;
+            log('[Control ICE] 원격 후보가 ' + CONTROL_CANDIDATE_WATCHDOG_MS + 'ms 동안 도착하지 않았습니다. (role=' + (currentInitiator ? 'host' : 'guest')
+                + ', socketReconnects=' + signalingSocketReconnects + ', wasReconnecting=' + signalingWasReconnecting
+                + ', remoteDesc 경과=' + elapsed + 's)');
+
+            if (currentInitiator) {
+                // 호스트는 게스트가 다시 접속하는 구조라 로컬 재생성 대신 진단 로그만 남깁니다.
+                return;
+            }
+            if (controlChannelRetryCount >= CONTROL_CHANNEL_RETRY_MAX) {
+                log('[Control ICE] 제어 채널 재생성 한도(' + CONTROL_CHANNEL_RETRY_MAX + '회)를 초과했습니다. 엔진 재시작이 필요합니다.');
+                return;
+            }
+            if (conn !== guestSignalingConn) return;
+
+            controlChannelRetryCount++;
+            log('[Control ICE] 제어 채널 재생성 시도 ' + controlChannelRetryCount + '/' + CONTROL_CHANNEL_RETRY_MAX
+                + ' (socketReconnects=' + signalingSocketReconnects + ')');
+            guestSignalingConn = null;
+            guestSignalingConnOpenedAt = 0;
+            if (guestSignalingConnectTimer) {
+                clearTimeout(guestSignalingConnectTimer);
+                guestSignalingConnectTimer = null;
+            }
+            try { conn.close(); } catch (e) {}
+
+            scheduleControlChannelProbe('제어 채널 재시도 ' + controlChannelRetryCount, 300);
+        }
+
+        /**
+         * 게스트 제어 채널 복구(재생성) 프로브를 세대 가드와 함께 예약합니다.
+         * 이전 세션의 지연 콜백이 새 세션에 채널을 만들지 않도록 engineGeneration 을 확인합니다.
+         * @param reason 로그에 남길 생성 사유.
+         * @param delayMs 예약 지연(ms).
+         * @param guard 추가 조건(없으면 이벤트 루프/플래그만 검사).
+         */
+        function scheduleControlChannelProbe(reason, delayMs, guard) {
+            const generation = engineGeneration;
+            if (controlChannelProbeTimer) clearTimeout(controlChannelProbeTimer);
+            controlChannelProbeTimer = setTimeout(() => {
+                controlChannelProbeTimer = null;
+                if (generation !== engineGeneration) return;
+                if (typeof guard === 'function' && !guard()) return;
+                connectGuestControlChannel(reason);
+            }, delayMs);
+        }
+
+        /**
+         * 게스트 제어 채널(호스트와의 시그널링 DataConnection)을 새로 만듭니다.
+         * 소켓 재연결/스톨 복구 시에도 같은 방으로 다시 연결하며, 이미 살아있는 채널이 있으면 중복 생성하지 않습니다.
+         * @param reason 로그에 남길 생성 사유.
+         */
+        function connectGuestControlChannel(reason) {
+            if (currentInitiator || !peerServer || peerServer.destroyed || !peerServer.open) return;
+            if (guestSignalingConn) return;
+            log('Connecting to room host for room: "' + activeRoomName + '" (' + reason + ')...');
+            log('[Control Timeline] 제어 채널 connect() 호출 (room="' + activeRoomName + '", 시도 ' + (controlChannelRetryCount + 1) + '회)');
+            const conn = peerServer.connect(activeRoomPeerId || activeRoomName);
+            guestSignalingConnOpenedAt = Date.now();
+            handleSignalingConn(conn);
+            scheduleGuestConnectGuard(conn, GUEST_CONTROL_GUARD_MS);
+        }
+
+        /**
+         * 게스트 제어 채널이 제한 시간 안에 진전(채널 open + 원격 description 수신)을 보이지 않으면
+         * 제어 채널 재생성 프로브를 트리거합니다. 호스트 미등록/고스트 소켓 창에서 30초 타임아웃까지 멈추지 않게 합니다.
+         * @param conn 감시할 제어 채널.
+         * @param delayMs 진전 없음을 판단할 때까지 기다릴 시간(ms).
+         */
+        function scheduleGuestConnectGuard(conn, delayMs) {
+            if (guestSignalingConnectTimer) {
+                clearTimeout(guestSignalingConnectTimer);
+                guestSignalingConnectTimer = null;
+            }
+            guestSignalingConnectTimer = setTimeout(() => {
+                guestSignalingConnectTimer = null;
+                if (currentInitiator || guestSignalingConn !== conn || hasActiveRoomSession) return;
+                const stats = conn.__controlStats || {};
+                if (stats.remoteDescriptionAt > 0) return; // SDP 교환이 이미 진행 중이면 워치독에 맡깁니다.
+                log('Guest control channel made no progress within ' + delayMs + 'ms (open=' + conn.open + '). Triggering retry probe...');
+                reportControlChannelStall(conn, stats);
+            }, delayMs);
         }
 
         // Worker 에서 TURN 자격 증명을 받은 뒤에 시그널링 채널/SDP 를 만듭니다.
@@ -1239,17 +1531,29 @@
             peers[m.newId] = peers[m.oldId];
             pendingSdpMap[m.newId] = pendingSdpMap[m.oldId];
             remoteSignalMap[m.newId] = remoteSignalMap[m.oldId];
-            srflxAttemptMap[m.newId] = srflxAttemptMap[m.oldId];
+            // 이전 키를 가리키던 별칭들을 새 키로 연결해 체인을 유지합니다.
+            Object.keys(renamedPeerIds).forEach(k => {
+                if (renamedPeerIds[k] === m.oldId) renamedPeerIds[k] = m.newId;
+            });
+            renamedPeerIds[m.oldId] = m.newId;
+            const movedResend = sdpResendState[m.oldId];
+            if (movedResend) {
+                sdpResendState[m.newId] = movedResend;
+                delete sdpResendState[m.oldId];
+            }
+            // 새 키로 다시 보내야 하므로 이전 키의 SDP 전송 기록은 지웁니다.
+            clearSentSdp(m.oldId);
             delete peers[m.oldId];
             delete pendingSdpMap[m.oldId];
             delete remoteSignalMap[m.oldId];
-            delete srflxAttemptMap[m.oldId];
         }
         if (m.type === 'disconnectPeer') {
             const pId = m.peerId;
             if (peers[pId]) {
                 try { peers[pId].destroy(); } catch(e) {}
                 delete peers[pId];
+                clearSdpResend(pId);
+                clearSentSdp(pId);
                 delete pendingSdpMap[pId];
                 if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
             }
@@ -1257,6 +1561,7 @@
         }
         if (m.type === 'addNewPeer') addPeer(m.peerId, m.initiator);
         if (m.type === 'signal') {
+            receivedRemoteSignalAt = Date.now();
             const key = resolvePeerKey(targetId);
             if (peers[key]) {
                 const prepared = prepareRemoteSignalFor(peers[key], m.sdp);
@@ -1269,7 +1574,6 @@
                 }
                 peers[key].__lastAppliedSignal = fingerprint;
                 remoteSignalMap[key] = m.sdp;
-                srflxAttemptMap[key] = 0;
                 peers[key].signal(prepared);
             } else {
                 // TURN 자격 증명을 받아 피어를 만드는 동안 도착한 signal 은 버리지 않고 보관합니다.
