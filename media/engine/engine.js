@@ -397,8 +397,11 @@
      */
     function resolvePeerKey(id) {
         if (peers[id]) return id;
-        const keys = Object.keys(peers);
-        if (keys.length === 1) return keys[0];
+        // 게스트의 경우 자신이 연결된 유일한 호스트 피어가 존재하면 반환 (게스트는 호스트와만 1:1)
+        if (!currentInitiator) {
+            const keys = Object.keys(peers);
+            if (keys.length === 1) return keys[0];
+        }
         return id;
     }
 
@@ -619,7 +622,8 @@
                     if (currentInitiator) {
                         targetId = data.peerId || connPeerIdMap.get(conn);
                         if (!targetId) {
-                            targetId = Object.keys(peers).find(id => !peers[id].connected && peers[id].initiator);
+                            // 피어 ID가 명시되지 않은 경우, 이 시그널링 커넥션(conn)이 바인딩된 피어만 검색
+                            targetId = Object.keys(peerSignalingConnMap).find(id => peerSignalingConnMap[id] === conn);
                         }
                         if (targetId) {
                             peerSignalingConnMap[targetId] = conn;

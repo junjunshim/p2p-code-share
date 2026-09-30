@@ -369,9 +369,6 @@ export class SyncEngine {
                             if (msg.peerId && msg.peerId !== peerId) {
                                 this.participantManager.handlePong(msg.peerId);
                             }
-                            if (msg.name) {
-                                this.participantManager.handlePong(msg.name);
-                            }
                         }
                         break;
                 }
@@ -500,7 +497,7 @@ export class SyncEngine {
             const hasMyEntry = !!(this.myId && this.participantManager.participants[this.myId]);
 
             if (this.myId) {
-                const myData = this.participantManager.participants[this.myId] || this.participantManager.participants['default'];
+                const myData = this.participantManager.participants[this.myId];
                 if (myData) {
                     this.myName = myData.name;
                 }

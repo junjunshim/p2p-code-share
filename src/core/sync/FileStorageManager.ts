@@ -127,7 +127,10 @@ export class FileStorageManager {
         }
 
         // 로컬 충돌 방지를 위해 myId 및 roomName 기반 독립 폴더 생성
-        const folderName = this.engine.isHost ? 'host' : (this.engine.myId || 'guest');
+        if (!this.engine.isHost && (!this.engine.myId || this.engine.myId === 'default')) {
+            return;
+        }
+        const folderName = this.engine.isHost ? 'host' : this.engine.myId;
         this.storagePath = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName), sanitizePath(folderName));
         ensureDirectory(this.storagePath);
         this.isStorageInitialized = true;

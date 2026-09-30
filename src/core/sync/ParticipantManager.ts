@@ -152,8 +152,8 @@ export class ParticipantManager {
         // 게스트 재연결 유예 기간 중에는 오프라인 타이핑 유실 및 충돌 방지를 위해 편집 불가
         if (this.isReconnecting) return false;
         
-        // 내 ID 또는 기본 ID로 데이터 검색
-        const myData = this.participants[this.engine.myId] || this.participants['default'];
+        // 내 ID로 데이터 검색
+        const myData = this.engine.myId ? this.participants[this.engine.myId] : undefined;
         
         if (!myData) return false; // 기본 권한 없음
         
@@ -731,9 +731,9 @@ export class ParticipantManager {
         const trimmedNewName = newName.trim();
         if (!trimmedNewName) return;
 
-        const myEffectiveId = this.engine.isHost ? 'host' : (this.engine.myId || 'default');
+        const myEffectiveId = this.engine.isHost ? 'host' : this.engine.myId;
         const isDuplicate = Object.entries(this.participants).some(([id, data]) => {
-            const isSelf = (id === myEffectiveId) || (this.engine.myId && id === this.engine.myId);
+            const isSelf = (myEffectiveId && id === myEffectiveId) || (this.engine.myId && id === this.engine.myId);
             return !isSelf && data && data.name === trimmedNewName;
         });
         
@@ -1383,15 +1383,6 @@ export class ParticipantManager {
         this.reconnectStartTimes.delete(peerId);
 
         let perm = this.participants[peerId];
-        // peerId로 직접 매칭되지 않는 경우, 동일한 ID를 가진 참가자 항목 검색
-        if (!perm) {
-            const foundEntry = Object.entries(this.participants).find(([id, p]) => id === peerId);
-            if (foundEntry) {
-                this.lastPongTimes.set(foundEntry[0], Date.now());
-                this.reconnectStartTimes.delete(foundEntry[0]);
-                perm = foundEntry[1];
-            }
-        }
 
         if (perm && perm.connectionStatus !== 'connected') {
             perm.connectionStatus = 'connected';
