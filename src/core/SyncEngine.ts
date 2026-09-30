@@ -208,9 +208,9 @@ export class SyncEngine {
                         }
                         break;
                     case 'INIT_SNAPSHOT':
-                        // INIT_SNAPSHOT은 호스트에서 게스트로 보내는 메시지이며,
-                        // 게스트 측 호스트 피어의 전송 ID는 로컬 ID 변경 후에도 'default'로 유지됩니다.
-                        if (!this.isHost && peerId === 'default') {
+                        // INIT_SNAPSHOT은 호스트에서 게스트로 보내는 메시지입니다.
+                        // 게스트는 호스트와만 1:1로 연결되어 있으므로 peerId 조건 없이 처리합니다.
+                        if (!this.isHost) {
                             await this.fileStorageManager.handleGuestInitSnapshot(msg);
                         }
                         break;

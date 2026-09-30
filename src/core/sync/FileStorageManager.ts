@@ -201,6 +201,9 @@ export class FileStorageManager {
             assigneeName: undefined
         });
 
+        // 5. 전체 게스트에게 갱신된 파일 목록(USER_LIST_UPDATE) 즉시 브로드캐스트
+        this.engine.participantManager.broadcastUserList(true);
+
         this.engine.logToUI(`Started sharing: ${fileName}`);
         this.engine.pushUIUpdate();
     }

@@ -1066,7 +1066,6 @@ export class ParticipantManager {
                 // 수동 SDP 교환 화면(isSetupMode)에 머무르지 않고 승인 즉시 방 화면으로 전환합니다.
                 this.engine.isSetupMode = false;
                 this.isAutoJoin = false;
-        this.hasJoinedSuccessfully = false;
                 this.engine.updateStatus('Connected');
                 this.engine.pushUIUpdate();
                 vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
