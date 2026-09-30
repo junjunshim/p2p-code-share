@@ -37,7 +37,7 @@ export class HubManager {
     private _webview?: vscode.Webview;
 
     /** Webview가 준비되기 전 전송 요청된 메시지 대기열 */
-    private _pendingMessageQueue: Array<{ msg: any; to?: string }> = [];
+    private _pendingMessageQueue: Array<{ msg: any; to?: string; targets?: string[] }> = [];
 
     /** 피어 ID별 최신 SDP 문자열을 보관하는 맵 */
     public sdpMap: Map<string, string> = new Map();
@@ -125,7 +125,7 @@ export class HubManager {
         while (this._pendingMessageQueue.length > 0) {
             const item = this._pendingMessageQueue.shift();
             if (item) {
-                this.sendToEngine(item.msg, item.to);
+                this.sendToEngine(item.msg, item.to, item.targets);
             }
         }
     }
@@ -218,15 +218,17 @@ export class HubManager {
     /**
      * Webview를 통해 P2P 엔진으로 메시지를 전달합니다.
      * @param msg Webview 엔진으로 보낼 메시지 객체.
-     * @param to 특정 피어를 대상으로 할 경우 지정하는 피어 ID.
+     * @param to 특정 피어 한 명을 대상으로 할 경우 지정하는 피어 ID.
+     * @param targets 여러 피어에게 동일 메시지를 보낼 경우의 대상 피어 ID 목록.
+     *               피어 수만큼 IPC를 반복하지 않고 단 1회의 IPC로 브로드캐스트합니다.
      * @returns {void}
      */
-    public sendToEngine(msg: any, to?: string): void {
+    public sendToEngine(msg: any, to?: string, targets?: string[]): void {
         if (!this._webview) {
-            this._pendingMessageQueue.push({ msg, to });
+            this._pendingMessageQueue.push({ msg, to, targets });
             return;
         }
-        this._webview.postMessage({ ...msg, targetPeerId: to });
+        this._webview.postMessage({ ...msg, targetPeerId: to, targetPeerIds: targets });
     }
 
     /**

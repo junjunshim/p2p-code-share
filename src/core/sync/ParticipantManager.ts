@@ -574,23 +574,28 @@ export class ParticipantManager {
             : this.engine.fileStorageManager.sharedFiles;
 
         filesToSend.forEach((f, idx) => {
-            const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
-            const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
-            const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, f.path));
-            const rawContent = ytext ? ytext.toString() : (doc ? doc.getText() : fs.readFileSync(f.path, 'utf8'));
-            const content = normalizeEOL(rawContent);
-            const yjsState = ydoc ? Buffer.from(Y.encodeStateAsUpdate(ydoc)).toString('base64') : undefined;
-
             // 파일이 여러 개일 경우 채널 과부하 방지를 위해 순차 발송 (idx * 40ms)
             setTimeout(() => {
-                if (this.engine.isHost && this.participants[peerId]) {
-                    this.engine.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', { 
-                        fileName: f.name, 
+                if (!this.engine.isHost || !this.participants[peerId]) return;
+                try {
+                    // 스냅샷 내용은 예약 시점이 아니라 실제 전송 시점에 읽습니다.
+                    // (예약 후 전송 전에 발생한 편집이 스냅샷에서 누락되어 유실되는 것을 방지)
+                    const ydoc = this.engine.documentSyncManager.yDocs.get(f.name);
+                    const ytext = this.engine.documentSyncManager.yTexts.get(f.name);
+                    const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, f.path));
+                    const rawContent = ytext ? ytext.toString() : (doc ? doc.getText() : fs.readFileSync(f.path, 'utf8'));
+                    const content = normalizeEOL(rawContent);
+                    const yjsState = ydoc ? Buffer.from(Y.encodeStateAsUpdate(ydoc)).toString('base64') : undefined;
+
+                    this.engine.sendMessageToPeer(peerId, 'INIT_SNAPSHOT', {
+                        fileName: f.name,
                         content,
                         yjsState,
                         assigneeId: f.assigneeId,
                         assigneeName: f.assigneeName
                     });
+                } catch (e) {
+                    this.engine.logToUI(`Failed to send INIT_SNAPSHOT for ${f.name}: ${e}`);
                 }
             }, idx * 40);
         });

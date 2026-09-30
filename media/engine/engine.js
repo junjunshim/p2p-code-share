@@ -32,6 +32,99 @@
     let engineGeneration = 0;      // stopEngine/startEngine 마다 증가시켜 지연된 비동기 작업을 무효화
     let pendingTurnRequests = {};  // requestId -> Worker 응답 대기 resolver
     let pendingRemoteSignals = {}; // TURN 자격 증명을 받아 피어를 만드는 동안 도착한 원격 signal 보관소
+    let incomingChunkBuffers = new Map(); // 분할 전송된 대용량 패킷(파일 스냅샷 등) 청크 조립 버퍼
+
+    // 피어별 전송 FIFO 큐: 대용량 청크가 SCTP 버퍼에 적체되는 동안에도 순서를 보장하고,
+    // 소형 패킷(예: 스냅샷 전송 중 발생한 Yjs 델타)이 재시도 예산 부족으로 조용히 유실되는 것을 막는다.
+    const peerSendQueues = new Map(); // peer 객체 -> { items: [{ payload, enqueuedAt, group }], timer }
+    const SEND_BUFFER_HIGH_WATER = 1024 * 1024; // SCTP bufferedAmount 상한(1MB)
+    const SEND_RETRY_DELAY_MS = 50;
+    const SEND_NOT_CONNECTED_DELAY_MS = 100;
+    const SEND_ITEM_TIMEOUT_MS = 30000;
+
+    /**
+     * 큐에 전송 항목을 넣고 즉시 드레인을 시도합니다.
+     * @param peer simple-peer 인스턴스.
+     * @param payload 전송할 바이너리.
+     * @param group 대용량 분할 전송의 묶음 식별자(일반 패킷은 undefined).
+     */
+    function enqueueSend(peer, payload, group) {
+        if (!peer) return;
+        let queue = peerSendQueues.get(peer);
+        if (!queue) {
+            queue = { items: [], timer: null };
+            peerSendQueues.set(peer, queue);
+        }
+        queue.items.push({ payload, enqueuedAt: Date.now(), group: group || null });
+        drainSendQueue(peer);
+    }
+
+    /**
+     * 피어별 전송 큐를 앞에서부터 비웁니다. 미연결이거나 SCTP 버퍼가 적체되면 잠시 후 재시도합니다.
+     * @param peer simple-peer 인스턴스.
+     */
+    function drainSendQueue(peer) {
+        const queue = peerSendQueues.get(peer);
+        if (!queue || queue.timer) return;
+
+        if (!peer || peer.destroyed) {
+            dropSendQueue(peer, 'P2P 피어가 종료되어 대기 중인 패킷을 폐기했습니다.');
+            return;
+        }
+
+        while (queue.items.length > 0) {
+            const item = queue.items[0];
+
+            if (Date.now() - item.enqueuedAt > SEND_ITEM_TIMEOUT_MS) {
+                queue.items.shift();
+                if (item.group) {
+                    const before = queue.items.length;
+                    queue.items = queue.items.filter(it => it.group !== item.group);
+                    log('P2P 전송 중단: 대용량 패킷이 제한 시간 내에 전송되지 않았습니다. (' + item.group + ', ' + (before - queue.items.length + 1) + '건 폐기)');
+                } else {
+                    log('P2P 전송 시간 초과로 대기 중이던 패킷 1건을 폐기했습니다.');
+                }
+                continue;
+            }
+
+            if (!peer.connected) {
+                queue.timer = setTimeout(() => { queue.timer = null; drainSendQueue(peer); }, SEND_NOT_CONNECTED_DELAY_MS);
+                return;
+            }
+
+            const channel = peer._channel;
+            if (channel && channel.bufferedAmount > SEND_BUFFER_HIGH_WATER) {
+                // 적체가 풀릴 때까지 순서를 유지한 채 대기한다(드롭 방지).
+                queue.timer = setTimeout(() => { queue.timer = null; drainSendQueue(peer); }, SEND_RETRY_DELAY_MS);
+                return;
+            }
+
+            queue.items.shift();
+            try {
+                peer.send(item.payload);
+            } catch (e) {
+                // 실패를 조용히 삼키면 호스트만 전송된 것처럼 보이므로 반드시 로그를 남긴다.
+                log('P2P 전송 실패: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        dropSendQueue(peer);
+    }
+
+    /**
+     * 피어의 전송 큐와 예약된 재시도 타이머를 제거합니다.
+     * @param peer simple-peer 인스턴스.
+     * @param reason 로그로 남길 사유(선택).
+     */
+    function dropSendQueue(peer, reason) {
+        const queue = peerSendQueues.get(peer);
+        if (!queue) return;
+        if (queue.timer) clearTimeout(queue.timer);
+        if (reason && queue.items.length > 0) {
+            log(reason + ' (대기 ' + queue.items.length + '건)');
+        }
+        peerSendQueues.delete(peer);
+    }
 
     // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
     const DEFAULT_STUN_URLS = [
@@ -297,6 +390,7 @@
             try { peers[id].destroy(); } catch(e) {}
             delete peers[id];
         });
+        peerSendQueues.clear();
         pendingSignalingQueue = [];
         peerSignalingConnMap = {};
         srflxAttemptMap = {};
@@ -759,9 +853,43 @@
 
         p.on('data', data => {
             const raw = new Uint8Array(data);
-            if (raw.length !== 1 || raw[0] !== 255) {
-                vscode.postMessage({ type: 'sendData', value: new TextDecoder().decode(raw), peerId });
+            // 하트비트(1바이트 0xFF)는 데이터가 아니므로 무시
+            if (raw.length === 1 && raw[0] === 255) return;
+
+            const text = new TextDecoder().decode(raw);
+            // 분할 전송된 대용량 패킷이면 청크를 모아 원본 JSON 문자열로 복원한다. (O(1) prefix 검사)
+            if (text.startsWith('{"__isChunk":true,')) {
+                try {
+                    const chunkInfo = JSON.parse(text);
+                    const bufferKey = peerId + '_' + chunkInfo.id;
+                    let buf = incomingChunkBuffers.get(bufferKey);
+                    if (!buf) {
+                        buf = {
+                            chunks: new Array(chunkInfo.total),
+                            received: 0,
+                            timer: setTimeout(() => {
+                                // 일부 청크가 유실된 채 30초가 지나면 조립 버퍼를 정리한다.
+                                incomingChunkBuffers.delete(bufferKey);
+                            }, 30000)
+                        };
+                        incomingChunkBuffers.set(bufferKey, buf);
+                    }
+                    // 중복 수신된 청크는 무시하고, 도착 순서와 무관하게 index 위치에 저장한다.
+                    if (!buf.chunks[chunkInfo.index]) {
+                        buf.chunks[chunkInfo.index] = chunkInfo.data;
+                        buf.received++;
+                    }
+                    if (buf.received === chunkInfo.total) {
+                        clearTimeout(buf.timer);
+                        incomingChunkBuffers.delete(bufferKey);
+                        // 완성된 원본 페이로드만 확장 호스트로 1회 전달한다(중간 청크는 IPC를 타지 않음).
+                        vscode.postMessage({ type: 'sendData', value: buf.chunks.join(''), peerId });
+                    }
+                    return;
+                } catch (e) {}
             }
+
+            vscode.postMessage({ type: 'sendData', value: text, peerId });
         });
 
         p.on('error', err => {
@@ -770,6 +898,8 @@
             const key = findPeerKey(p);
             if (!key) return;
             delete peers[key];
+            // 연결이 끊긴 피어의 대기 큐는 더 이상 전송할 수 없으므로 정리한다.
+            dropSendQueue(p, 'P2P 연결 오류로 대기 중인 패킷을 폐기했습니다.');
             delete pendingSdpMap[key];
             delete remoteSignalMap[key];
             delete srflxAttemptMap[key];
@@ -782,6 +912,8 @@
             const key = findPeerKey(p);
             if (!key) return;
             delete peers[key];
+            // 연결이 닫힌 피어의 대기 큐와 재시도 타이머를 정리한다.
+            dropSendQueue(p);
             delete pendingSdpMap[key];
             delete remoteSignalMap[key];
             delete srflxAttemptMap[key];
@@ -1145,35 +1277,45 @@
             }
         }
         if (m.type === 'peerData') {
-            const data = new TextEncoder().encode(JSON.stringify(m.value));
+            const rawStr = JSON.stringify(m.value);
+            const CHUNK_SIZE = 16384; // 16KB 안전 MTU 규격
 
-            function safeSend(peer, payload, retries = 3) {
-                if (!peer) return;
-                // 아직 연결 수립 중인 피어라면 100ms 후 최대 3회 재시도 (초기 핸드셰이크 시 패킷 유실 방지)
-                if (!peer.connected) {
-                    if (retries > 0) {
-                        setTimeout(() => safeSend(peer, payload, retries - 1), 100);
-                    }
-                    return;
-                }
-                const channel = peer._channel;
-                // SCTP 버퍼가 1MB 이상 적체된 경우 잠시 대기 후 안전 발송
-                if (channel && channel.bufferedAmount > 1024 * 1024) {
-                    setTimeout(() => {
-                        if (peer.connected) {
-                            try { peer.send(payload); } catch(e) {}
-                        }
-                    }, 50);
+            // 피어별 FIFO 큐(전역)로 전송하여 순서를 보장하고 소형 패킷 유실을 막는다.
+            function dispatchPayload(payload, group) {
+                if (m.targetPeerIds && Array.isArray(m.targetPeerIds)) {
+                    // 호스트 팬아웃: 페이로드는 위에서 1회만 직렬화하고, 대상 피어에게만 뿌린다.
+                    m.targetPeerIds.forEach(id => {
+                        const key = resolvePeerKey(id);
+                        if (peers[key]) enqueueSend(peers[key], payload, group);
+                    });
+                } else if (m.targetPeerId) {
+                    const key = resolvePeerKey(m.targetPeerId);
+                    if (peers[key]) enqueueSend(peers[key], payload, group);
                 } else {
-                    try { peer.send(payload); } catch(e) {}
+                    Object.keys(peers).forEach(key => enqueueSend(peers[key], payload, group));
                 }
             }
 
-            if (m.targetPeerId) {
-                const key = resolvePeerKey(m.targetPeerId);
-                if (peers[key]) safeSend(peers[key], data);
+            // WebRTC DataChannel 의 max-message-size(256KB)를 넘는 패킷은 그대로 보내면 전송이 실패하므로
+            // 16KB 단위로 분할해 보내고 수신 측에서 재조립한다. (파일 스냅샷 등 대용량 페이로드)
+            if (rawStr.length <= CHUNK_SIZE) {
+                // 16KB 이하 일반 패킷: 단일 전송 (타자, 커서, 핑퐁, 채팅 등)
+                dispatchPayload(new TextEncoder().encode(rawStr));
             } else {
-                Object.values(peers).forEach(p => safeSend(p, data));
+                const transferId = 'c_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+                const totalChunks = Math.ceil(rawStr.length / CHUNK_SIZE);
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunkData = rawStr.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                    const chunkPacket = JSON.stringify({
+                        __isChunk: true,
+                        id: transferId,
+                        index: i,
+                        total: totalChunks,
+                        data: chunkData
+                    });
+                    // 청크는 같은 transferId 그룹으로 묶어, 적체로 전송이 지연되면 묶음 단위로 중단/정리한다.
+                    dispatchPayload(new TextEncoder().encode(chunkPacket), transferId);
+                }
             }
         }
     });

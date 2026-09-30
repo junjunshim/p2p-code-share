@@ -789,16 +789,17 @@ export class SyncEngine {
 
     /**
      * 엔진을 통해 메시지를 전송합니다.
+     * 호스트가 N명의 게스트에게 보낼 때도 수신자별로 IPC를 반복하지 않고,
+     * 대상 피어 목록을 담은 단 1회의 IPC(단일 브로드캐스트)로 통합합니다.
      */
     public sendMessage(type: string, data: any) { 
+        const value = { type, ...data };
         if (this.isHost) {
-            Object.keys(this.participantManager.participants).forEach(peerId => {
-                if (peerId !== 'host') {
-                    this.sendMessageToPeer(peerId, type, data);
-                }
-            });
+            const targets = Object.keys(this.participantManager.participants).filter(peerId => peerId !== 'host');
+            if (targets.length === 0) return;
+            this.hub.sendToEngine({ type: 'peerData', value }, undefined, targets);
         } else {
-            this.hub.sendToEngine({ type: 'peerData', value: { type, ...data } });
+            this.hub.sendToEngine({ type: 'peerData', value });
         }
     }
 

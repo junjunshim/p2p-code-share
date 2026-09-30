@@ -35,6 +35,19 @@ export class DocumentSyncManager {
     private selfCorrectionTimers = new Map<string, NodeJS.Timeout>();
 
     /**
+     * 스냅샷(INIT_SNAPSHOT)이 도착하기 전에 먼저 도착한 원격 델타를 파일별로 보관하는 대기 큐.
+     * 이 시점의 델타를 버리면 Yjs 특성상 해당 편집이 영구 유실되므로, 수신 순서대로 보관했다가
+     * 문서 생성(createDocForGuest) 직후 일괄 적용한다.
+     */
+    private pendingRemoteUpdates = new Map<string, Array<{ msg: any; receivedAt: number }>>();
+
+    /** 대기 큐가 무한히 커지지 않도록 하는 파일별 최대 보관 개수 */
+    private static readonly PENDING_UPDATE_LIMIT = 2000;
+
+    /** 대기 큐 항목의 최대 보관 시간(ms). 이 시간을 넘긴 항목은 정합성을 보장할 수 없어 폐기한다. */
+    private static readonly PENDING_UPDATE_TTL_MS = 120000;
+
+    /**
      * DocumentSyncManager 인스턴스를 생성합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
@@ -92,6 +105,9 @@ export class DocumentSyncManager {
         this.yTexts.set(name, ytext);
 
         this.bindYjsEvents(name, ydoc, ytext);
+
+        // 스냅샷보다 먼저 도착해 보관해 둔 델타가 있으면 수신 순서대로 적용한다.
+        this.flushPendingRemoteUpdates(name);
     }
 
     /**
@@ -165,14 +181,87 @@ export class DocumentSyncManager {
      * @returns {Promise<void>}
      */
     public async handleYjsUpdate(msg: any): Promise<void> {
-        const ydoc = this.yDocs.get(msg.fileName);
+        const fileName = typeof msg?.fileName === 'string' ? msg.fileName : '';
+        const ydoc = fileName ? this.yDocs.get(fileName) : undefined;
+        if (!ydoc) {
+            // 대용량 스냅샷(INIT_SNAPSHOT)이 아직 도착하지 않았거나 청크를 조립하는 중일 수 있다.
+            // 여기서 버리면 해당 편집이 영구 유실되므로 보관했다가 문서 생성 직후 적용한다.
+            this.bufferPendingRemoteUpdate(msg, fileName);
+            return;
+        }
+
+        this.applyRemoteUpdate(fileName, ydoc, msg);
+    }
+
+    /**
+     * Y.Doc이 아직 준비되지 않은 파일의 원격 델타를 수신 순서대로 보관합니다.
+     * 대용량 스냅샷은 청크 조립에 시간이 걸리므로, 그 사이 도착한 델타를 버리지 않고 보관했다가
+     * 문서 생성 직후 적용하여 편집 유실을 방지합니다.
+     * @param msg 수신된 Yjs 업데이트 메시지.
+     * @param fileName 대상 파일 이름.
+     * @returns {void}
+     */
+    private bufferPendingRemoteUpdate(msg: any, fileName: string): void {
+        if (!fileName) return;
+
+        const now = Date.now();
+        const queue = this.pendingRemoteUpdates.get(fileName) ?? [];
+
+        // TTL이 지난 항목은 최신 스냅샷과의 정합성을 보장할 수 없으므로 폐기하고 로그로 노출한다.
+        const fresh = queue.filter(entry => now - entry.receivedAt <= DocumentSyncManager.PENDING_UPDATE_TTL_MS);
+        if (fresh.length !== queue.length) {
+            this.engine.logToUI('Discarded ' + (queue.length - fresh.length) + ' stale Yjs update(s) for ' + fileName + ' (snapshot not received in time).');
+        }
+
+        fresh.push({ msg, receivedAt: now });
+
+        if (fresh.length > DocumentSyncManager.PENDING_UPDATE_LIMIT) {
+            const overflow = fresh.length - DocumentSyncManager.PENDING_UPDATE_LIMIT;
+            fresh.splice(0, overflow);
+            this.engine.logToUI('Yjs update buffer overflow for ' + fileName + ': dropped ' + overflow + ' oldest update(s).');
+        }
+
+        this.pendingRemoteUpdates.set(fileName, fresh);
+    }
+
+    /**
+     * 문서 생성 직후, 보관해 둔 원격 델타를 수신 순서대로 적용합니다.
+     * @param fileName 스냅샷 생성이 끝난 파일 이름.
+     * @returns {void}
+     */
+    private flushPendingRemoteUpdates(fileName: string): void {
+        const queue = this.pendingRemoteUpdates.get(fileName);
+        if (!queue || queue.length === 0) return;
+
+        this.pendingRemoteUpdates.delete(fileName);
+
+        const ydoc = this.yDocs.get(fileName);
         if (!ydoc) return;
 
+        const now = Date.now();
+        let applied = 0;
+        for (const entry of queue) {
+            if (now - entry.receivedAt > DocumentSyncManager.PENDING_UPDATE_TTL_MS) continue;
+            this.applyRemoteUpdate(fileName, ydoc, entry.msg);
+            applied++;
+        }
+
+        this.engine.logToUI('Applied ' + applied + ' buffered Yjs update(s) for ' + fileName + ' after snapshot.');
+    }
+
+    /**
+     * Base64로 인코딩된 원격 델타를 Y.Doc에 병합 적용합니다.
+     * @param fileName 대상 파일 이름.
+     * @param ydoc 적용 대상 Y.Doc.
+     * @param msg 수신된 Yjs 업데이트 메시지.
+     * @returns {void}
+     */
+    private applyRemoteUpdate(fileName: string, ydoc: Y.Doc, msg: any): void {
         try {
             const updateBinary = Uint8Array.from(Buffer.from(msg.update, 'base64'));
             Y.applyUpdate(ydoc, updateBinary, 'remote');
         } catch (e) {
-            this.engine.logToUI(`Error applying Yjs update for ${msg.fileName}: ${e}`);
+            this.engine.logToUI('Error applying Yjs update for ' + fileName + ': ' + e);
         }
     }
 
@@ -341,5 +430,6 @@ export class DocumentSyncManager {
         this.yTexts.clear();
         this.isApplyingRemote.clear();
         this.editorUpdateQueues.clear();
+        this.pendingRemoteUpdates.clear();
     }
 }
