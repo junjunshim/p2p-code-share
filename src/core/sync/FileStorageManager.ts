@@ -90,11 +90,18 @@ export class FileStorageManager {
                 fs.rmSync(this.storagePath, { recursive: true, force: true });
             }
 
-            // 상위의 방 폴더(방 이름 폴더)도 비어있거나 남아있으면 삭제 시도
+            // 상위의 방 폴더(방 이름 폴더)도 다른 하위 디렉터리(예: 호스트 폴더나 다른 게스트 폴더)가 없을 때만 정리
             if (this.engine.roomName) {
                 const roomDir = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName));
                 if (fs.existsSync(roomDir)) {
-                    fs.rmSync(roomDir, { recursive: true, force: true });
+                    try {
+                        const remaining = fs.readdirSync(roomDir);
+                        if (remaining.length === 0) {
+                            fs.rmSync(roomDir, { recursive: true, force: true });
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
                 }
             }
         } catch (e) {
@@ -107,7 +114,11 @@ export class FileStorageManager {
      * @returns {void}
      */
     public initializeStorage(): void {
-        if (this.isStorageInitialized) return;
+        // 이미 초기화되었고 실제 디스크에도 폴더가 존재하는 경우에만 return
+        if (this.isStorageInitialized && this.storagePath && fs.existsSync(this.storagePath)) {
+            return;
+        }
+
         if (!this.engine.isHost && (!this.engine.myId || this.engine.myId === 'default' || !this.engine.roomName || this.engine.roomName === 'Untitled Room')) return;
 
         // 게스트의 경우 새로운 방에 입장할 때 다른 방의 기존 임시 폴더들을 정리
@@ -163,6 +174,7 @@ export class FileStorageManager {
         }
 
         // 1. 호스트 원본 백업본 생성 (공유 중지 시 diff 비교용)
+        ensureDirectory(this.storagePath);
         const backupPath = path.join(this.storagePath, `${fileName}.original`);
         fs.writeFileSync(backupPath, document.getText(), 'utf8');
 
@@ -227,6 +239,7 @@ export class FileStorageManager {
         const normalizedContent = normalizeEOL(msg.content);
         
         // 로컬 임시 파일 작성 (LF 개행 유지)
+        ensureDirectory(this.storagePath);
         fs.writeFileSync(filePath, normalizedContent, 'utf8');
 
         // 공유 파일 목록에 추가 또는 업데이트

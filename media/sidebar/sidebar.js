@@ -432,8 +432,8 @@ function updateModeLayout(m) {
         const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
         const roleDisp = document.getElementById('roleTextDisp');
         if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
-    } else if (m.isConnected || m.isReconnecting || (m.participants && m.participants.isReconnecting)) {
-    // 2. 연결 완료 모드 또는 호스트 재연결 유예 모드 (참가자 및 파일 목록 유지)
+    } else if (m.isConnected || (m.isReconnecting && !m.isSetupMode && m.participants && m.participants.myId === 'host')) {
+    // 2. 연결 완료 모드 또는 호스트 재연결 유예 모드 (호스트 창 전환/복구 중 참가자 및 파일 목록 유지)
     setVisible('roleSelection', false);
     setVisible('connArea', false);
     setVisible('active', true);

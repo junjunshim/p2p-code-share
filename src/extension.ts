@@ -424,9 +424,17 @@ let activeEngine: SyncEngine | undefined;
  */
 export async function deactivate(): Promise<void> {
     try {
-        if (activeEngine && (activeEngine.isConnected || (activeEngine.isHost && activeEngine.roomName && activeEngine.roomName !== 'Untitled Room'))) {
-            // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 지연 없이 즉시 복구되도록 보장)
-            await activeEngine.sessionRecoveryManager.saveSession(true);
+        if (activeEngine) {
+            if (!activeEngine.isHost && activeEngine.isConnected) {
+                // 게스트 창이 닫힐 때 호스트에게 퇴장을 선제적으로 전송하여 호스트 명단에서 즉시 삭제 유도
+                try {
+                    activeEngine.sendMessage('GUEST_LEAVE', { userId: activeEngine.myId });
+                } catch (err) {}
+            }
+            if (activeEngine.isConnected || (activeEngine.isHost && activeEngine.roomName && activeEngine.roomName !== 'Untitled Room')) {
+                // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 지연 없이 즉시 복구되도록 보장)
+                await activeEngine.sessionRecoveryManager.saveSession(true);
+            }
         }
         if (activeHub) {
             activeHub.dispose();
