@@ -430,6 +430,8 @@ export async function deactivate(): Promise<void> {
                 // 창 종료 직전 세션 영속화 (isShuttingDown = true로 기록하여 새 창에서 지연 없이 즉시 복구되도록 보장)
                 await activeEngine.sessionRecoveryManager.saveSession(true);
             }
+            // 워커 스레드 풀은 연결 여부와 무관하게 항상 정리하여 스레드 누수를 방지
+            activeEngine.workerPoolManager?.dispose();
         }
         if (activeHub) {
             activeHub.dispose();

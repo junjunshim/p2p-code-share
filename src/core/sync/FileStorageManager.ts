@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import { SharedFile } from '../../types';
 import { sanitizePath, ensureDirectory, isPathEqual, normalizeEOL } from '../../utils/helpers';
 import { SyncEngine } from '../SyncEngine';
+import { TaskPriority } from '../../workers/workerProtocol';
 
 /**
  * FileStorageManager 클래스.
@@ -395,13 +396,35 @@ export class FileStorageManager {
             if (doc) {
                 await doc.save();
                 if (file.source && fs.existsSync(file.source)) {
-                    // 원본 백업본과 현재 협업본 간의 변경점 Diff 뷰 실행
-                    vscode.commands.executeCommand(
-                        'vscode.diff',
-                        vscode.Uri.file(file.source),
-                        vscode.Uri.file(file.path),
-                        `파일 비교: ${file.name} (원본 vs 협업본)`
-                    );
+                    const originalText = fs.readFileSync(file.source, 'utf8');
+                    const currentText = doc.getText();
+                    let hasChanges = originalText !== currentText;
+
+                    // 10KB 이상 파일의 경우 메인 스레드 정지 방지를 위해 워커 스레드로 Diff 연산 위임
+                    if (originalText.length > 10240 || currentText.length > 10240) {
+                        try {
+                            const diffResponse = await this.engine.workerPoolManager.executeTask(
+                                'DIFF_COMPUTE', 'host', TaskPriority.NORMAL, { original: originalText, current: currentText }
+                            );
+                            if (diffResponse.success && diffResponse.result) {
+                                hasChanges = diffResponse.result.hasChanges;
+                            }
+                        } catch {
+                            hasChanges = originalText !== currentText;
+                        }
+                    }
+
+                    if (hasChanges) {
+                        // 원본 백업본과 현재 협업본 간의 변경점 Diff 뷰 실행
+                        vscode.commands.executeCommand(
+                            'vscode.diff',
+                            vscode.Uri.file(file.source),
+                            vscode.Uri.file(file.path),
+                            `파일 비교: ${file.name} (원본 vs 협업본)`
+                        );
+                    } else {
+                        vscode.window.showInformationMessage(`"${fileName}" 파일에 변경 사항이 없어 Diff 비교를 생략합니다.`);
+                    }
                 }
             }
 

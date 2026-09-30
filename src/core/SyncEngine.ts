@@ -18,6 +18,8 @@ import { CursorManager } from './sync/CursorManager';
 import { DecorationManager } from './sync/DecorationManager';
 import { DocumentSyncManager } from './sync/DocumentSyncManager';
 import { SessionRecoveryManager } from './sync/SessionRecoveryManager';
+import { WorkerPoolManager } from '../workers/WorkerPoolManager';
+import { TaskPriority } from '../workers/workerProtocol';
 
 /**
  * SyncEngine 클래스.
@@ -56,6 +58,9 @@ export class SyncEngine {
 
     /** 창 새로고침/작업공간 전환 시 세션 영속화 및 자동 복구를 전담하는 매니저 */
     public sessionRecoveryManager: SessionRecoveryManager;
+
+    /** 무거운 파싱/직렬화 연산을 백그라운드로 오프로딩하는 워커 스레드 풀 관리자 */
+    public workerPoolManager: WorkerPoolManager;
 
     /** 현재 사용자가 세션의 호스트(Host)인지 여부 플래그 */
     public isHost = false;
@@ -98,6 +103,13 @@ export class SyncEngine {
     /** Follow-Me 모드 스크롤 브로드캐스트 쓰로틀링 타이머 및 대기 버퍼 */
     private followMeThrottleTimer?: NodeJS.Timeout;
     private pendingFollowUpdate?: { fileName: string; startLine: number; endLine: number };
+
+    /**
+     * 피어별 인바운드 파싱 FIFO 체인.
+     * 워커 스레드가 여러 개면 작은 패킷의 파싱이 먼저 끝나 수신 순서가 뒤바뀔 수 있으므로,
+     * 피어 단위로 파싱 완료 순서를 수신 순서와 동일하게 고정한다.
+     */
+    private inboundParseChains = new Map<string, Promise<void>>();
 
     /**
      * 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임).
@@ -145,10 +157,55 @@ export class SyncEngine {
         this.decorationManager = new DecorationManager(this);
         this.documentSyncManager = new DocumentSyncManager(this);
         this.sessionRecoveryManager = new SessionRecoveryManager(this, this.context);
+        this.workerPoolManager = new WorkerPoolManager(this.context.extensionPath);
 
         // 초기 이벤트 핸들러 및 리스너 설정
         this.setupHandlers();
         this.setupTextListeners();
+    }
+
+    /**
+     * 인바운드 패킷을 피어별 FIFO 체인을 통과시켜 파싱합니다.
+     * 워커 스레드 풀이 병렬로 파싱하더라도 결과가 수신 순서대로 소비되도록 보장합니다.
+     * @param text 수신한 원시 JSON 문자열
+     * @param peerId 패킷을 보낸 피어 식별자
+     */
+    private parseInboundOrdered(text: string, peerId: string): Promise<P2PMessage> {
+        const key = peerId || '__default__';
+        const prev = this.inboundParseChains.get(key) ?? Promise.resolve();
+
+        const run = () => this.parseInboundPayload(text, peerId);
+        const current = prev.then(run, run);
+
+        // 체인이 거부 상태로 남아 다음 패킷까지 막는 일이 없도록, 맵에는 항상 이행된 프라미스를 보관한다.
+        const guard = current.then(() => undefined, () => undefined);
+        this.inboundParseChains.set(key, guard);
+        guard.then(() => {
+            // 마지막 패킷의 처리까지 끝났으면 체인을 정리하여 맵이 무한히 커지지 않게 한다.
+            if (this.inboundParseChains.get(key) === guard) {
+                this.inboundParseChains.delete(key);
+            }
+        });
+
+        return current;
+    }
+
+    /**
+     * 1KB 초과 패킷은 워커 풀에서 파싱하고, 그 외에는 메인 스레드에서 파싱합니다.
+     * 워커가 실패/타임아웃하면 메인 스레드 파싱으로 폴백하여 메시지 유실을 방지합니다.
+     */
+    private async parseInboundPayload(text: string, peerId: string): Promise<P2PMessage> {
+        if (text.length > 1024 && this.workerPoolManager) {
+            try {
+                const response = await this.workerPoolManager.executeTask('INBOUND_PARSE', peerId, TaskPriority.HIGH, text);
+                if (response.success && response.result) {
+                    return response.result as P2PMessage;
+                }
+            } catch {
+                // 워커 풀이 dispose되었거나 응답 없이 실패한 경우 아래 폴백으로 진행
+            }
+        }
+        return JSON.parse(text) as P2PMessage;
     }
 
     /**
@@ -166,8 +223,8 @@ export class SyncEngine {
                     this.participantManager.handlePong(peerId);
                 }
 
-                // 수신된 P2P 메시지 파싱
-                const msg = JSON.parse(text) as P2PMessage;
+                // 수신 순서를 보존하여 파싱 (워커 병렬 처리로 인한 순서 역전 방지)
+                const msg = await this.parseInboundOrdered(text, peerId);
                 switch (msg.type) {
                     case 'SET_ROLE': this.handleSetRole(msg); break;
                     case 'ON_CONNECTED': this.handleOnConnected(peerId); break;
