@@ -91,8 +91,9 @@ export function activate(context: vscode.ExtensionContext) {
         else if (msg.type === 'statusUpdate') hub.onStatusUpdate?.(msg.value, pid);
         else if (msg.type === 'requireInvite') hub.onRequireInvite?.();
         else if (msg.type === 'roomNameSuccess') hub.onRoomNameSuccess?.();
-        else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType, msg.reason);
+        else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType);
         else if (msg.type === 'iceFailed') hub.onIceFailed?.(pid);
+        else if (msg.type === 'requestTurnCredentials') hub.handleTurnCredentialsRequest(msg.requestId, msg.role);
         else if (msg.type === 'sdpGenerated') {
             hub.sdpMap.set(pid, msg.sdp);
             hub.onSdpGenerated?.(msg.sdp, pid);
@@ -289,7 +290,7 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // 방 이름 중복 또는 서버 에러 처리
-    hub.onRoomNameError = (errorType: string, reason?: string) => {
+    hub.onRoomNameError = (errorType: string) => {
         engine.isSignalingConnected = false;
         if (!engine.isHost) {
             // 수동 연결 모드(수동 SDP 교환 중이거나 자동 참가가 아닌 경우):
@@ -315,18 +316,12 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            let msg = "호스트와의 연결에 실패했습니다.";
-            if (reason) {
-                msg = `호스트 연결 실패: ${reason}`;
-            } else if (errorType === 'unavailable') {
-                msg = "호스트 연결 실패: 호스트가 오프라인이거나 해당 방 이름의 호스트를 찾을 수 없습니다.";
+            let msg = "호스트 연결에 실패했습니다.";
+            if (errorType === 'unavailable') {
+                msg = "호스트가 오프라인이거나 존재하지 않는 방 이름입니다.";
             } else if (errorType === 'server') {
-                msg = "호스트 연결 실패: 시그널링 중계 서버와의 통신 중 네트워크 오류가 발생했습니다.";
-            } else if (errorType === 'signaling-timeout') {
-                msg = "호스트 연결 실패: 호스트 응답 대기 시간(10초)이 초과되었습니다.";
+                msg = "시그널링 서버 연결에 실패했습니다.";
             }
-
-            engine.logToUI(`[Connection Error] ${msg}`);
             vscode.window.showErrorMessage(msg);
             hub.dispose();
             engine.reset();

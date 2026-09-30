@@ -105,13 +105,13 @@ export function getLocalIpAddresses(): string[] {
             const address = net.address;
             if (!address) continue;
             // IPv4만 대상으로 합니다(Node 버전에 따라 family가 'IPv4' 또는 4로 나타납니다).
-            if (net.family !== 'IPv4' && (net.family as unknown) !== 4) continue;
-            if (address === '127.0.0.1' || address.startsWith('169.254.')) continue;
+            if (String(net.family) !== 'IPv4' && String(net.family) !== '4') continue;
+            if (address === '127.0.0.1' || address.indexOf('169.254.') === 0) continue;
             if (seen.has(address)) continue;
             seen.add(address);
             (VIRTUAL_ADAPTER_PATTERN.test(name) ? fallback : preferred).push(address);
         }
     }
 
-    return [...preferred, ...fallback].slice(0, 8);
+    return preferred.concat(fallback).slice(0, 8);
 }

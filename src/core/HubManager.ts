@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import { P2PMessage } from '../types';
 // WebView(Chromium) 대신 Node에서 STUN 서버 주소를 미리 해석하기 위한 모듈
 import * as dns from 'dns';
-import { TurnService } from './turn/TurnService';
+import { TurnService, TurnServerConfig } from './turn/TurnService';
 import { Logger } from '../utils/Logger';
 import { getLocalIpAddresses } from '../utils/helpers';
 
@@ -58,11 +58,15 @@ export class HubManager {
     public onRoomNameSuccess?: () => void;
 
     /** 방 이름 중복 등의 오류가 발생했을 때 호출되는 콜백 */
-    public onRoomNameError?: (errorType: string, reason?: string) => void;
+    public onRoomNameError?: (errorType: string) => void;
 
     /** WebRTC ICE 연결 실패가 감지되었을 때 호출되는 콜백 */
     public onIceFailed?: (peerId: string) => void;
 
+    /**
+     * createHub()가 연속 호출될 때 이전 요청의 늦은 응답이 새 세션의 엔진을 다시 startEngine()으로
+     * 덮어써 시그널링 채널을 끊어버리는 문제를 막기 위한 시작 세대 카운터입니다.
+     */
     private _startGeneration = 0;
 
     /**
@@ -128,7 +132,7 @@ export class HubManager {
 
     /**
      * P2P 허브 Webview 엔진을 활성화(초기 연결 요청 전송)합니다.
-     * STUN 주소와 TURN 인증을 함께 준비하여 한 번의 연결 시도에 사용합니다.
+     * VS Code 설정에서 TURN 서버 구성을 읽어와 엔진 초기화에 전달합니다.
      * @param initiator 현재 노드가 연결 시작자(Host)인지 여부.
      * @param roomName 자동 시그널링에 사용할 방 이름 (기본값: 빈 문자열).
      * @param peerId 피어의 고유 식별자 (기본값: 'default').
@@ -137,31 +141,29 @@ export class HubManager {
     public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default'): void {
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
         if (peerId === 'none' || peerId === 'default') {
-            // DNS 해석과 TURN 인증 요청을 병렬로 수행합니다.
+            // STUN 주소 해석만 미리 준비합니다. TURN 자격 증명은 엔진이 SDP 생성 직전에 요청합니다.
             const generation = ++this._startGeneration;
-            void Promise.all([
-                this.resolveStunServers(),
-                initiator ? TurnService.get().getHostTurnConfig() : TurnService.get().getGuestTurnConfig()
-            ]).then(([stunServers, turnServers]) => {
+            void this.resolveStunServers().then(stunServers => {
+                // 이전 시작 요청의 늦은 응답이면 무시합니다.
                 if (generation !== this._startGeneration) return;
-                if (!turnServers?.length) {
-                    Logger.get().warn('HubManager', 'TURN credentials unavailable; this attempt will use STUN only.');
-                }
+                // TURN 자격 증명은 여기서 미리 받지 않습니다. 엔진이 SDP/시그널링 채널을 만들기 직전에
+                // requestTurnCredentials 로 요청하므로, Worker가 꺼져 있어도 시작이 지연되지 않습니다.
                 this.sendToEngine({
                     type: 'startEngine',
                     initiator,
                     autoStart: !initiator,
                     roomName,
-                    turnServers: turnServers || [],
                     peerId,
                     stunServers,
+                    turnRole: initiator ? 'host' : 'guest',
                     // Webview(Chromium)가 host 후보를 mDNS로 난독화하므로, 실제 사설 IP 후보를
                     // 추가할 수 있도록 로컬 LAN 주소 목록을 함께 전달합니다.
                     localIps: getLocalIpAddresses()
                 });
             }).catch(err => {
                 if (generation !== this._startGeneration) return;
-                this.onRoomNameError?.('initialization', `연결 설정 준비 실패: ${String(err)}`);
+                Logger.get().error('HubManager', `Failed to prepare connection settings: ${String(err)}`);
+                this.onRoomNameError?.('initialization');
             });
         } else {
             // 이미 엔진이 실행 중인 상태에서 새로운 게스트 피어를 추가하는 경우
@@ -169,6 +171,48 @@ export class HubManager {
                 this.sendToEngine({ type: 'addNewPeer', initiator, peerId });
             }
         }
+    }
+
+    /**
+     * 엔진이 SDP/시그널링 채널을 만들기 직전에 요청한 TURN 자격 증명을 발급해 회신합니다.
+     * Worker가 꺼져 있거나 응답이 없으면 수동 설정을 폴백으로 쓰고, 그것도 없으면 빈 목록을 돌려주어
+     * 엔진이 STUN 만으로 SDP 교환을 진행하게 합니다.
+     */
+    public handleTurnCredentialsRequest(requestId: string, role: string): void {
+        const service = TurnService.get();
+        const request = role === 'host' ? service.getHostTurnConfig() : service.getGuestTurnConfig();
+        void request
+            .then(turnServers => this.replyTurnCredentials(requestId, turnServers))
+            .catch(() => this.replyTurnCredentials(requestId, null));
+    }
+
+    /**
+     * TURN 자격 증명 결과를 엔진으로 회신합니다. 발급 실패 시 수동 설정을 폴백으로 사용합니다.
+     */
+    private replyTurnCredentials(requestId: string, turnServers: TurnServerConfig[] | null): void {
+        let list = Array.isArray(turnServers) ? turnServers : [];
+        if (list.length === 0) {
+            const manual = this.getManualTurnConfig();
+            if (manual && manual.length > 0) {
+                list = manual;
+                Logger.get().info('HubManager', 'Using manual TURN configuration from settings (Worker unavailable).');
+            }
+        }
+        this.sendToEngine({ type: 'turnCredentialsResult', requestId, turnServers: list });
+    }
+
+    /**
+     * VS Code 설정의 수동 TURN 구성을 읽습니다. Worker 장애 시 폴백으로 사용합니다.
+     */
+    private getManualTurnConfig(): TurnServerConfig[] | null {
+        const config = vscode.workspace.getConfiguration('p2pCodeShare');
+        const turnUrl = config.get<string>('turnUrl') || '';
+        if (!turnUrl) {
+            return null;
+        }
+        const turnUsername = config.get<string>('turnUsername') || '';
+        const turnCredential = config.get<string>('turnCredential') || '';
+        return [{ urls: turnUrl, username: turnUsername, credential: turnCredential }];
     }
 
     /**
@@ -191,7 +235,6 @@ export class HubManager {
      */
     public dispose(): void {
         ++this._startGeneration;
-        this._pendingMessageQueue = [];
         this.sendToEngine({ type: 'stopEngine' });
         this.sdpMap.clear();
     }

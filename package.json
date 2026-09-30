@@ -2,7 +2,7 @@
   "name": "p2p-code-share",
   "displayName": "P2P Code Share",
   "description": "P2P 실시간 코드 동시 편집 확장 프로그램",
-  "version": "0.4.3",
+  "version": "0.5.3",
   "readme": "README.extension.md",
   "publisher": "junjunshim",
   "repository": {
@@ -84,6 +84,26 @@
           "group": "4_p2p_sharing@3"
         }
       ]
+    },
+    "configuration": {
+      "title": "P2P Code Share Settings",
+      "properties": {
+        "p2pCodeShare.turnUrl": {
+          "type": "string",
+          "default": "",
+          "description": "TURN Server URL (e.g. turn:openrelay.metered.ca:80). Used as a fallback when the Cloudflare TURN worker is unavailable."
+        },
+        "p2pCodeShare.turnUsername": {
+          "type": "string",
+          "default": "",
+          "description": "TURN Server Username"
+        },
+        "p2pCodeShare.turnCredential": {
+          "type": "string",
+          "default": "",
+          "description": "TURN Server Password/Credential"
+        }
+      }
     }
   },
   "scripts": {

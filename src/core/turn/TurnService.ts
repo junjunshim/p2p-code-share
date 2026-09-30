@@ -30,12 +30,20 @@ export interface TurnTokenResponse {
 const WORKER_ENDPOINT = 'https://p2p-turn-broker.shimdj0425.workers.dev';
 const APP_SECRET = 'p2p-code-share-junjunshim-secret-variable';
 const REQUEST_TIMEOUT_MS = 4000;
+/** Worker 호출이 한 번 실패하면 이 시간 동안은 재호출하지 않습니다(꺼져 있을 때 연결마다 대기하는 것을 방지). */
+const FAILURE_BACKOFF_MS = 60000;
 
 export class TurnService {
     private static instance?: TurnService;
 
     /** Host 전용 캐시된 TURN 설정 (30분 유효) */
     private cachedHostToken?: TurnTokenResponse;
+
+    /** Worker 호출이 실패한 역할별 시각(ms). 백오프 판단에 사용합니다. */
+    private failureAtByRole: { [role: string]: number } = {};
+
+    /** 백오프 로그를 실패 1회당 한 번만 남기기 위한 역할별 마지막 실패 시각 */
+    private failureLoggedAt: { [role: string]: number } = {};
 
     private constructor() {}
 
@@ -51,6 +59,10 @@ export class TurnService {
      * 메모리에 유효한 토큰(만료 2분 이상 남음)이 있으면 Worker 호출 없이 즉시 캐시를 반환합니다.
      */
     public async getHostTurnConfig(): Promise<TurnServerConfig[] | null> {
+        if (this.isInFailureBackoff('host')) {
+            return null;
+        }
+
         const now = Date.now();
         // 만료 2분(120초) 전까지는 캐시된 토큰 재사용 (Worker 호출 0회)
         if (this.cachedHostToken && now < this.cachedHostToken.expiresAt - 120000) {
@@ -74,6 +86,10 @@ export class TurnService {
      * @param forceRefresh 재연결 시 기존 토큰이 만료되었을 수 있으므로 강제 재발급 여부
      */
     public async getGuestTurnConfig(forceRefresh: boolean = false): Promise<TurnServerConfig[] | null> {
+        if (this.isInFailureBackoff('guest')) {
+            return null;
+        }
+
         Logger.get().info('TurnService', `Requesting 3m Guest TURN token from Cloudflare Worker (forceRefresh: ${forceRefresh})...`);
         const tokenResp = await this.requestTokenFromWorker('guest');
         if (tokenResp) {
@@ -88,13 +104,35 @@ export class TurnService {
      */
     public clearCache(): void {
         this.cachedHostToken = undefined;
+        delete this.failureAtByRole['host'];
+    }
+
+    /**
+     * 직전 Worker 호출이 실패한 뒤 백오프 시간이 지났는지 확인합니다.
+     * Worker가 꺼져 있을 때 연결마다 타임아웃을 반복해서 기다리는 것을 막습니다.
+     */
+    private isInFailureBackoff(role: 'host' | 'guest'): boolean {
+        const failedAt = this.failureAtByRole[role];
+        if (!failedAt) {
+            return false;
+        }
+        const elapsed = Date.now() - failedAt;
+        if (elapsed >= FAILURE_BACKOFF_MS) {
+            delete this.failureAtByRole[role];
+            return false;
+        }
+        if (this.failureLoggedAt[role] !== failedAt) {
+            this.failureLoggedAt[role] = failedAt;
+            Logger.get().info('TurnService', 'Skipping Cloudflare Worker call (' + role + ' attempt failed ' + Math.round(elapsed / 1000) + 's ago).');
+        }
+        return true;
     }
 
     /**
      * VS Code 고유 machineId + 타임스탬프 + Role 기반으로 HMAC 서명을 생성하고 Worker를 호출합니다.
      */
     private requestTokenFromWorker(role: 'host' | 'guest'): Promise<TurnTokenResponse | null> {
-        return new Promise((resolve) => {
+        const request = new Promise<TurnTokenResponse | null>((resolve) => {
             const machineId = vscode.env.machineId || 'unknown-machine-id';
             const timestamp = Date.now().toString();
             const payload = `${machineId}:${timestamp}:${role}`;
@@ -154,6 +192,16 @@ export class TurnService {
             });
 
             req.end();
+        });
+        // 실패(타임아웃/오류/비정상 응답)를 역할별로 기록해 두어 다음 요청이 백오프로 즉시 반환되게 합니다.
+        return request.then(resp => {
+            if (resp) {
+                delete this.failureAtByRole[role];
+                delete this.failureLoggedAt[role];
+            } else {
+                this.failureAtByRole[role] = Date.now();
+            }
+            return resp;
         });
     }
 }

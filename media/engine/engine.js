@@ -18,10 +18,20 @@
     let guestSignalingConnectTimer = null;
     let peerSignalingConnMap = {}; // 피어 ID별 시그널링 커넥션 매핑
     let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
+    let srflxAttemptMap = {}; // 피어별 srflx(공인 IP) 후보 수집 재시도 횟수
+    let pendingPeerAdds = {};  // 피어 생성 진행 중 플래그(중복 생성 및 TURN 요청 폭주 방지)
+    let pendingIceServersPromise = null; // 진행 중인 iceServers 준비 Promise 공유용
+    let remoteSignalMap = {}; // 피어별 마지막 원격 signal (재시도 시 같은 offer 재적용용)
     let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
     let myLocalIps = []; // 확장 호스트가 전달한 실제 사설 LAN IP 목록 (mDNS 난독화 host 후보 보강용)
+    let turnRole = 'guest';        // 이 세션에서 Worker에 요청할 TURN 자격 증명 역할(host/guest)
+    let sessionIceServers = [];    // 시그널링 채널용 iceServers (TURN 자격 증명 포함)
+    let controlExpandStats = { offer: 0, answer: 0, candidate: 0 }; // 제어 P2P 시그널링 후보 확장 횟수(진단용)
+    let engineGeneration = 0;      // stopEngine/startEngine 마다 증가시켜 지연된 비동기 작업을 무효화
+    let pendingTurnRequests = {};  // requestId -> Worker 응답 대기 resolver
+    let pendingRemoteSignals = {}; // TURN 자격 증명을 받아 피어를 만드는 동안 도착한 원격 signal 보관소
 
     // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
     const DEFAULT_STUN_URLS = [
@@ -38,6 +48,12 @@
 
     /** SDP를 전달하기 전에 실제 ICE 수집 완료를 추가로 기다리는 최대 시간(ms) */
     const ICE_GATHERING_WAIT_MS = 6000;
+
+    /** Worker TURN 자격 증명 응답을 기다리는 최대 시간(ms). 초과하면 STUN만으로 SDP 교환을 진행합니다. */
+    const TURN_REQUEST_TIMEOUT_MS = 6000;
+
+    /** 공인 IP(srflx) 후보를 얻지 못했을 때 SDP 생성을 다시 시도하는 최대 횟수 */
+    const SRFLX_MAX_ATTEMPTS = 2;
 
     /**
      * mDNS(*.local)로 난독화된 host 후보인지 판별합니다.
@@ -75,6 +91,27 @@
         return expanded;
     }
 
+    /**
+     * 시그널링으로 내보낼 후보 초기화 객체를 만듭니다.
+     * RTCIceCandidate의 candidate/sdpMid/sdpMLineIndex 는 prototype getter 라 Object.assign 으로
+     * 복사되지 않습니다. 재구성하면 sdpMid/sdpMLineIndex 가 사라져 수신 측 addIceCandidate 가
+     * 실패하므로, toJSON() 이 있으면 사용하고 필요한 필드만 개별 복사합니다.
+     */
+    function buildCandidateInit(source, candidateLine) {
+        const json = (source && typeof source.toJSON === 'function') ? source.toJSON() : source;
+        const init = { candidate: candidateLine };
+        if (json && json.sdpMid !== undefined && json.sdpMid !== null) {
+            init.sdpMid = json.sdpMid;
+        }
+        if (json && json.sdpMLineIndex !== undefined && json.sdpMLineIndex !== null) {
+            init.sdpMLineIndex = json.sdpMLineIndex;
+        }
+        if (json && typeof json.usernameFragment === 'string') {
+            init.usernameFragment = json.usernameFragment;
+        }
+        return init;
+    }
+
     /** SDP 본문의 mDNS host 후보를 로컬 IP 후보로 확장합니다. */
     function expandMdnsInSdp(sdp) {
         if (typeof sdp !== 'string' || sdp.length === 0 || myLocalIps.length === 0) return sdp;
@@ -109,21 +146,36 @@
                         typeof message.payload.candidate.candidate === 'string') {
                         const candidateLines = expandMdnsCandidate(message.payload.candidate.candidate);
                         if (candidateLines.length > 1) {
-                            candidateLines.forEach(candidateLine => {
-                                const candidate = Object.assign({}, message.payload.candidate, { candidate: candidateLine });
+                            controlExpandStats.candidate++;
+                            if (controlExpandStats.candidate <= 8) {
+                                log('[mDNS Expand] control CANDIDATE 확장: ' + candidateLines.length + '개 라인 (누적 ' + controlExpandStats.candidate + ')');
+                            }
+                            // 원본 후보 메시지는 손대지 않고 그대로 보냅니다(sdpMid/sdpMLineIndex 보존).
+                            originalSend.call(this, message);
+                            for (let i = 1; i < candidateLines.length; i++) {
                                 const expanded = Object.assign({}, message, {
-                                    payload: Object.assign({}, message.payload, { candidate })
+                                    payload: Object.assign({}, message.payload, {
+                                        candidate: buildCandidateInit(message.payload.candidate, candidateLines[i])
+                                    })
                                 });
                                 originalSend.call(this, expanded);
-                            });
+                            }
                             return;
                         }
                     } else if ((message.type === 'OFFER' || message.type === 'ANSWER') && message.payload.sdp) {
                         const sdpPayload = message.payload.sdp;
-                        if (typeof sdpPayload === 'string') {
-                            message.payload.sdp = expandMdnsInSdp(sdpPayload);
-                        } else if (typeof sdpPayload.sdp === 'string') {
-                            message.payload.sdp = Object.assign({}, sdpPayload, { sdp: expandMdnsInSdp(sdpPayload.sdp) });
+                        const sdpText = (typeof sdpPayload === 'string') ? sdpPayload : (typeof sdpPayload.sdp === 'string' ? sdpPayload.sdp : '');
+                        const expandedSdp = sdpText ? expandMdnsInSdp(sdpText) : sdpText;
+                        if (expandedSdp && expandedSdp !== sdpText) {
+                            if (message.type === 'OFFER') controlExpandStats.offer++;
+                            else controlExpandStats.answer++;
+                            log('[mDNS Expand] control ' + message.type + ' SDP 후보 ' + formatCandidateCounts(countCandidatesByType(sdpText))
+                                + ' -> ' + formatCandidateCounts(countCandidatesByType(expandedSdp)) + ' (주입 LAN IP ' + myLocalIps.length + '개)');
+                            if (typeof sdpPayload === 'string') {
+                                message.payload.sdp = expandedSdp;
+                            } else {
+                                message.payload.sdp = Object.assign({}, sdpPayload, { sdp: expandedSdp });
+                            }
                         }
                     }
                 }
@@ -132,6 +184,82 @@
             }
             return originalSend.apply(this, arguments);
         };
+    }
+
+    /** STUN 목록에 Worker에서 받은 TURN 자격 증명을 더해 RTCPeerConnection 설정을 만듭니다. */
+    function buildIceServers(turnConfigs) {
+        const servers = iceServers.slice();
+        (Array.isArray(turnConfigs) ? turnConfigs : []).forEach(cfg => {
+            if (!cfg) return;
+            if (cfg.urls) {
+                servers.push(cfg);
+            } else if (cfg.url) {
+                servers.push({ urls: cfg.url, username: cfg.username, credential: cfg.credential });
+            }
+        });
+        return servers;
+    }
+
+    /**
+     * 확장 호스트(Node)에 Cloudflare Worker TURN 자격 증명 발급을 요청합니다.
+     * Worker가 404/오류/무응답이면 빈 배열을 돌려주고, 호출 측은 STUN만으로 SDP 교환을 진행합니다.
+     */
+    function requestTurnCredentials() {
+        return new Promise(resolve => {
+            const requestId = 'turn_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+            let settled = false;
+            const finish = list => {
+                if (settled) return;
+                settled = true;
+                delete pendingTurnRequests[requestId];
+                resolve(Array.isArray(list) ? list : []);
+            };
+            pendingTurnRequests[requestId] = finish;
+            setTimeout(() => {
+                if (pendingTurnRequests[requestId]) {
+                    log('TURN 자격 증명 응답 시간 초과: STUN만으로 SDP 교환을 진행합니다.');
+                }
+                finish([]);
+            }, TURN_REQUEST_TIMEOUT_MS);
+            try {
+                vscode.postMessage({ type: 'requestTurnCredentials', requestId, role: turnRole });
+            } catch (e) {
+                log('TURN 자격 증명 요청 전송 실패: ' + e.message);
+                finish([]);
+            }
+        });
+    }
+
+    /**
+     * SDP/시그널링 채널을 만들기 직전에 호출되어 TURN 자격 증명까지 포함한 iceServers 를 준비합니다.
+     * Worker 응답이 없으면 STUN 목록만 반환하므로 SDP 교환은 그대로 진행됩니다.
+     */
+    function prepareIceServers() {
+        // 같은 세션에서 여러 피어가 동시에 만들어질 때 TURN 자격 증명 요청이 중복되지 않도록
+        // 진행 중인 요청을 공유합니다.
+        if (pendingIceServersPromise) {
+            return pendingIceServersPromise;
+        }
+        pendingIceServersPromise = requestTurnCredentials()
+            .then(turnConfigs => {
+                const servers = buildIceServers(turnConfigs);
+                log('ICE servers - STUN ' + iceServers.length + ', TURN ' + (servers.length - iceServers.length));
+                return servers;
+            })
+            .then(result => {
+                pendingIceServersPromise = null;
+                return result;
+            }, error => {
+                pendingIceServersPromise = null;
+                throw error;
+            });
+        return pendingIceServersPromise;
+    }
+
+    /** TURN 자격 증명을 기다리는 동안 도착한 원격 signal 을 보관합니다. */
+    function queueRemoteSignal(peerId, signal) {
+        if (signal === undefined || signal === null) return;
+        (pendingRemoteSignals[peerId] = pendingRemoteSignals[peerId] || []).push(signal);
     }
 
 
@@ -148,6 +276,15 @@
     function stopEngine() {
         log('Stopping P2P engine and disposing connections...');
         myLocalIps = [];
+        controlExpandStats = { offer: 0, answer: 0, candidate: 0 };
+        // 진행 중이던 비동기 작업(TURN 조회 등)의 결과가 새 세션에 영향을 주지 않도록 세대를 올립니다.
+        engineGeneration++;
+        sessionIceServers = [];
+        pendingTurnRequests = {};
+        pendingRemoteSignals = {};
+        srflxAttemptMap = {};
+        pendingPeerAdds = {};
+        pendingIceServersPromise = null;
         // PeerJS의 destroy()는 내부적으로 disconnect()를 호출해 'disconnected' 이벤트를 발생시키므로,
         // 의도적 종료 중에는 시그널링 재연결/알림 로직이 동작하지 않도록 플래그를 세웁니다.
         isStoppingEngine = true;
@@ -162,6 +299,8 @@
         });
         pendingSignalingQueue = [];
         peerSignalingConnMap = {};
+        srflxAttemptMap = {};
+        remoteSignalMap = {};
         if (guestSignalingConn) {
             try { guestSignalingConn.close(); } catch(e) {}
             guestSignalingConn = null;
@@ -208,6 +347,79 @@
     }
 
     /**
+     * 제어 P2P(PeerJS DataConnection)의 선택된 ICE 쌍을 로그로 남깁니다.
+     * host/srflx/relay 중 무엇으로 시그널링 채널이 열렸는지 확인하기 위한 진단용입니다.
+     */
+    function logControlSelectedPair(pc, tag) {
+        if (!pc || typeof pc.getStats !== 'function') return;
+        pc.getStats().then(stats => {
+            const byId = {};
+            let selected = null;
+            stats.forEach(report => {
+                if (!report) return;
+                if (report.id) byId[report.id] = report;
+                if (report.type !== 'candidate-pair') return;
+                if (report.selected) selected = report;
+                else if (!selected && report.state === 'succeeded') selected = report;
+            });
+            if (!selected) return;
+            const describe = (id, fallback) => {
+                const cand = byId[id];
+                const kind = (cand && cand.candidateType) || fallback || 'unknown';
+                const addr = cand && (cand.address || cand.ip);
+                return kind + (addr ? ' ' + addr + ':' + (cand.port || '?') : '');
+            };
+            const text = '[Control ICE Selected Pair] local=' + describe(selected.localCandidateId, selected.localCandidateType)
+                + ', remote=' + describe(selected.remoteCandidateId, selected.remoteCandidateType)
+                + ', state=' + (selected.state || '?');
+            log(text);
+            vscode.postMessage({ type: 'logMessage', level: 'debug', text: text });
+        }).catch(() => {});
+    }
+
+    /**
+     * 제어 P2P의 ICE 상태 변화와 로컬 후보 구성을 로그로 남깁니다.
+     * 제어 채널이 어떤 후보로 열렸는지 확인할 수 없던 부분을 채웁니다.
+     */
+    function attachControlConnectionDiagnostics(conn) {
+        if (!conn || conn.__controlDiagnosticsAttached) return;
+        conn.__controlDiagnosticsAttached = true;
+        const tag = currentInitiator ? 'host' : 'guest';
+        let attempts = 0;
+        function attach() {
+            const pc = conn.peerConnection;
+            if (!pc) {
+                if (attempts++ < 40 && !conn.open) setTimeout(attach, 250);
+                return;
+            }
+            if (pc.__controlDiagnosticsAttached) return;
+            pc.__controlDiagnosticsAttached = true;
+            log('[Control ICE] 진단 시작 (role=' + tag + ')');
+            pc.addEventListener('iceconnectionstatechange', () => {
+                log('[Control ICE] iceConnectionState=' + pc.iceConnectionState + ' (role=' + tag + ')');
+            });
+            pc.addEventListener('icegatheringstatechange', () => {
+                log('[Control ICE] iceGatheringState=' + pc.iceGatheringState + ' (role=' + tag + ')');
+                if (pc.iceGatheringState === 'complete' && pc.localDescription && pc.localDescription.sdp) {
+                    log('[Control ICE] 로컬 SDP 후보 -> ' + formatCandidateCounts(countCandidatesByType(pc.localDescription.sdp))
+                        + ' / 전송 시 주입한 LAN IP ' + myLocalIps.length + '개');
+                }
+            });
+            const timer = setInterval(() => {
+                const state = pc.iceConnectionState;
+                if (state === 'connected' || state === 'completed') {
+                    clearInterval(timer);
+                    setTimeout(() => logControlSelectedPair(pc, tag), 500);
+                } else if (state === 'failed' || state === 'closed') {
+                    clearInterval(timer);
+                }
+            }, 500);
+            setTimeout(() => clearInterval(timer), 45000);
+        }
+        attach();
+    }
+
+    /**
      * SDP에 담긴 ICE 후보를 유형별로 집계합니다.
      */
     function countCandidatesByType(sdp) {
@@ -234,10 +446,12 @@
     /**
      * 공인 IP(srflx) 후보 포함 여부를 함께 기록합니다.
      */
-    function logCandidateSummary(kind, counts) {
+    function logCandidateSummary(kind, counts, hasLanDirect) {
         log('[ICE Summary] ' + kind + ' SDP candidates -> ' + formatCandidateCounts(counts));
-        if (!counts.srflx && !counts.relay) {
+        if (!counts.srflx && !counts.relay && !hasLanDirect) {
             log('[ICE Warning] 공인 IP(srflx) 후보가 없습니다. STUN 응답을 받지 못했습니다.');
+        } else if (!counts.srflx && !counts.relay && hasLanDirect) {
+            log('[ICE Note] 공인 IP(srflx) 후보는 없지만 LAN 사설 IP 후보로 직결을 시도합니다.');
         }
     }
 
@@ -262,7 +476,20 @@
         });
     }
 
-    /** 시그널링에서 받은 JSON 문자열과 SDP 객체를 동일한 입력으로 정규화합니다. */
+    /**
+     * 원격 SDP에서 mDNS(.local) 후보를 제거합니다.
+     * mDNS 후보는 같은 네트워크의 피어가 즉시 연결되게 만들어 Chromium이 STUN(srflx) 수집을
+     * 조기에 끝내버립니다(공인 IP 후보 누락). mDNS 후보를 빼면 수집이 끝까지 진행되어 공인 IP를
+     * 받을 수 있고, 상대는 우리 후보를 이미 갖고 있으므로 연결은 그대로 성립합니다.
+     */
+    function stripMdnsCandidates(sdp) {
+        if (typeof sdp !== 'string' || sdp.indexOf('.local') < 0) return sdp;
+        return sdp.split(/\r?\n/).filter(line => !(line.indexOf('a=candidate:') === 0 && line.indexOf('.local') >= 0)).join('\r\n');
+    }
+
+    /**
+     * 게스트(비 initiator)가 원격 offer를 적용할 때 mDNS 후보를 제외한 signal을 만듭니다.
+     */
     function parseSignalPayload(signal) {
         if (typeof signal !== 'string') return signal;
         try {
@@ -273,11 +500,53 @@
         }
     }
 
-    /** 사설망 후보를 포함한 원격 SDP를 그대로 적용합니다. */
     function prepareRemoteSignalFor(p, signal) {
-        return parseSignalPayload(signal);
+        const normalized = parseSignalPayload(signal);
+        if (!normalized || typeof normalized.sdp !== 'string') return normalized;
+        if (!p || p.initiator) return normalized;
+        const filteredSdp = stripMdnsCandidates(normalized.sdp);
+        if (filteredSdp !== normalized.sdp) {
+            log('[ICE] 원격 offer에서 mDNS 후보를 제외하고 적용합니다. (STUN 공인 IP 수집 유지)');
+            return { type: normalized.type, sdp: filteredSdp };
+        }
+        return normalized;
     }
 
+    /**
+     * 공인 IP(srflx) 후보가 빠진 SDP만 확정된 경우, 같은 시그널링 정보로 연결을 새로 만들어
+     * 후보 수집을 다시 시도합니다. (STUN 응답이 일시적으로 누락된 경우 복구)
+     */
+    function retryPeerForPublicIp(peerId, p) {
+        if (!p || p.destroyed) return false;
+        // 이미 데이터 채널이 열렸거나 ICE 가 성립한 연결은 후보 재수집을 위해 파괴하지 않습니다.
+        const livePc = p._pc;
+        if (p.connected === true || (livePc && (livePc.iceConnectionState === 'connected' || livePc.iceConnectionState === 'completed'))) {
+            return false;
+        }
+        const isInitiator = p.initiator;
+        const key = findPeerKey(p) || resolvePeerKey(peerId);
+        const remoteSignal = remoteSignalMap[key] || remoteSignalMap[peerId];
+        // 재시도 중에는 시도 횟수를 유지해야 무한 재시도 루프가 생기지 않습니다.
+        const attempt = srflxAttemptMap[key] || srflxAttemptMap[peerId] || 0;
+        try { p.destroy(); } catch(e) {}
+        delete peers[key];
+        delete pendingSdpMap[key];
+        delete pendingPeerAdds[key];
+        if (!isInitiator && !remoteSignal) {
+            return false;
+        }
+        addPeer(key, isInitiator);
+        srflxAttemptMap[key] = attempt;
+        if (!isInitiator) {
+            // 피어 생성(TURN 자격 증명 조회 포함)이 끝난 뒤 적용되도록 보관합니다.
+            queueRemoteSignal(key, remoteSignal);
+        }
+        return true;
+    }
+
+    /**
+     * 새 SDP가 기존 SDP보다 더 많은 후보(특히 공인 IP)를 담고 있는지 확인합니다.
+     */
     function isBetterSdp(candidateSdp, currentSdp) {
         const score = counts => Object.keys(counts).reduce((sum, key) => sum + counts[key], 0) + (counts.srflx ? 100 : 0);
         return score(countCandidatesByType(candidateSdp)) > score(countCandidatesByType(currentSdp));
@@ -306,33 +575,45 @@
      * 실제 수집이 끝날 때까지 기다린 뒤 수집된 후보가 모두 담긴 SDP를 전달합니다.
      */
     function publishSignalWithFullCandidates(peerId, p, data) {
-        const revision = (p._sdpPublishRevision || 0) + 1;
-        p._sdpPublishRevision = revision;
         const baseSdp = typeof data.sdp === 'string' ? data.sdp : '';
         const pc = p._pc;
+        const attempt = srflxAttemptMap[peerId] || 0;
 
         function finalize(sdp) {
-            if (peers[peerId] !== p || p.destroyed || p._sdpPublishRevision !== revision) {
+            if (peers[peerId] !== p || p.destroyed) {
                 log('Peer was reset while waiting for ICE candidates. Discarding stale SDP.');
                 return;
             }
-            const counts = countCandidatesByType(sdp);
-            logCandidateSummary(data.type, counts);
-            if (!Object.values(counts).some(count => count > 0)) {
-                log('[ICE] No candidates collected; SDP will not be sent.');
-                vscode.postMessage({ type: 'iceFailed', peerId });
+            // mDNS host 후보를 실제 LAN IP 후보로 확장한 뒤 집계합니다. 사설 IP 도 정상적인 연결 경로입니다.
+            const expandedSdp = expandMdnsInSdp(sdp);
+            const counts = countCandidatesByType(expandedSdp);
+            const hasLanDirect = myLocalIps.length > 0;
+            logCandidateSummary(data.type, counts, hasLanDirect);
+            const iceState = pc ? pc.iceConnectionState : null;
+            const connectionUp = p.connected === true || iceState === 'connected' || iceState === 'completed';
+            // 직결 경로(LAN 사설 IP / 공인 IP / TURN)가 확보됐거나 연결이 이미 성립한 뒤에는 피어를 재생성하지 않습니다.
+            // 연결된 피어를 srflx 재시도로 파괴하면 성립한 직결이 끊기고 시그널링 ufrag 만 바뀌어 협상이 어긋납니다.
+            if (hasLanDirect || counts.srflx || counts.relay || connectionUp || attempt >= SRFLX_MAX_ATTEMPTS - 1) {
+                srflxAttemptMap[peerId] = 0;
+                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandedSdp }));
                 return;
             }
-            publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandMdnsInSdp(sdp) }));
+            srflxAttemptMap[peerId] = attempt + 1;
+            log('공인 IP(srflx) 후보가 없어 후보 수집을 다시 시도합니다. (시도 ' + (attempt + 2) + '/' + SRFLX_MAX_ATTEMPTS + ')');
+            if (!retryPeerForPublicIp(peerId, p)) {
+                log('재시도가 불가능하여 수집된 후보만으로 SDP를 전달합니다.');
+                srflxAttemptMap[peerId] = 0;
+                publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandedSdp }));
+            }
         }
 
         if (!pc || pc.iceGatheringState === 'complete') {
-            finalize((pc && pc.localDescription && pc.localDescription.sdp) || baseSdp);
+            finalize(baseSdp);
             return;
         }
 
         log('ICE 수집이 끝나지 않아 공인 IP 후보가 누락될 수 있습니다. 수집 완료를 기다립니다...');
-        const waitMs = ICE_GATHERING_WAIT_MS;
+        const waitMs = attempt === 0 ? ICE_GATHERING_WAIT_MS : Math.floor(ICE_GATHERING_WAIT_MS / 2);
         const waitStarted = Date.now();
         waitForIceGatheringComplete(pc, waitMs).then(() => {
             log('ICE 수집 대기 종료 (' + (Date.now() - waitStarted) + 'ms, state=' + pc.iceGatheringState + ')');
@@ -347,7 +628,7 @@
     }
 
     /**
-     * 단일 연결 시도의 ICE 상태와 데이터 채널을 관리합니다.
+     * WebRTC 피어 연결 및 데이터 채널을 설정합니다.
      */
     function setupWebRTCPeer(peerId, p) {
         const rawPc = p._pc;
@@ -369,7 +650,6 @@
                 log('ICE Connection State: ' + rawPc.iceConnectionState);
                 if (rawPc.iceConnectionState === 'failed') {
                     vscode.postMessage({ type: 'iceFailed', peerId });
-
                 }
             });
         }
@@ -383,10 +663,12 @@
             if (data && data.candidate && typeof data.candidate.candidate === 'string') {
                 const candidateLines = expandMdnsCandidate(data.candidate.candidate);
                 if (candidateLines.length > 1) {
-                    candidateLines.forEach(candidateLine => {
-                        const candidate = Object.assign({}, data.candidate, { candidate: candidateLine });
+                    // 원본 후보는 그대로 보내고, 추가한 LAN IP 후보만 별도 메시지로 보냅니다.
+                    publishSdp(peerId, JSON.stringify(data));
+                    for (let i = 1; i < candidateLines.length; i++) {
+                        const candidate = buildCandidateInit(data.candidate, candidateLines[i]);
                         publishSdp(peerId, JSON.stringify(Object.assign({}, data, { candidate })));
-                    });
+                    }
                     return;
                 }
             }
@@ -482,6 +764,8 @@
             if (!key) return;
             delete peers[key];
             delete pendingSdpMap[key];
+            delete remoteSignalMap[key];
+            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
             vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
@@ -492,6 +776,8 @@
             if (!key) return;
             delete peers[key];
             delete pendingSdpMap[key];
+            delete remoteSignalMap[key];
+            delete srflxAttemptMap[key];
             if (Object.keys(peers).length === 0 && st) st.innerText = 'DISCONNECTED';
             vscode.postMessage({ type: 'statusUpdate', value: 'Disconnected', peerId: key });
         });
@@ -522,25 +808,49 @@
 
     function addPeer(peerId, isInitiator) {
         if (peers[peerId]) return;
-        try {
-            log('Initializing WebRTC peer connection (isInitiator: ' + isInitiator + ')...');
-            const p = new SimplePeer({
-                initiator: isInitiator,
-                trickle: false,
-                iceCompleteTimeout: ICE_COMPLETE_TIMEOUT_MS,
-                config: { iceServers: iceServers, iceTransportPolicy: 'all' }
-            });
+        // 자격 증명 조회가 끝나기 전에 같은 피어로 다시 호출되면 피어와 TURN 요청이 중복 생성되므로 무시합니다.
+        if (pendingPeerAdds[peerId]) return;
+        pendingPeerAdds[peerId] = true;
+        const generation = engineGeneration;
+        // SDP 를 생성하는 PeerConnection 이므로, 만들기 직전에 Worker 에서 TURN 자격 증명을 받아 적재합니다.
+        prepareIceServers().then(servers => {
+            delete pendingPeerAdds[peerId];
+            if (generation !== engineGeneration || peers[peerId]) return;
+            try {
+                log('Initializing WebRTC peer connection (isInitiator: ' + isInitiator + ')...');
+                const p = new SimplePeer({
+                    initiator: isInitiator,
+                    trickle: false,
+                    iceCompleteTimeout: ICE_COMPLETE_TIMEOUT_MS,
+                    config: { iceServers: servers }
+                });
 
-            setupWebRTCPeer(peerId, p);
-            peers[peerId] = p;
-        } catch(e) { log('Error: ' + e.message); }
+                setupWebRTCPeer(peerId, p);
+                peers[peerId] = p;
+
+                // TURN 자격 증명을 기다리는 동안 도착한 offer/answer 를 이제 적용합니다.
+                const queued = pendingRemoteSignals[peerId];
+                delete pendingRemoteSignals[peerId];
+                if (queued && queued.length > 0) {
+                    queued.forEach(signal => {
+                        remoteSignalMap[peerId] = signal;
+                        try { p.signal(prepareRemoteSignalFor(p, signal)); }
+                        catch (err) { log('보관된 원격 signal 적용 실패: ' + err.message); }
+                    });
+                }
+            } catch(e) { log('Error: ' + e.message); }
+        }).catch(e => {
+            delete pendingPeerAdds[peerId];
+            log('피어 초기화 실패: ' + (e && e.message ? e.message : e));
+        });
     }
 
     /**
      * P2P 엔진 연결을 활성화합니다.
      */
-    window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId, stunServers, localIps) {
+    window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role) {
         stopEngine(); // 기존 실행 중인 엔진 정지
+
         // 새 세션 시작이므로 이전 엔진 정리 중 발생한 이벤트가 새 인스턴스에 영향을 주지 않도록 초기화합니다.
         isStoppingEngine = false;
         hasActiveRoomSession = false;
@@ -553,13 +863,9 @@
         // 확장 호스트(Node)가 호스트 이름을 미리 IP로 해석해 전달한 STUN 목록을 우선 사용합니다.
         const stunUrls = (Array.isArray(stunServers) && stunServers.length > 0) ? stunServers : DEFAULT_STUN_URLS;
         iceServers = stunUrls.map(url => ({ urls: url }));
-        if (Array.isArray(turnConfig)) iceServers.push(...turnConfig);
-        else if (turnConfig && turnConfig.url) iceServers.push({ urls: turnConfig.url, username: turnConfig.username, credential: turnConfig.credential });
-        const serverUrls = iceServers.flatMap(server => [].concat(server.urls || []));
-        const stunCount = serverUrls.filter(url => /^stuns?:/i.test(url)).length;
-        const turnCount = serverUrls.filter(url => /^turns?:/i.test(url)).length;
-        log('ICE 서버 URL: STUN ' + stunCount + '개, TURN ' + turnCount + '개 (policy: all)');
-
+        // TURN 자격 증명은 여기서 미리 받지 않고, SDP/시그널링 채널을 만들기 직전에 Worker 에 요청합니다.
+        turnRole = (role === 'host') ? 'host' : 'guest';
+        log('STUN servers - ' + stunUrls.length);
         log('Starting P2P Engine...');
 
         function setupPeerJS(rName) {
@@ -569,7 +875,7 @@
             log('Connecting to PeerJS signaling server...');
             peerServer = new Peer(pjsId, {
                 debug: 3,
-                config: { iceServers: iceServers, iceTransportPolicy: 'all' }
+                config: { iceServers: sessionIceServers, iceTransportPolicy: 'all', iceCandidatePoolSize: 6 }
             });
             installSignalingCandidateRewrite(peerServer);
             let wasOpened = false;
@@ -586,29 +892,23 @@
                     log('Created room: "' + rName + '". Waiting for guest connection...');
                     vscode.postMessage({ type: 'roomNameSuccess' });
                 } else {
-                    const destSafeId = toSafeId(rName);
                     log('Connecting to room host for room: "' + rName + '"...');
-                    const conn = peerServer.connect(destSafeId);
+                    const conn = peerServer.connect(toSafeId(rName));
                     handleSignalingConn(conn);
 
-                    // STUN/TURN 후보를 함께 사용하는 단일 시그널링 연결의 제한 시간입니다.
+                    // 게스트 시그널링 채널 조기 타임아웃(3.5초) 설정
+                    // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
                     if (guestSignalingConnectTimer) {
                         clearTimeout(guestSignalingConnectTimer);
                     }
-                    const signalingTimeoutMs = 15000;
                     guestSignalingConnectTimer = setTimeout(() => {
                         guestSignalingConnectTimer = null;
-                        const hasOngoingPeer = Object.values(peers).some(p => p && !p.destroyed && p.connected);
-                        if (!currentInitiator && guestSignalingConn === conn && !conn.open && !hasOngoingPeer) {
-                            log('Guest signaling connection timeout (host offline or connection blocked). Closing connection...');
+                        if (!currentInitiator && guestSignalingConn === conn && !conn.open && !Object.values(peers).some(p => p && !p.destroyed && (p.connected || p._pc))) {
+                            log('Guest signaling connection early timeout (10s): Host not responding yet. Closing connection...');
                             try { conn.close(); } catch(e) {}
-                            vscode.postMessage({
-                                type: 'roomNameError',
-                                errorType: 'signaling-timeout',
-                                reason: '시그널링 응답 시간 초과: 호스트가 응답하지 않거나 네트워크 방화벽에 의해 차단되었습니다.'
-                            });
+                            vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
                         }
-                    }, signalingTimeoutMs);
+                    }, 10000);
                 }
             });
 
@@ -638,17 +938,9 @@
                         guestSignalingConnectTimer = null;
                     }
                     if (err.type === 'peer-unavailable') {
-                        vscode.postMessage({
-                            type: 'roomNameError',
-                            errorType: 'unavailable',
-                            reason: '해당 방 이름의 호스트가 오프라인이거나 존재하지 않습니다.'
-                        });
+                        vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
                     } else if (err.type === 'server-error' || err.type === 'network') {
-                        vscode.postMessage({
-                            type: 'roomNameError',
-                            errorType: 'server',
-                            reason: '시그널링 서버 연결 실패(' + err.type + '): 서버와 통신할 수 없습니다.'
-                        });
+                        vscode.postMessage({ type: 'roomNameError', errorType: 'server' });
                     }
                 }
                 if (currentInitiator) {
@@ -673,34 +965,18 @@
         }
 
         function handleSignalingConn(conn) {
+            // 제어 P2P가 어떤 후보(host/srflx/relay)로 열렸는지 확인할 수 있도록 진단을 붙입니다.
+            attachControlConnectionDiagnostics(conn);
             if (!currentInitiator) {
                 guestSignalingConn = conn;
             }
-
-            // PeerJS DataConnection 내부 RTCPeerConnection의 ICE 상태 감시
-            // 대칭형 NAT/방화벽으로 인해 ICE disconnected/failed 발생 시 조기 감지
-            const attachIceWatcher = () => {
-                const pc = conn.peerConnection;
-                if (pc && !pc._hasIceWatcher) {
-                    pc._hasIceWatcher = true;
-                    pc.addEventListener('iceconnectionstatechange', () => {
-                        log('Signaling PeerConnection ICE State: ' + pc.iceConnectionState);
-                    });
-                }
-            };
-            if (conn.peerConnection) {
-                attachIceWatcher();
-            } else {
-                // PeerConnection이 비동기로 초기화되는 경우를 위해 짧은 딜레이 후 바인딩
-                setTimeout(attachIceWatcher, 100);
-            }
-
             conn.on('open', () => {
                 if (guestSignalingConnectTimer) {
                     clearTimeout(guestSignalingConnectTimer);
                     guestSignalingConnectTimer = null;
                 }
                 log('Signaling channel established.');
+                log('[mDNS Expand] 제어 채널 후보 확장 누적: offer ' + controlExpandStats.offer + ', answer ' + controlExpandStats.answer + ', candidate ' + controlExpandStats.candidate);
                 if (!currentInitiator) {
                     log('Requesting SDP offer from host...');
                     conn.send({ type: 'REQ_OFFER' });
@@ -774,19 +1050,32 @@
             });
         }
 
-        if (roomName) {
-            setupPeerJS(roomName);
-        }
-        if (autoStart) {
-            addPeer('default', currentInitiator);
-        }
+        // Worker 에서 TURN 자격 증명을 받은 뒤에 시그널링 채널/SDP 를 만듭니다.
+        // Worker 가 404/무응답이면 빈 목록이 돌아오고 STUN 만으로 그대로 진행합니다.
+        const generation = engineGeneration;
+        prepareIceServers().then(servers => {
+            if (generation !== engineGeneration) return;
+            sessionIceServers = servers;
+            if (roomName) {
+                setupPeerJS(roomName);
+            }
+            if (autoStart) {
+                addPeer('default', currentInitiator);
+            }
+        });
     };
 
     // 메시지 수신 및 라우팅 리스너
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnServers || m.turnConfig, m.peerId, m.stunServers, m.localIps);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.peerId, m.stunServers, m.localIps, m.turnRole);
+            return;
+        }
+        if (m.type === 'turnCredentialsResult') {
+            const finish = pendingTurnRequests[m.requestId];
+            if (finish) finish(m.turnServers);
+            return;
             return;
         }
         if (m.type === 'stopEngine') {
@@ -808,8 +1097,12 @@
         if (m.type === 'updatePeerId' && peers[m.oldId]) {
             peers[m.newId] = peers[m.oldId];
             pendingSdpMap[m.newId] = pendingSdpMap[m.oldId];
+            remoteSignalMap[m.newId] = remoteSignalMap[m.oldId];
+            srflxAttemptMap[m.newId] = srflxAttemptMap[m.oldId];
             delete peers[m.oldId];
             delete pendingSdpMap[m.oldId];
+            delete remoteSignalMap[m.oldId];
+            delete srflxAttemptMap[m.oldId];
         }
         if (m.type === 'disconnectPeer') {
             const pId = m.peerId;
@@ -825,8 +1118,12 @@
         if (m.type === 'signal') {
             const key = resolvePeerKey(targetId);
             if (peers[key]) {
+                remoteSignalMap[key] = m.sdp;
+                srflxAttemptMap[key] = 0;
                 peers[key].signal(prepareRemoteSignalFor(peers[key], m.sdp));
-
+            } else {
+                // TURN 자격 증명을 받아 피어를 만드는 동안 도착한 signal 은 버리지 않고 보관합니다.
+                queueRemoteSignal(key, m.sdp);
             }
         }
         if (m.type === 'peerData') {
