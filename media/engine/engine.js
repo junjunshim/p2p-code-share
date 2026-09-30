@@ -560,7 +560,14 @@
         vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId });
 
         if (currentInitiator) {
+            const boundBefore = peerSignalingConnMap[peerId];
+            // 대기 중이던 시그널링 커넥션에 이 SDP 를 전달합니다(flush 내부에서 바인딩 후 전송).
             flushPendingSignalingRequests();
+            // flush 가 이 피어에 커넥션을 새로 바인딩해 이미 전송했다면 중복 전송하지 않습니다.
+            // 같은 SDP 를 두 번 보내면 게스트가 answer 를 두 번 만들어 setLocalDescription 이 실패합니다.
+            if (!boundBefore && peerSignalingConnMap[peerId]) {
+                return;
+            }
         }
 
         const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
@@ -833,8 +840,10 @@
                 delete pendingRemoteSignals[peerId];
                 if (queued && queued.length > 0) {
                     queued.forEach(signal => {
+                        const prepared = prepareRemoteSignalFor(p, signal);
                         remoteSignalMap[peerId] = signal;
-                        try { p.signal(prepareRemoteSignalFor(p, signal)); }
+                        p.__lastAppliedSignal = (typeof prepared === 'string') ? prepared : JSON.stringify(prepared);
+                        try { p.signal(prepared); }
                         catch (err) { log('보관된 원격 signal 적용 실패: ' + err.message); }
                     });
                 }
@@ -896,7 +905,7 @@
                     const conn = peerServer.connect(toSafeId(rName));
                     handleSignalingConn(conn);
 
-                    // 게스트 시그널링 채널 조기 타임아웃(3.5초) 설정
+                    // 게스트 시그널링 채널 조기 타임아웃(10초) 설정
                     // 호스트가 아직 서버에 미등록 상태일 때 PeerJS 기본 타임아웃(20초 EXPIRE) 대기로 인한 기회 박탈 방지
                     if (guestSignalingConnectTimer) {
                         clearTimeout(guestSignalingConnectTimer);
@@ -1118,9 +1127,18 @@
         if (m.type === 'signal') {
             const key = resolvePeerKey(targetId);
             if (peers[key]) {
+                const prepared = prepareRemoteSignalFor(peers[key], m.sdp);
+                // 같은 원격 signal 이 중복 도착하면(offer 재전송/큐 flush 중복) 두 번 적용하지 않습니다.
+                // answer 를 두 번 만들면 setLocalDescription 이 wrong state(stable) 오류로 실패합니다.
+                const fingerprint = (typeof prepared === 'string') ? prepared : JSON.stringify(prepared);
+                if (peers[key].__lastAppliedSignal === fingerprint) {
+                    log('Duplicate remote signal ignored (peer ' + key + ').');
+                    return;
+                }
+                peers[key].__lastAppliedSignal = fingerprint;
                 remoteSignalMap[key] = m.sdp;
                 srflxAttemptMap[key] = 0;
-                peers[key].signal(prepareRemoteSignalFor(peers[key], m.sdp));
+                peers[key].signal(prepared);
             } else {
                 // TURN 자격 증명을 받아 피어를 만드는 동안 도착한 signal 은 버리지 않고 보관합니다.
                 queueRemoteSignal(key, m.sdp);
