@@ -20,14 +20,14 @@ export interface TurnServerConfig {
 }
 
 export interface TurnTokenResponse {
-    iceServers: TurnServerConfig[];
+    iceServers: TurnServerConfig[] | TurnServerConfig;
     ttl: number;
     role: 'host' | 'guest';
     issuedAt: number;
     expiresAt: number;
 }
 
-const WORKER_ENDPOINT = 'https://p2p-turn-broker.shimdj0425-a8c.workers.dev';
+const WORKER_ENDPOINT = 'https://p2p-turn-broker.shimdj0425.workers.dev';
 const APP_SECRET = 'p2p-code-share-junjunshim-secret-variable';
 const REQUEST_TIMEOUT_MS = 4000;
 
@@ -56,7 +56,7 @@ export class TurnService {
         if (this.cachedHostToken && now < this.cachedHostToken.expiresAt - 120000) {
             const remainingMin = Math.round((this.cachedHostToken.expiresAt - now) / 60000);
             Logger.get().info('TurnService', `Host TURN token reused from cache (expires in ${remainingMin}m, Worker calls: 0)`);
-            return this.cachedHostToken.iceServers;
+            return Array.isArray(this.cachedHostToken.iceServers) ? this.cachedHostToken.iceServers : [this.cachedHostToken.iceServers];
         }
 
         Logger.get().info('TurnService', `Requesting fresh 30m Host TURN token from Cloudflare Worker...`);
@@ -64,7 +64,7 @@ export class TurnService {
         if (tokenResp) {
             this.cachedHostToken = tokenResp;
             Logger.get().info('TurnService', `Successfully issued 30m Host TURN token (cached until ${new Date(tokenResp.expiresAt).toLocaleTimeString()})`);
-            return tokenResp.iceServers;
+            return Array.isArray(tokenResp.iceServers) ? tokenResp.iceServers : [tokenResp.iceServers];
         }
         return null;
     }
@@ -78,7 +78,7 @@ export class TurnService {
         const tokenResp = await this.requestTokenFromWorker('guest');
         if (tokenResp) {
             Logger.get().info('TurnService', `Successfully issued 3m Guest TURN token (expires in 3 minutes)`);
-            return tokenResp.iceServers;
+            return Array.isArray(tokenResp.iceServers) ? tokenResp.iceServers : [tokenResp.iceServers];
         }
         return null;
     }
