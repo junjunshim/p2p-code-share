@@ -20,6 +20,7 @@
     let connPeerIdMap = new WeakMap(); // 커넥션 객체별 할당된 피어 ID 매핑
     let srflxAttemptMap = {}; // 피어별 srflx(공인 IP) 후보 수집 재시도 횟수
     let remoteSignalMap = {}; // 피어별 마지막 원격 signal (재시도 시 같은 offer 재적용용)
+    let activeHandleSignalingConn = null; // 시그널링 채널 이벤트 핸들러 참조 (startEngine 외부 메시지 리스너 접근용)
     let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
@@ -84,6 +85,7 @@
         peerSignalingConnMap = {};
         srflxAttemptMap = {};
         remoteSignalMap = {};
+        activeHandleSignalingConn = null;
         if (guestSignalingConn) {
             try { guestSignalingConn.close(); } catch(e) {}
             guestSignalingConn = null;
@@ -710,6 +712,7 @@
         }
 
         function handleSignalingConn(conn) {
+            activeHandleSignalingConn = handleSignalingConn;
             if (!currentInitiator) {
                 guestSignalingConn = conn;
             }
@@ -910,7 +913,26 @@
 
                     if (peerServer && !peerServer.destroyed) {
                         const newConn = peerServer.connect(destSafeId);
-                        handleSignalingConn(newConn);
+                        if (typeof activeHandleSignalingConn === 'function') {
+                            activeHandleSignalingConn(newConn);
+                        } else {
+                            log('[Signaling TURN Fallback] Warning: activeHandleSignalingConn is not a function');
+                        }
+
+                        // TURN 서버를 적용한 2차 시그널링 채널에 대해 12초 타임아웃 타이머 가동
+                        guestSignalingConnectTimer = setTimeout(() => {
+                            guestSignalingConnectTimer = null;
+                            const hasOngoingPeer = Object.values(peers).some(p => p && !p.destroyed && (p.connected || p._pc));
+                            if (!currentInitiator && guestSignalingConn === newConn && !newConn.open && !hasOngoingPeer) {
+                                log('[Signaling TURN Fallback] TURN 시그널링 12초 타임아웃 도달: 호스트 오프라인 또는 완전 차단.');
+                                try { newConn.close(); } catch(e) {}
+                                vscode.postMessage({
+                                    type: 'roomNameError',
+                                    errorType: 'signaling-timeout',
+                                    reason: '시그널링 응답 시간 초과: 호스트가 응답하지 않거나 네트워크 방화벽에 의해 차단되었습니다.'
+                                });
+                            }
+                        }, 12000);
                     }
                 }
                 return;
