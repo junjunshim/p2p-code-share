@@ -79,3 +79,39 @@ export function normalizePath(p: string): string {
 export function normalizeEOL(text: string): string {
     return text.replace(/\r\n/g, '\n');
 }
+
+/**
+ * LAN 연결 시 mDNS(*.local)로 난독화된 ICE host 후보를 실제 사설 IP로 확장할 때 사용할
+ * 로컬 IPv4 주소 목록을 반환합니다.
+ *
+ * - 루프백과 링크로컬(169.254.0.0/16, APIPA)은 다른 장비에서 도달할 수 없으므로 제외합니다.
+ * - WSL/Hyper-V/VMware/VirtualBox/Docker/VPN 등 가상 어댑터 주소는 실제 LAN 어댑터보다 뒤로 정렬합니다.
+ * - 특정 인터페이스를 임의로 하나만 고르지 않도록 모든 후보를 반환합니다(호출 측에서 후보를 모두 추가).
+ * @returns 우선순위대로 정렬된 로컬 IPv4 주소 목록(최대 8개).
+ */
+export function getLocalIpAddresses(): string[] {
+    const os = require('os') as typeof import('os');
+    // 가상 어댑터 이름 패턴: 실제 LAN 어댑터보다 우선순위를 낮춥니다.
+    const VIRTUAL_ADAPTER_PATTERN = /(vethernet|hyper-v|vmware|virtualbox|vbox|docker|wsl|tailscale|zerotier|hamachi|radmin|tap|tun|vpn|bluetooth|loopback|npcap)/i;
+
+    const preferred: string[] = [];
+    const fallback: string[] = [];
+    const seen = new Set<string>();
+
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const net of interfaces[name] || []) {
+            if (!net || net.internal) continue;
+            const address = net.address;
+            if (!address) continue;
+            // IPv4만 대상으로 합니다(Node 버전에 따라 family가 'IPv4' 또는 4로 나타납니다).
+            if (net.family !== 'IPv4' && (net.family as unknown) !== 4) continue;
+            if (address === '127.0.0.1' || address.startsWith('169.254.')) continue;
+            if (seen.has(address)) continue;
+            seen.add(address);
+            (VIRTUAL_ADAPTER_PATTERN.test(name) ? fallback : preferred).push(address);
+        }
+    }
+
+    return [...preferred, ...fallback].slice(0, 8);
+}

@@ -21,6 +21,7 @@
     let pendingSignalingQueue = [];
     let iceServers = [];
     let currentInitiator = false;
+    let myLocalIps = []; // 확장 호스트가 전달한 실제 사설 LAN IP 목록 (mDNS 난독화 host 후보 보강용)
 
     // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
     const DEFAULT_STUN_URLS = [
@@ -38,6 +39,101 @@
     /** SDP를 전달하기 전에 실제 ICE 수집 완료를 추가로 기다리는 최대 시간(ms) */
     const ICE_GATHERING_WAIT_MS = 6000;
 
+    /**
+     * mDNS(*.local)로 난독화된 host 후보인지 판별합니다.
+     * SDP 속성 라인('a=candidate:...')과 단일 후보 문자열('candidate:...')을 모두 처리합니다.
+     */
+    function isMdnsHostCandidate(line) {
+        if (!line || typeof line !== 'string') return false;
+        const tokens = line.trim().split(/\s+/);
+        if (tokens.length < 8) return false;
+        const head = tokens[0];
+        if (head.indexOf('a=candidate:') !== 0 && head.indexOf('candidate:') !== 0) return false;
+        return tokens[7] === 'host' && /\.local$/i.test(tokens[4]);
+    }
+
+    /**
+     * mDNS로 난독화된 host 후보를 실제 사설 IP 후보들로 확장합니다.
+     *
+     * Chromium은 사설 IP 노출을 막기 위해 host 후보 주소를 mDNS 이름으로 바꿉니다. 서로 다른 장비 간
+     * LAN 연결에서는 이 이름이 해석되지 않을 수 있으므로 실제 IP 후보가 필요합니다. 어떤 IP가 실제
+     * 경로인지 알 수 없어 하나를 골라 치환하지 않고, 모든 로컬 IP 후보를 추가합니다(원본 mDNS 후보도 유지).
+     * 도달 불가능한 후보는 ICE가 알아서 버립니다.
+     */
+    function expandMdnsCandidate(line) {
+        if (!isMdnsHostCandidate(line) || myLocalIps.length === 0) return [line];
+        const tokens = line.trim().split(/\s+/);
+        const foundation = tokens[0];
+        const expanded = [line];
+        myLocalIps.forEach((ip, index) => {
+            const candidate = tokens.slice();
+            // 확장한 후보마다 서로 다른 foundation을 부여해 ICE가 중복 후보로 접어버리지 않게 합니다.
+            candidate[0] = foundation + 'LAN' + (index + 1);
+            candidate[4] = ip;
+            expanded.push(candidate.join(' '));
+        });
+        return expanded;
+    }
+
+    /** SDP 본문의 mDNS host 후보를 로컬 IP 후보로 확장합니다. */
+    function expandMdnsInSdp(sdp) {
+        if (typeof sdp !== 'string' || sdp.length === 0 || myLocalIps.length === 0) return sdp;
+        if (sdp.indexOf('.local') < 0) return sdp;
+        const lines = sdp.split(/\r?\n/);
+        const expandedLines = [];
+        lines.forEach(line => {
+            if (line.indexOf('a=candidate:') === 0) {
+                expandMdnsCandidate(line).forEach(candidateLine => expandedLines.push(candidateLine));
+            } else {
+                expandedLines.push(line);
+            }
+        });
+        return expandedLines.join('\r\n');
+    }
+
+    /**
+     * PeerJS 시그널링 소켓으로 나가는 CANDIDATE/OFFER/ANSWER의 mDNS 주소를 확장합니다.
+     * 호스트↔게스트 시그널링 채널 자체도 WebRTC DataConnection이므로, 후보가 mDNS뿐이면
+     * 다른 장비와 시그널링 채널부터 연결되지 않습니다.
+     */
+    function installSignalingCandidateRewrite(server) {
+        if (!server || !server.socket || typeof server.socket.send !== 'function') return;
+        if (server.socket.__mdnsExpandInstalled) return;
+        server.socket.__mdnsExpandInstalled = true;
+        const originalSend = server.socket.send;
+
+        server.socket.send = function (message) {
+            try {
+                if (message && message.payload && myLocalIps.length > 0) {
+                    if (message.type === 'CANDIDATE' && message.payload.candidate &&
+                        typeof message.payload.candidate.candidate === 'string') {
+                        const candidateLines = expandMdnsCandidate(message.payload.candidate.candidate);
+                        if (candidateLines.length > 1) {
+                            candidateLines.forEach(candidateLine => {
+                                const candidate = Object.assign({}, message.payload.candidate, { candidate: candidateLine });
+                                const expanded = Object.assign({}, message, {
+                                    payload: Object.assign({}, message.payload, { candidate })
+                                });
+                                originalSend.call(this, expanded);
+                            });
+                            return;
+                        }
+                    } else if ((message.type === 'OFFER' || message.type === 'ANSWER') && message.payload.sdp) {
+                        const sdpPayload = message.payload.sdp;
+                        if (typeof sdpPayload === 'string') {
+                            message.payload.sdp = expandMdnsInSdp(sdpPayload);
+                        } else if (typeof sdpPayload.sdp === 'string') {
+                            message.payload.sdp = Object.assign({}, sdpPayload, { sdp: expandMdnsInSdp(sdpPayload.sdp) });
+                        }
+                    }
+                }
+            } catch (e) {
+                log('[mDNS Expand] signaling candidate rewrite failed: ' + e.message);
+            }
+            return originalSend.apply(this, arguments);
+        };
+    }
+
 
     /**
      * 로그 메시지를 콘솔에 출력합니다.
@@ -51,6 +147,7 @@
      */
     function stopEngine() {
         log('Stopping P2P engine and disposing connections...');
+        myLocalIps = [];
         // PeerJS의 destroy()는 내부적으로 disconnect()를 호출해 'disconnected' 이벤트를 발생시키므로,
         // 의도적 종료 중에는 시그널링 재연결/알림 로직이 동작하지 않도록 플래그를 세웁니다.
         isStoppingEngine = true;
@@ -226,7 +323,7 @@
                 vscode.postMessage({ type: 'iceFailed', peerId });
                 return;
             }
-            publishSdp(peerId, JSON.stringify({ type: data.type, sdp }));
+            publishSdp(peerId, JSON.stringify({ type: data.type, sdp: expandMdnsInSdp(sdp) }));
         }
 
         if (!pc || pc.iceGatheringState === 'complete') {
@@ -281,6 +378,17 @@
             if (data && (data.type === 'offer' || data.type === 'answer')) {
                 publishSignalWithFullCandidates(peerId, p, data);
                 return;
+            }
+            // trickle 후보가 개별 signal로 오는 경우에도 mDNS 후보를 로컬 IP 후보로 확장합니다.
+            if (data && data.candidate && typeof data.candidate.candidate === 'string') {
+                const candidateLines = expandMdnsCandidate(data.candidate.candidate);
+                if (candidateLines.length > 1) {
+                    candidateLines.forEach(candidateLine => {
+                        const candidate = Object.assign({}, data.candidate, { candidate: candidateLine });
+                        publishSdp(peerId, JSON.stringify(Object.assign({}, data, { candidate })));
+                    });
+                    return;
+                }
             }
             publishSdp(peerId, JSON.stringify(data));
         });
@@ -431,13 +539,17 @@
     /**
      * P2P 엔진 연결을 활성화합니다.
      */
-    window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId, stunServers) {
+    window.startEngine = function(initiator, autoStart, roomName, turnConfig, peerId, stunServers, localIps) {
         stopEngine(); // 기존 실행 중인 엔진 정지
         // 새 세션 시작이므로 이전 엔진 정리 중 발생한 이벤트가 새 인스턴스에 영향을 주지 않도록 초기화합니다.
         isStoppingEngine = false;
         hasActiveRoomSession = false;
 
         currentInitiator = initiator;
+        myLocalIps = Array.isArray(localIps) ? localIps.filter(ip => typeof ip === 'string' && ip.length > 0) : [];
+        if (myLocalIps.length > 0) {
+            log('[Local IPs] mDNS host 후보 확장에 사용할 LAN IP: ' + myLocalIps.join(', '));
+        }
         // 확장 호스트(Node)가 호스트 이름을 미리 IP로 해석해 전달한 STUN 목록을 우선 사용합니다.
         const stunUrls = (Array.isArray(stunServers) && stunServers.length > 0) ? stunServers : DEFAULT_STUN_URLS;
         iceServers = stunUrls.map(url => ({ urls: url }));
@@ -459,6 +571,7 @@
                 debug: 3,
                 config: { iceServers: iceServers, iceTransportPolicy: 'all' }
             });
+            installSignalingCandidateRewrite(peerServer);
             let wasOpened = false;
 
             peerServer.on('open', (id) => {
@@ -673,7 +786,7 @@
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnServers || m.turnConfig, m.peerId, m.stunServers);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.turnServers || m.turnConfig, m.peerId, m.stunServers, m.localIps);
             return;
         }
         if (m.type === 'stopEngine') {

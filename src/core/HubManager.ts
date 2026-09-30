@@ -12,6 +12,7 @@ import { P2PMessage } from '../types';
 import * as dns from 'dns';
 import { TurnService } from './turn/TurnService';
 import { Logger } from '../utils/Logger';
+import { getLocalIpAddresses } from '../utils/helpers';
 
 /**
  * WebView(Chromium)의 STUN 호스트 조회 실패(ICE error 701)를 피하기 위해
@@ -153,7 +154,10 @@ export class HubManager {
                     roomName,
                     turnServers: turnServers || [],
                     peerId,
-                    stunServers
+                    stunServers,
+                    // Webview(Chromium)가 host 후보를 mDNS로 난독화하므로, 실제 사설 IP 후보를
+                    // 추가할 수 있도록 로컬 LAN 주소 목록을 함께 전달합니다.
+                    localIps: getLocalIpAddresses()
                 });
             }).catch(err => {
                 if (generation !== this._startGeneration) return;
