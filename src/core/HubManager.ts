@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import { P2PMessage } from '../types';
 // WebView(Chromium) 대신 Node에서 STUN 서버 주소를 미리 해석하기 위한 모듈
 import * as dns from 'dns';
-import { TurnService, TurnServerConfig } from './turn/TurnService';
+import { TurnService } from './turn/TurnService';
 import { Logger } from '../utils/Logger';
 
 /**
@@ -62,8 +62,7 @@ export class HubManager {
     /** WebRTC ICE 연결 실패가 감지되었을 때 호출되는 콜백 */
     public onIceFailed?: (peerId: string) => void;
 
-    /** 사설/공인 P2P 홀펀칭 불가 감지 시 TURN Fallback을 요청하는 콜백 */
-    public onTurnFallbackRequested?: (peerId: string) => void;
+    private _startGeneration = 0;
 
     /**
      * HubManager의 새 인스턴스를 생성합니다.
@@ -128,7 +127,7 @@ export class HubManager {
 
     /**
      * P2P 허브 Webview 엔진을 활성화(초기 연결 요청 전송)합니다.
-     * 1단계는 사설/공인 IP 기반 순수 P2P로 시작하여 Cloudflare Worker 호출을 0회로 유지합니다.
+     * STUN 주소와 TURN 인증을 함께 준비하여 한 번의 연결 시도에 사용합니다.
      * @param initiator 현재 노드가 연결 시작자(Host)인지 여부.
      * @param roomName 자동 시그널링에 사용할 방 이름 (기본값: 빈 문자열).
      * @param peerId 피어의 고유 식별자 (기본값: 'default').
@@ -137,17 +136,28 @@ export class HubManager {
     public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default'): void {
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
         if (peerId === 'none' || peerId === 'default') {
-            // 1단계: STUN 서버 주소만 미리 IP로 해석하여 전달 (Worker 호출 0회)
-            void this.resolveStunServers().then(stunServers => {
+            // DNS 해석과 TURN 인증 요청을 병렬로 수행합니다.
+            const generation = ++this._startGeneration;
+            void Promise.all([
+                this.resolveStunServers(),
+                initiator ? TurnService.get().getHostTurnConfig() : TurnService.get().getGuestTurnConfig()
+            ]).then(([stunServers, turnServers]) => {
+                if (generation !== this._startGeneration) return;
+                if (!turnServers?.length) {
+                    Logger.get().warn('HubManager', 'TURN credentials unavailable; this attempt will use STUN only.');
+                }
                 this.sendToEngine({
                     type: 'startEngine',
                     initiator,
                     autoStart: !initiator,
                     roomName,
-                    turnServers: undefined, // 1단계는 순수 P2P (Worker 호출 0회)
+                    turnServers: turnServers || [],
                     peerId,
                     stunServers
                 });
+            }).catch(err => {
+                if (generation !== this._startGeneration) return;
+                this.onRoomNameError?.('initialization', `연결 설정 준비 실패: ${String(err)}`);
             });
         } else {
             // 이미 엔진이 실행 중인 상태에서 새로운 게스트 피어를 추가하는 경우
@@ -155,20 +165,6 @@ export class HubManager {
                 this.sendToEngine({ type: 'addNewPeer', initiator, peerId });
             }
         }
-    }
-
-    /**
-     * 사설/공인 IP P2P 홀펀칭 실패 시 2단계 TURN Fallback 설정을 Webview 엔진에 주입하여 피어를 재초기화합니다.
-     * @param peerId 대상 피어 ID.
-     * @param turnServers Cloudflare Worker로부터 발급/갱신된 TURN 서버 설정 목록.
-     */
-    public reconnectWithTurn(peerId: string, turnServers: TurnServerConfig[]): void {
-        Logger.get().info('HubManager', `Dispatching reconnectWithTurn to WebRTC engine for peer: ${peerId}`);
-        this.sendToEngine({
-            type: 'reconnectWithTurn',
-            peerId,
-            turnServers
-        });
     }
 
     /**
@@ -190,6 +186,8 @@ export class HubManager {
      * @returns {void}
      */
     public dispose(): void {
+        ++this._startGeneration;
+        this._pendingMessageQueue = [];
         this.sendToEngine({ type: 'stopEngine' });
         this.sdpMap.clear();
     }
