@@ -143,10 +143,23 @@ export class CursorManager {
         try {
             // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성 (LF 기준 정확한 오프셋 인덱스 산출)
             const yjsContent = ytext.toString();
-            const docLen = ytext.length;
-            const startIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.start)), docLen);
-            const endIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.end)), docLen);
-            const activeIndex = Math.min(Math.max(0, this.engine.getIndexFromPosition(yjsContent, selection.active)), docLen);
+            const startIndex = this.engine.getIndexFromPosition(yjsContent, selection.start);
+            const endIndex = this.engine.getIndexFromPosition(yjsContent, selection.end);
+            const activeIndex = this.engine.getIndexFromPosition(yjsContent, selection.active);
+
+            // 에디터 버퍼가 Yjs보다 앞서 있으면(권한 없는 편집, 원격 적용 실패 등) 좌표 매핑이 조용히 잘린다.
+            // 이때 만들어진 인덱스(ytext.length)는 item=null 상대 좌표가 되어 "받는 쪽 문서 끝"으로 해석되고,
+            // 상대 화면에서 이 커서가 파일 끝에 붙는다(발신측 끝 앵커 오염). 수신측은 정상 좌표와 구분할 수 없으므로
+            // 여기서 잘림을 감지해 아예 보내지 않는다. 그러면 상대는 이 피어의 직전 정상 좌표를 그대로 유지한다.
+            const isExactMapping = (pos: vscode.Position, index: number): boolean => {
+                const roundTrip = this.engine.getPositionFromIndex(yjsContent, index);
+                return roundTrip.line === pos.line && roundTrip.character === pos.character;
+            };
+            if (!isExactMapping(selection.start, startIndex) ||
+                !isExactMapping(selection.end, endIndex) ||
+                !isExactMapping(selection.active, activeIndex)) {
+                return;
+            }
 
             // 다른 피어의 문서 변경 시에도 위치가 자동 추적되도록 상대 좌표로 직렬화
             const startRel = Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, startIndex));
