@@ -27,6 +27,14 @@
     let myLocalIps = []; // 확장 호스트가 전달한 실제 사설 LAN IP 목록 (mDNS 난독화 host 후보 보강용)
     let turnRole = 'guest';        // 이 세션에서 Worker에 요청할 TURN 자격 증명 역할(host/guest)
     let sessionIceServers = [];    // 시그널링 채널용 iceServers (TURN 자격 증명 포함)
+    let iceServersSettled = false; // TURN 조회까지 끝나 sessionIceServers 가 확정되었는지 여부
+    let iceServersFallback = null; // 유예 시간 초과로 STUN-only 진행할 때 사용한 목록
+    let turnGraceExceeded = false; // 유예 시간 초과로 STUN-only 진행을 이미 시작했는지 여부
+    let turnUnavailableAt = 0;     // TURN 자격 증명 없이 확정된 시각(쿨다운 후 재시도용)
+    let iceReadyPromise = null;    // 시그널링 소켓과 병렬로 진행하는 ICE 설정 확정 Promise
+    let iceReadyResolved = false;  // ICE 설정(또는 유예 폴백)이 확정되어 제어 채널 connect 가 가능한지 여부
+    let lastJoinStageKey = '';     // 게스트 진행 단계 표시의 중복 전송을 막기 위한 마지막 단계 키
+    let roomUnavailableDetected = false; // 방이 서버에 없음(peer-unavailable) → 게스트의 추가 연결 시도 중단
     let controlExpandStats = { offer: 0, answer: 0, candidate: 0 }; // 제어 P2P 시그널링 후보 확장 횟수(진단용)
     let engineGeneration = 0;      // stopEngine/startEngine 마다 증가시켜 지연된 비동기 작업을 무효화
     let pendingTurnRequests = {};  // requestId -> Worker 응답 대기 resolver
@@ -229,6 +237,20 @@
     const TURN_REQUEST_TIMEOUT_MS = 6000;
 
     /**
+     * TURN 자격 증명 응답을 "다음 단계 진행 전에" 기다리는 유예 시간(ms).
+     * 이 시간을 넘기면 STUN-only 로 먼저 진행하고, 늦게 도착한 응답은 다음 피어 생성부터 반영합니다.
+     * Worker 가 꺼져 있어도(404/무응답) 초기 연결이 지연되지 않게 하기 위한 값입니다.
+     */
+    const TURN_PREPARE_GRACE_MS = 1200;
+
+    /**
+     * TURN 자격 증명을 받지 못한 상태에서 다시 요청하기까지의 최소 간격(ms).
+     * Worker가 꺼져 있으면 이 간격 동안은 재요청하지 않고 STUN-only로 즉시 진행하며,
+     * Worker가 다시 살아나면 다음 피어 생성부터 TURN이 반영됩니다.
+     */
+    const TURN_UNAVAILABLE_RETRY_MS = 15000;
+
+    /**
      * mDNS(*.local)로 난독화된 host 후보인지 판별합니다.
      * SDP 속성 라인('a=candidate:...')과 단일 후보 문자열('candidate:...')을 모두 처리합니다.
      */
@@ -408,32 +430,105 @@
      * Worker 응답이 없으면 STUN 목록만 반환하므로 SDP 교환은 그대로 진행됩니다.
      */
     function prepareIceServers() {
+        const callGeneration = engineGeneration;
+
         // 같은 세션에서 여러 피어가 동시에 만들어질 때 TURN 자격 증명 요청이 중복되지 않도록
         // 진행 중인 요청을 공유합니다.
-        if (pendingIceServersPromise) {
-            return pendingIceServersPromise;
+        // TURN 없이 확정된 경우에는 쿨다운이 지난 뒤에만 다시 요청합니다(Worker 재가동 반영).
+        const turnRetryAllowed = turnUnavailableAt === 0 || (Date.now() - turnUnavailableAt) >= TURN_UNAVAILABLE_RETRY_MS;
+        if (!pendingIceServersPromise && !iceServersSettled && turnRetryAllowed) {
+            const generation = callGeneration;
+            const pending = requestTurnCredentials()
+                .then(turnConfigs => {
+                    const servers = buildIceServers(turnConfigs);
+                    if (generation !== engineGeneration) return servers;
+                    log('ICE servers - STUN ' + iceServers.length + ', TURN ' + (servers.length - iceServers.length));
+                    sessionIceServers = servers;
+                    if (servers.length === iceServers.length) {
+                        // TURN 없음: 세션 전체를 STUN-only로 굳히지 않고 쿨다운 후 다시 시도합니다.
+                        turnUnavailableAt = Date.now();
+                        log('TURN 자격 증명 없음(Worker 미가동/실패). STUN-only 로 진행합니다. (' + (TURN_UNAVAILABLE_RETRY_MS / 1000) + '초 후 재시도)');
+                    } else {
+                        // 늦게 도착한 응답도 다음 피어 생성/제어 채널부터 반영되도록 세션 값으로 확정합니다.
+                        iceServersSettled = true;
+                    }
+                    return servers;
+                })
+                .then(result => {
+                    // 엔진이 재시작되었거나 이미 새 요청으로 교체되었다면 공유 캐시를 건드리지 않습니다.
+                    if (generation === engineGeneration && pendingIceServersPromise === pending) {
+                        pendingIceServersPromise = null;
+                    }
+                    return result;
+                }, error => {
+                    if (generation === engineGeneration && pendingIceServersPromise === pending) {
+                        pendingIceServersPromise = null;
+                    }
+                    throw error;
+                });
+            pendingIceServersPromise = pending;
         }
-        const generation = engineGeneration;
-        const pending = requestTurnCredentials()
-            .then(turnConfigs => {
-                const servers = buildIceServers(turnConfigs);
-                log('ICE servers - STUN ' + iceServers.length + ', TURN ' + (servers.length - iceServers.length));
+
+        // TURN 조회가 이미 끝났으면 확정된 목록을 즉시 사용합니다.
+        if (iceServersSettled) {
+            return Promise.resolve(sessionIceServers);
+        }
+        // 이미 유예 시간을 넘겨 STUN-only 로 진행 중이면 같은 목록을 즉시 돌려줍니다.
+        if (turnGraceExceeded) {
+            return Promise.resolve(iceServersFallback || buildIceServers([]));
+        }
+        if (!pendingIceServersPromise) {
+            return Promise.resolve(buildIceServers([]));
+        }
+
+        // 응답이 유예 시간 안에 오면 TURN 포함 목록으로, 늦으면 STUN-only 로 진행합니다.
+        return Promise.race([
+            pendingIceServersPromise,
+            new Promise(resolve => setTimeout(() => {
+                const stunOnly = buildIceServers([]);
+                if (callGeneration === engineGeneration) {
+                    turnGraceExceeded = true;
+                    iceServersFallback = stunOnly;
+                    log('TURN 자격 증명 응답이 ' + TURN_PREPARE_GRACE_MS + 'ms 안에 도착하지 않아 STUN-only 로 먼저 진행합니다. (응답이 오면 다음 피어부터 반영)');
+                }
+                resolve(stunOnly);
+            }, TURN_PREPARE_GRACE_MS))
+        ]);
+    }
+
+    /**
+     * 이미 생성된 PeerJS 피어의 ICE 설정에 확정된 iceServers 를 반영합니다.
+     * PeerJS 는 DataConnection 협상 시점(_startPeerConnection)에 provider.options.config 를 읽으므로,
+     * connect() 직전에 갱신하면 해당 연결부터 TURN 후보가 적용됩니다.
+     */
+    function applyIceServersToPeerServer() {
+        if (!peerServer || peerServer.destroyed) return;
+        try {
+            const opts = peerServer.options;
+            if (!opts) return;
+            opts.config = Object.assign({}, opts.config || {}, { iceServers: sessionIceServers });
+            log('시그널링 소켓에 ICE 설정을 반영했습니다 (STUN ' + (iceServers ? iceServers.length : 0)
+                + ', 전체 ' + sessionIceServers.length + ').');
+        } catch (e) {
+            log('ICE 설정을 PeerJS 옵션에 반영하지 못했습니다: ' + (e && e.message ? e.message : e));
+        }
+    }
+
+    /**
+     * ICE 설정(또는 유예 폴백)이 확정될 때까지 기다리는 Promise 를 반환합니다.
+     * 이미 확정됐으면 즉시 해결됩니다.
+     */
+    function whenIceReady() {
+        if (iceReadyResolved) {
+            return Promise.resolve(sessionIceServers.length ? sessionIceServers : buildIceServers([]));
+        }
+        if (iceReadyPromise) {
+            return iceReadyPromise.then(servers => {
+                iceReadyResolved = true;
                 return servers;
-            })
-            .then(result => {
-                // 엔진이 재시작되었거나 이미 새 요청으로 교체되었다면 공유 캐시를 건드리지 않습니다.
-                if (generation === engineGeneration && pendingIceServersPromise === pending) {
-                    pendingIceServersPromise = null;
-                }
-                return result;
-            }, error => {
-                if (generation === engineGeneration && pendingIceServersPromise === pending) {
-                    pendingIceServersPromise = null;
-                }
-                throw error;
             });
-        pendingIceServersPromise = pending;
-        return pending;
+        }
+        return Promise.resolve(sessionIceServers.length ? sessionIceServers : buildIceServers([]));
     }
 
     /** TURN 자격 증명을 기다리는 동안 도착한 원격 signal 을 보관합니다. */
@@ -448,6 +543,23 @@
      */
     function log(m) {
         console.log('[P2P Engine]', m);
+    }
+
+    /**
+     * 게스트 화면의 진행 단계 표시를 갱신합니다. 호스트에게는 표시되지 않으므로 게스트일 때만 보냅니다.
+     * 같은 단계는 다시 보내지 않아 시그널링 채널을 불필요하게 점유하지 않습니다.
+     * @param key 단계 키(예: 'signaling', 'control-connecting', 'approval').
+     * @param text 사용자에게 보여 줄 설명 문구.
+     */
+    function postJoinStage(key, text) {
+        if (currentInitiator) return;
+        if (key === lastJoinStageKey) return;
+        lastJoinStageKey = key;
+        try {
+            vscode.postMessage({ type: 'joinProgress', stage: key, text: text || '' });
+        } catch (e) {
+            // 확장 호스트가 아직 준비되지 않은 경우는 무시합니다.
+        }
     }
 
     /**
@@ -476,10 +588,18 @@
         // 진행 중이던 비동기 작업(TURN 조회 등)의 결과가 새 세션에 영향을 주지 않도록 세대를 올립니다.
         engineGeneration++;
         sessionIceServers = [];
+        iceServersSettled = false;
+        iceServersFallback = null;
+        turnGraceExceeded = false;
+        turnUnavailableAt = 0;
+        lastJoinStageKey = '';
+        roomUnavailableDetected = false;
         pendingTurnRequests = {};
         pendingRemoteSignals = {};
         pendingPeerAdds = {};
         pendingIceServersPromise = null;
+        iceReadyPromise = null;
+        iceReadyResolved = false;
         // PeerJS의 destroy()는 내부적으로 disconnect()를 호출해 'disconnected' 이벤트를 발생시키므로,
         // 의도적 종료 중에는 시그널링 재연결/알림 로직이 동작하지 않도록 플래그를 세웁니다.
         isStoppingEngine = true;
@@ -787,6 +907,7 @@
         const targetConn = currentInitiator ? peerSignalingConnMap[peerId] : guestSignalingConn;
         if (targetConn && targetConn.open) {
             log('SDP generated. Sending SDP message to ' + (currentInitiator ? 'guest' : 'host') + ' via signaling channel.');
+        postJoinStage('sdp-exchange', '데이터 채널 연결을 시도하는 중입니다. (사설 IP·공인 IP·TURN 후보)');
             try {
                 sendSdpToConn(peerId, targetConn, sdpStr, 'publish');
             } catch (e) {
@@ -942,6 +1063,7 @@
             hasActiveRoomSession = true;
             controlChannelRetryCount = 0;
             log('SDP exchange success. WebRTC P2P channel connected.');
+            postJoinStage('data-ready', '데이터 채널 연결됨. 호스트 승인을 기다리는 중입니다.');
             let connType = 'Direct';
             const updateStatus = () => {
                 const statusStr = connType === 'TURN' ? 'Connected (via TURN)' : 'Connected';
@@ -1173,6 +1295,9 @@
         turnRole = (role === 'host') ? 'host' : 'guest';
         log('STUN servers - ' + stunUrls.length);
         log('Starting P2P Engine...');
+        lastJoinStageKey = '';
+        roomUnavailableDetected = false;
+        postJoinStage('signaling', '시그널링 서버에 연결하는 중입니다.');
 
         function setupPeerJS(rName) {
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
@@ -1184,7 +1309,7 @@
             log('Connecting to PeerJS signaling server...');
             peerServer = new Peer(pjsId, {
                 debug: 3,
-                config: { iceServers: sessionIceServers, iceTransportPolicy: 'all', iceCandidatePoolSize: 6 }
+                config: { iceServers: (sessionIceServers && sessionIceServers.length ? sessionIceServers : iceServers), iceTransportPolicy: 'all', iceCandidatePoolSize: 6 }
             });
             installSignalingCandidateRewrite(peerServer);
             let wasOpened = false;
@@ -1203,6 +1328,7 @@
                 const reconnectedAfterSec = (signalingSocketReconnects > 0 && lastSignalingReconnectAt > 0)
                     ? Math.round((Date.now() - lastSignalingReconnectAt) / 1000) : -1;
                 log('Successfully connected to PeerJS signaling server.');
+                postJoinStage('signaling-ready', '시그널링 서버 연결됨. 방 호스트를 찾는 중입니다.');
                 log('[Control Timeline] 시그널링 소켓 open (open #' + signalingSocketOpens + ', reconnects=' + signalingSocketReconnects
                     + (reconnectedAfterSec >= 0 ? ', 직전 재연결 후 ' + reconnectedAfterSec + 's' : '') + ')');
                 if (currentInitiator) {
@@ -1212,24 +1338,19 @@
                     vscode.postMessage({ type: 'roomNameSuccess' });
                     return;
                 }
-                // 소켓이 재연결될 때마다 connect() 를 다시 호출하면 같은 방에 제어 DataConnection 이 중복 생성되어
-                // SDP 가 두 번 교환되고(상대가 answer 를 두 번 만들어 wrong state: stable) 유령 피어가 남습니다.
-                // 이미 살아있거나 방금 만든 제어 채널이 있으면 그대로 사용합니다.
-                if (hasActiveRoomSession) {
-                    log('[Control Timeline] 제어 채널 connect() 생략 (이미 방에 입장함)');
-                    return;
-                }
-                const existing = guestSignalingConn;
-                const existingAge = guestSignalingConnOpenedAt > 0 ? (Date.now() - guestSignalingConnOpenedAt) : -1;
-                if (existing && (existing.open || (existingAge >= 0 && existingAge < GUEST_CONTROL_CONNECT_STALE_MS))) {
-                    log('[Control Timeline] 제어 채널 connect() 생략 (기존 채널 재사용, open=' + !!existing.open + ', age=' + existingAge + 'ms)');
-                    return;
-                }
-                connectGuestControlChannel('최초 연결');
+                // 시그널링 소켓은 ICE 와 무관하므로 open 즉시 사용할 수 있지만, 제어 채널 connect 는
+                // TURN 까지 반영된 ICE 설정이 확정된 뒤에 수행해야 그 연결에 TURN 후보가 적재됩니다.
+                maybeConnectGuestControlChannel();
             });
 
             peerServer.on('connection', (conn) => {
                 log('Received connection request from guest signaling client.');
+                // 수신측(호스트)은 offer 를 받는 순간 PeerJS 가 RTCPeerConnection 을 만들므로, ICE 설정이
+                // 늦게 도착하면 이 제어 채널만 TURN 없이 협상될 수 있습니다. 다만 핸들러 부착을 미루면
+                // 게스트가 보낸 REQ_OFFER 를 놓치므로, 즉시 부착하고 진단만 남깁니다.
+                if (!iceReadyResolved) {
+                    log('[Control Timeline] 수신 제어 연결 시점에 ICE 설정이 아직 확정 전입니다(TURN 미반영 가능).');
+                }
                 handleSignalingConn(conn);
             });
 
@@ -1255,6 +1376,10 @@
                         guestSignalingConnectTimer = null;
                     }
                     if (err.type === 'peer-unavailable') {
+                        // 방이 시그널링 서버에 등록되어 있지 않다. 제어 채널 재생성 프로브/가드까지 멈춰
+                        // 추가 연결 시도가 이어지지 않게 합니다(호스트 등록 경합은 확장 호스트가 1회만 재시도).
+                        stopGuestConnectionAttempts('peer-unavailable');
+                        postJoinStage('failed', '호스트가 오프라인이거나 존재하지 않는 방 이름입니다.');
                         vscode.postMessage({ type: 'roomNameError', errorType: 'unavailable' });
                     } else if (err.type === 'server-error' || err.type === 'network') {
                         vscode.postMessage({ type: 'roomNameError', errorType: 'server' });
@@ -1298,9 +1423,11 @@
                     guestSignalingConnectTimer = null;
                 }
                 log('Signaling channel established.');
+                postJoinStage('control-ready', '제어 채널 연결됨. 데이터 채널 SDP를 교환하는 중입니다.');
                 log('[mDNS Expand] 제어 채널 후보 확장 누적: offer ' + controlExpandStats.offer + ', answer ' + controlExpandStats.answer + ', candidate ' + controlExpandStats.candidate);
                 if (!currentInitiator) {
                     log('Requesting SDP offer from host...');
+                    postJoinStage('sdp-request', '호스트에 SDP offer를 요청하는 중입니다.');
                     try { conn.send({ type: 'REQ_OFFER' }); } catch (e) { log('REQ_OFFER 전송 실패: ' + (e && e.message ? e.message : e)); }
                     // 채널은 열렸지만 호스트가 SDP 를 보내지 않으면(슬롯 부족/고스트 창) 재생성 프로브로 복구합니다.
                     scheduleGuestConnectGuard(conn, GUEST_CONTROL_GUARD_MS);
@@ -1398,7 +1525,33 @@
          * @param conn 멈춘 것으로 판단된 제어 채널(PeerJS DataConnection).
          * @param stats 원격 후보 수신 계측값.
          */
+        /**
+         * 방이 존재하지 않거나 재시도가 무의미해졌을 때 게스트의 추가 연결 시도를 모두 중단합니다.
+         * 제어 채널 재생성 프로브/가드 타이머를 정리하고 진행 중인 제어 채널도 닫습니다.
+         * @param reason 로그에 남길 중단 사유.
+         */
+        function stopGuestConnectionAttempts(reason) {
+            if (currentInitiator) return;
+            roomUnavailableDetected = true;
+            if (controlChannelProbeTimer) {
+                clearTimeout(controlChannelProbeTimer);
+                controlChannelProbeTimer = null;
+            }
+            if (guestSignalingConnectTimer) {
+                clearTimeout(guestSignalingConnectTimer);
+                guestSignalingConnectTimer = null;
+            }
+            if (guestSignalingConn) {
+                const stalled = guestSignalingConn;
+                guestSignalingConn = null;
+                guestSignalingConnOpenedAt = 0;
+                try { stalled.close(); } catch (e) {}
+            }
+            log('[Control ICE] 추가 연결 시도를 중단합니다. (' + reason + ')');
+        }
+
         function reportControlChannelStall(conn, stats) {
+            if (roomUnavailableDetected) return; // 방 없음이 확인된 뒤에는 재생성 프로브를 만들지 않습니다.
             const elapsed = (stats && stats.remoteDescriptionAt) ? Math.round((Date.now() - stats.remoteDescriptionAt) / 1000) : -1;
             log('[Control ICE] 원격 후보가 ' + CONTROL_CANDIDATE_WATCHDOG_MS + 'ms 동안 도착하지 않았습니다. (role=' + (currentInitiator ? 'host' : 'guest')
                 + ', socketReconnects=' + signalingSocketReconnects + ', wasReconnecting=' + signalingWasReconnecting
@@ -1453,13 +1606,49 @@
          */
         function connectGuestControlChannel(reason) {
             if (currentInitiator || !peerServer || peerServer.destroyed || !peerServer.open) return;
+            if (roomUnavailableDetected) return; // 방이 없다고 확인된 뒤에는 다시 연결하지 않습니다.
             if (guestSignalingConn) return;
+            // ICE 설정(특히 TURN)이 확정되기 전에 connect 하면 PeerJS 가 이 시점에 RTCPeerConnection 을
+            // 만들므로 이 제어 채널에 TURN 후보가 빠집니다. 확정될 때까지 미뤘다가 다시 진행합니다.
+            if (!iceReadyResolved) {
+                postJoinStage('ice-preparing', 'ICE 후보(사설 IP·공인 IP·TURN)를 준비하는 중입니다.');
+                log('[Control Timeline] ICE 설정 확정을 기다린 뒤 제어 채널 connect 를 진행합니다. (' + reason + ')');
+                const waitGeneration = engineGeneration;
+                whenIceReady().then(() => {
+                    if (engineGeneration !== waitGeneration) return;
+                    connectGuestControlChannel(reason);
+                });
+                return;
+            }
             log('Connecting to room host for room: "' + activeRoomName + '" (' + reason + ')...');
+            postJoinStage('control-connecting', '호스트와 제어 채널을 수립하는 중입니다. (ICE 후보 교환)');
             log('[Control Timeline] 제어 채널 connect() 호출 (room="' + activeRoomName + '", 시도 ' + (controlChannelRetryCount + 1) + '회)');
             const conn = peerServer.connect(activeRoomPeerId || activeRoomName);
             guestSignalingConnOpenedAt = Date.now();
             handleSignalingConn(conn);
             scheduleGuestConnectGuard(conn, GUEST_CONTROL_GUARD_MS);
+        }
+
+        /**
+         * 시그널링 소켓이 열린 뒤 게스트 제어 채널 connect 를 수행합니다.
+         * 이미 방에 입장했거나 살아있는 제어 채널이 있으면 중복 생성하지 않습니다.
+         * (ICE 확정 대기와 실제 connect 는 connectGuestControlChannel 이 담당합니다.)
+         * @param reason 로그에 남길 생성 사유.
+         */
+        function maybeConnectGuestControlChannel(reason) {
+            if (currentInitiator || !peerServer || peerServer.destroyed || !peerServer.open) return;
+            if (roomUnavailableDetected) return;
+            if (hasActiveRoomSession) {
+                log('[Control Timeline] 제어 채널 connect() 생략 (이미 방에 입장함)');
+                return;
+            }
+            const existing = guestSignalingConn;
+            const existingAge = guestSignalingConnOpenedAt > 0 ? (Date.now() - guestSignalingConnOpenedAt) : -1;
+            if (existing && (existing.open || (existingAge >= 0 && existingAge < GUEST_CONTROL_CONNECT_STALE_MS))) {
+                log('[Control Timeline] 제어 채널 connect() 생략 (기존 채널 재사용, open=' + !!existing.open + ', age=' + existingAge + 'ms)');
+                return;
+            }
+            connectGuestControlChannel(reason || '최초 연결');
         }
 
         /**
@@ -1483,19 +1672,32 @@
             }, delayMs);
         }
 
-        // Worker 에서 TURN 자격 증명을 받은 뒤에 시그널링 채널/SDP 를 만듭니다.
+        // ICE 설정(시그널링 소켓과 무관)은 시그널링 연결과 병렬로 준비합니다.
+        // 시그널링 소켓을 먼저 열어 두면 방 존재 여부(peer-unavailable)를 더 빨리 판정할 수 있고,
+        // 제어 채널 connect 는 ICE 설정이 확정된 뒤 maybeConnectGuestControlChannel() 에서 수행합니다.
         // Worker 가 404/무응답이면 빈 목록이 돌아오고 STUN 만으로 그대로 진행합니다.
         const generation = engineGeneration;
-        prepareIceServers().then(servers => {
-            if (generation !== engineGeneration) return;
+        iceReadyPromise = prepareIceServers().then(servers => {
+            if (generation !== engineGeneration) return servers;
             sessionIceServers = servers;
-            if (roomName) {
-                setupPeerJS(roomName);
-            }
+            applyIceServersToPeerServer();
+            return servers;
+        }).catch(() => {
+            return (sessionIceServers && sessionIceServers.length) ? sessionIceServers : buildIceServers([]);
+        }).then(servers => {
+            if (generation !== engineGeneration) return servers;
+            iceReadyResolved = true;
             if (autoStart) {
                 addPeer('default', currentInitiator);
             }
+            // 시그널링 소켓이 먼저 열려 대기하던 제어 채널 connect 를 이어서 진행합니다.
+            maybeConnectGuestControlChannel('ICE 확정');
+            return servers;
         });
+
+        if (roomName) {
+            setupPeerJS(roomName);
+        }
     };
 
     // 메시지 수신 및 라우팅 리스너

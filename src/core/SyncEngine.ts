@@ -89,6 +89,12 @@ export class SyncEngine {
     /** 연결 유형 문자열 ('Direct' | 'TURN') */
     public connectionType = 'Direct';
 
+    /** 게스트 입장 진행 단계 키(시그널링 → 제어 채널 → SDP → 데이터 채널 → 승인). 사이드바 진행 표시용 */
+    public joinStage = '';
+
+    /** joinStage 에 대한 사람이 읽는 설명 문구 */
+    public joinStageText = '';
+
     /** 원격 사용자의 타이핑으로 인해 내 에디터 입력을 잠그는 플래그 맵 */
     public remoteTypingLocked = new Map<string, boolean>();
 
@@ -470,6 +476,7 @@ export class SyncEngine {
                 this.updateStatus('Connecting...');
             } else {
                 this.logToUI("Connected to host, waiting for join approval...");
+                this.setJoinStage('approval', '데이터 채널 연결됨. 호스트 승인을 기다리는 중입니다.');
                 this.updateStatus('Waiting...');
             }
         }
@@ -483,6 +490,7 @@ export class SyncEngine {
     private handleAssignPeerId(msg: any) {
         if (!this.isHost) {
             this.logToUI(`ASSIGN_PEER_ID received: ${msg.peerId}`);
+            this.setJoinStage('approval-assigned', '게스트 ID를 받았습니다. 호스트 승인을 기다리는 중입니다.');
             Logger.get().info('GuestJoin', `Assigned peer ID from host: ${msg.peerId}`);
             this.participantManager.rememberMyReconnectToken(msg.reconnectToken);
             const oldId = this.myId || 'default';
@@ -897,6 +905,20 @@ export class SyncEngine {
     /**
      * UI 웹뷰에 로그를 출력합니다.
      */
+    /**
+     * 게스트 입장 진행 단계를 갱신합니다(같은 단계는 무시). 사이드바의 "무엇을 기다리는지" 표시에 사용됩니다.
+     * @param stage 단계 키(빈 문자열이면 초기화).
+     * @param text 사용자에게 보여 줄 설명 문구.
+     */
+    public setJoinStage(stage: string, text?: string): void {
+        const nextStage = stage || '';
+        const nextText = text || '';
+        if (this.joinStage === nextStage && this.joinStageText === nextText) return;
+        this.joinStage = nextStage;
+        this.joinStageText = nextText;
+        this.pushUIUpdate(true);
+    }
+
     public logToUI(message: string) {
         this.updateUI({ 
             type: 'log', 
@@ -960,7 +982,9 @@ export class SyncEngine {
             unreadChatCount: this.unreadChatCount,
             isFollowMeMode: this.isFollowMeMode,
             isAutoApprove: this.participantManager.isAutoApprove,
-            isReconnecting: this.participantManager.isReconnecting
+            isReconnecting: this.participantManager.isReconnecting,
+            joinStage: this.joinStage,
+            joinStageText: this.joinStageText
         };
 
         const serialized = JSON.stringify(payload);
@@ -1447,6 +1471,8 @@ export class SyncEngine {
         this.isConnected = false; 
         this.isSignalingConnected = false;
         this.connectionType = 'Direct';
+        this.joinStage = '';
+        this.joinStageText = '';
         this.roomName = ''; 
         this.myName = ''; 
         this.myId = ''; 

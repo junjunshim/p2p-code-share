@@ -79,6 +79,113 @@ function setDisabled(id, disabled) {
 }
 
 /**
+ * 게스트 입장 진행 단계 정의. stages 순서대로 진행되며 현재 단계까지 완료 표시됩니다.
+ */
+const JOIN_PROGRESS_STEPS = [
+    { label: '시그널링 서버 연결 · ICE 준비', stages: ['signaling', 'signaling-ready', 'ice-preparing', 'join-retry'] },
+    { label: '제어 채널 수립 (ICE 후보 교환)', stages: ['control-connecting', 'control-ready'] },
+    { label: 'SDP 교환 (데이터 채널 협상)', stages: ['sdp-request', 'sdp-exchange'] },
+    { label: '데이터 채널 연결', stages: ['data-ready'] },
+    { label: '호스트 승인', stages: ['approval', 'approval-assigned', 'approval-ack'] }
+];
+
+/** 단계 키별 기본 설명(엔진/호스트가 문구를 주지 않았을 때 사용). */
+const JOIN_STAGE_DETAILS = {
+    'signaling': '시그널링 서버에 연결하는 중입니다.',
+    'signaling-ready': '시그널링 서버 연결됨. 방 호스트를 찾는 중입니다.',
+    'ice-preparing': 'ICE 후보(사설 IP·공인 IP·TURN)를 준비하는 중입니다.',
+    'control-connecting': '호스트와 제어 채널을 수립하는 중입니다. (ICE 후보 교환)',
+    'control-ready': '제어 채널 연결됨. 데이터 채널 SDP를 교환하는 중입니다.',
+    'sdp-request': '호스트에 SDP offer를 요청하는 중입니다.',
+    'sdp-exchange': '데이터 채널 연결을 시도하는 중입니다. (사설 IP·공인 IP·TURN 후보)',
+    'data-ready': '데이터 채널 연결됨. 호스트 승인을 기다리는 중입니다.',
+    'approval': '호스트 승인을 기다리는 중입니다.',
+    'approval-assigned': '게스트 ID를 받았습니다. 호스트 승인을 기다리는 중입니다.',
+    'approval-ack': '호스트가 요청을 확인했습니다. 승인을 기다리는 중입니다.',
+    'join-retry': '연결이 지연되어 자동으로 다시 시도합니다.',
+    'failed': '연결 시간이 초과되었습니다.'
+};
+
+let joinProgressSignature = '';
+let joinElapsedTimer = null;
+let joinElapsedStartedAt = 0;
+
+/**
+ * 진행 표시를 초기 상태로 되돌립니다(새 입장 시도 시작 시 호출).
+ */
+function resetJoinProgress() {
+    joinProgressSignature = '';
+    if (joinElapsedTimer) {
+        clearInterval(joinElapsedTimer);
+        joinElapsedTimer = null;
+    }
+    const detail = document.getElementById('joinProgressDetail');
+    if (detail) { detail.innerText = ''; detail.classList.remove('failed'); }
+    const elapsed = document.getElementById('joinProgressElapsed');
+    if (elapsed) elapsed.innerText = '';
+}
+
+/**
+ * 경과 시간 표시를 시작합니다(이미 실행 중이면 그대로 유지).
+ */
+function startJoinElapsed() {
+    if (joinElapsedTimer) return;
+    const el = document.getElementById('joinProgressElapsed');
+    if (!el) return;
+    joinElapsedStartedAt = Date.now();
+    const tick = () => {
+        el.innerText = Math.floor((Date.now() - joinElapsedStartedAt) / 1000) + '초 경과';
+    };
+    tick();
+    joinElapsedTimer = setInterval(tick, 1000);
+}
+
+/**
+ * 경과 시간 타이머를 멈춥니다(연결 완료 또는 화면 전환 시).
+ */
+function stopJoinProgress() {
+    if (joinElapsedTimer) {
+        clearInterval(joinElapsedTimer);
+        joinElapsedTimer = null;
+    }
+}
+
+/**
+ * 게스트 승인 대기 영역에 현재 진행 단계를 그립니다.
+ * @param {string} stage 단계 키.
+ * @param {string} text 단계 설명(없으면 기본 문구 사용).
+ * @param {string} roomName 입장하려는 방 이름.
+ */
+function renderJoinProgress(stage, text, roomName) {
+    const stepsEl = document.getElementById('joinProgressSteps');
+    if (!stepsEl) return;
+    const roomEl = document.getElementById('joiningRoomText');
+    if (roomEl && roomName) roomEl.innerText = '"' + roomName + '"';
+    const detailText = text || JOIN_STAGE_DETAILS[stage] || '연결을 준비하는 중입니다.';
+    const signature = stage + '|' + detailText + '|' + (roomName || '');
+    if (signature === joinProgressSignature) return;
+    joinProgressSignature = signature;
+
+    const activeIndex = JOIN_PROGRESS_STEPS.findIndex(step => step.stages.indexOf(stage) >= 0);
+    let html = '';
+    JOIN_PROGRESS_STEPS.forEach((step, index) => {
+        let state = 'pending';
+        if (activeIndex >= 0) {
+            state = index < activeIndex ? 'done' : (index === activeIndex ? 'active' : 'pending');
+        }
+        const mark = state === 'done' ? '✓' : (state === 'active' ? '<span class="join-step-spinner"></span>' : '•');
+        html += '<li class="join-step ' + state + '"><span class="join-step-mark">' + mark + '</span><span>' + step.label + '</span></li>';
+    });
+    stepsEl.innerHTML = html;
+
+    const detailEl = document.getElementById('joinProgressDetail');
+    if (detailEl) {
+        detailEl.innerText = detailText;
+        detailEl.classList.toggle('failed', stage === 'failed');
+    }
+}
+
+/**
 * 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
 */
 function showHostForm() {
@@ -175,7 +282,10 @@ function init(i) {
         setDisabled('btnJoinManual', true);
         const jrt = document.getElementById('joiningRoomText');
         if (jrt) jrt.innerText = '"' + rn + '"';
+        resetJoinProgress();
+        renderJoinProgress('', '', rn);
         setVisible('guestLoading', true);
+        startJoinElapsed();
         vscode.postMessage({ type: 'joinRoom', roomName: rn, userName: un });
         return;
     }
@@ -425,6 +535,7 @@ function updateModeLayout(m) {
 
     if (m.isSetupMode) {
         // 1. 설정 모드 (SDP 교환 중)
+        stopJoinProgress();
         setVisible('roleSelection', false);
         setVisible('connArea', true);
         setVisible('active', false);
@@ -432,10 +543,11 @@ function updateModeLayout(m) {
         const isOffer = lsdp && lsdp.value && (lsdp.value.includes('offer') || lsdp.value === 'Generating...');
         const roleDisp = document.getElementById('roleTextDisp');
         if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
-    } else if (m.isConnected || (m.isReconnecting && !m.isSetupMode && m.participants && m.participants.myId === 'host')) {
-    // 2. 연결 완료 모드 또는 호스트 재연결 유예 모드 (호스트 창 전환/복구 중 참가자 및 파일 목록 유지)
+    } else if (m.isConnected || (m.isReconnecting && !m.isSetupMode)) {
+    // 2. 연결 완료 모드 또는 재연결 유예 모드 (호스트 창 복구/게스트 재접속 중에도 방 화면과 참가자 목록 유지)
     setVisible('roleSelection', false);
     setVisible('connArea', false);
+    stopJoinProgress();
     setVisible('active', true);
     if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
 
@@ -524,6 +636,8 @@ setDisabled('btnJoinAuto', true);
 setDisabled('btnJoinManual', true);
 const jrt = document.getElementById('joiningRoomText');
 if (jrt) jrt.innerText = '"' + m.roomName + '"';
+renderJoinProgress(m.participants.joinStage, m.participants.joinStageText, m.roomName);
+startJoinElapsed();
 } else {
 // 5. 초기 모드 (방 생성/참여 선택)
 setVisible('roleSelection', true);

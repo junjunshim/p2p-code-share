@@ -28,6 +28,9 @@ export class ParticipantManager {
     /** 초기 핸드셰이크 자동 재시도 최대 횟수(사용자 개입 없이 1회 복구 시도) */
     private static readonly MAX_JOIN_HANDSHAKE_RETRIES = 1;
 
+    /** 호스트가 게스트 단절을 감지한 뒤 참가자/재접속 토큰을 보존하는 재연결 유예 시간(ms) */
+    private static readonly HOST_RECONNECT_GRACE_MS = 45000;
+
     /** 피어 ID별 권한 및 상태 정보 맵 */
     public participants: { [key: string]: PeerPermission } = {};
 
@@ -36,6 +39,9 @@ export class ParticipantManager {
 
     /** 초대 링크 생성 시 발급된 대기 중인 초대 피어 ID 세트 */
     public pendingInvites = new Set<string>();
+
+    /** 호스트가 단절된 게스트를 유예 시간(45초) 후 제거하기 위해 피어별로 예약한 타이머 맵 */
+    private hostGraceTimers = new Map<string, NodeJS.Timeout>();
 
     /** 게스트가 방 참여를 시도 중인지 여부 플래그 */
     public isAutoJoin = false;
@@ -197,7 +203,10 @@ export class ParticipantManager {
         }
         this.engine.isSetupMode = false;
         this.isAutoJoin = true; // 자동 참여 모드 설정
-        this.hasJoinedSuccessfully = false;
+        // 재연결 프로브 중에는 최초 승인 플래그를 유지하여, 프로브가 잠시 끊겨도 유예 모드가 깨지지 않게 합니다.
+        if (!this.isReconnecting) {
+            this.hasJoinedSuccessfully = false;
+        }
         this.pendingJoinRequest = { roomName, userName, previousPeerId }; // 요청 큐에 저장
 
         Logger.get().step('GuestJoin', 1, 5, `Starting join request for room "${roomName}" as "${this.engine.myName}"`);
@@ -287,6 +296,7 @@ export class ParticipantManager {
         const attemptNo = this.joinHandshakeRetries + 1;
         Logger.get().warn('GuestJoin', `Initial handshake retry (reason: ${reason}). Auto-retrying connection (attempt ${attemptNo}).`);
         this.engine.logToUI(`초기 연결이 지연되어 자동으로 재시도합니다. (사유: ${reason}, 시도 ${attemptNo}회)`);
+        this.engine.setJoinStage('join-retry', `연결이 지연되어 자동으로 재시도합니다. (시도 ${attemptNo}회)`);
         // 이전 시도의 소켓/피어를 정리하고 같은 방으로 새로 연결합니다.
         this.engine.hub.dispose();
         void this.sendJoinRequest(roomName, userName, previousPeerId);
@@ -301,6 +311,7 @@ export class ParticipantManager {
         const totalSec = Math.round((ParticipantManager.JOIN_HANDSHAKE_TIMEOUT_MS + ParticipantManager.JOIN_HANDSHAKE_RETRY_TIMEOUT_MS) / 1000);
         Logger.get().error('GuestJoin', `Initial connection handshake timeout (${totalSec}s) reached for room "${roomName}" after auto-retry. P2P ICE hole punching failed.`);
         this.engine.logToUI(`Initial connection handshake timeout (${totalSec}s): STUN/TURN 연결 시도가 제한 시간을 초과했습니다.`);
+        this.engine.setJoinStage('failed', `연결 시간이 초과되었습니다. (${totalSec}초)`);
         vscode.window.showErrorMessage(`호스트 연결 시간이 초과되었습니다. 호스트 상태와 네트워크 연결을 확인해 주세요. (STUN/TURN 연결 ${totalSec}초 초과)`);
         this.engine.reset();
         this.engine.hub.dispose();
@@ -358,6 +369,7 @@ export class ParticipantManager {
 
         Logger.get().step('GuestJoin', 4, 5, `Host ACK received. Awaiting host approval...`);
         this.engine.logToUI(`JOIN_REQUEST_ACK received: Host successfully received join request.`);
+        this.engine.setJoinStage('approval-ack', '호스트가 요청을 확인했습니다. 승인을 기다리는 중입니다.');
         vscode.window.setStatusBarMessage(`호스트가 요청을 확인했습니다. 승인을 기다리는 중...`, 5000);
         this.engine.updateStatus('Waiting...');
         this.engine.pushUIUpdate();
@@ -585,11 +597,13 @@ export class ParticipantManager {
             this.peerReconnectTokens.set(peerId, reconnectToken);
             this.lastPongTimes.set(peerId, Date.now());
             this.reconnectStartTimes.delete(peerId);
+            this.clearHostGraceTimer(peerId);
 
             Logger.get().step('HostApprove', 1, 4, `Registered participant: ${guestName} (${peerId})${oldPeerId ? ` [reconnected from ${oldPeerId}]` : ''}`);
 
             // 3. 중복 생성 방지를 위해 이전 피어 ID 정보 정리
             if (oldPeerId && oldPeerId !== peerId) {
+                this.clearHostGraceTimer(oldPeerId);
                 delete this.participants[oldPeerId];
                 this.peerReconnectTokens.delete(oldPeerId);
                 this.lastPongTimes.delete(oldPeerId);
@@ -971,7 +985,8 @@ export class ParticipantManager {
                 this.engine.reset(); 
             }
         } else {
-            // 호스트일 경우: 게스트가 창을 닫거나 나갔을 때 유예 없이 즉시 완전히 삭제 처리
+            // 호스트일 경우: 물리 채널이 끊겨도 곧바로 삭제하지 않고 45초 유예 상태('reconnecting')로 유지합니다.
+            // 이 유예 동안 재접속 토큰을 보존해야 창이 복구된 게스트가 자동으로 승계될 수 있습니다.
             const isParticipant = !!this.participants[peerId];
             const isJoinRequest = this.joinRequests.some(req => req.peerId === peerId);
 
@@ -981,12 +996,63 @@ export class ParticipantManager {
             }
 
             if (isParticipant) {
-                Logger.get().info('Host', `Guest ${peerId} disconnected. Removing immediately.`);
-                this.removePeerPermanently(peerId);
+                Logger.get().info('Host', `Guest ${peerId} disconnected. Holding participant for 45s reconnect grace.`);
+                this.markPeerReconnecting(peerId);
             } else {
                 this.peerReconnectTokens.delete(peerId);
                 this.pendingInvites.delete(peerId);
             }
+        }
+    }
+
+    /**
+     * 호스트가 게스트의 물리 채널 단절을 감지했을 때 참가자와 재접속 토큰을 보존한 채
+     * 'reconnecting' 상태로 전환하고, 유예 시간(45초)이 지나면 제거를 예약합니다 (호스트 전용).
+     * 유예 중 게스트가 재접속하면 토큰 승계로 즉시 자동 승인됩니다.
+     * @param peerId 단절된 피어 ID.
+     * @returns {void}
+     */
+    public markPeerReconnecting(peerId: string): void {
+        if (!this.engine.isHost) return;
+        const perm = this.participants[peerId];
+        if (!perm) return;
+
+        const now = Date.now();
+        if (!this.reconnectStartTimes.has(peerId)) {
+            this.reconnectStartTimes.set(peerId, now);
+        }
+
+        if (perm.connectionStatus !== 'reconnecting') {
+            perm.connectionStatus = 'reconnecting';
+            this.broadcastUserList();
+        }
+
+        // 유예 시작 시점 기준으로 남은 시간만큼만 제거를 예약합니다(이미 예약되어 있으면 재조정).
+        this.clearHostGraceTimer(peerId);
+        const elapsed = now - (this.reconnectStartTimes.get(peerId) || now);
+        const remaining = Math.max(0, ParticipantManager.HOST_RECONNECT_GRACE_MS - elapsed);
+        this.hostGraceTimers.set(peerId, setTimeout(() => {
+            this.hostGraceTimers.delete(peerId);
+            const current = this.participants[peerId];
+            if (current && current.connectionStatus === 'reconnecting') {
+                this.engine.logToUI(`재연결 유예(45초)가 만료되어 ${current.name || peerId}님을 명단에서 제거합니다.`);
+                this.removePeerPermanently(peerId);
+            }
+        }, remaining));
+
+        this.engine.pushUIUpdate();
+    }
+
+    /**
+     * 특정 피어의 재연결 유예 만료 타이머를 취소합니다.
+     * @param peerId 타이머를 취소할 피어 ID.
+     * @returns {void}
+     */
+    private clearHostGraceTimer(peerId: string): void {
+        const timer = this.hostGraceTimers.get(peerId);
+        if (timer) {
+            clearTimeout(timer);
+            this.hostGraceTimers.delete(peerId);
         }
     }
 
@@ -996,6 +1062,7 @@ export class ParticipantManager {
      */
     public removePeerPermanently(peerId: string): void {
         if (!this.engine.isHost) return;
+        this.clearHostGraceTimer(peerId);
 
         const isParticipant = !!this.participants[peerId];
         if (isParticipant) {
@@ -1431,12 +1498,22 @@ export class ParticipantManager {
                     }, index * 20);
                 }
 
-                // PONG 응답 시간 검사 (마지막 활동/응답으로부터 10초 초과 시 단절로 간주하여 즉시 제거)
+                // PONG 응답 시간 검사 (마지막 활동/응답으로부터 10초 초과 시 단절로 간주)
                 const isAlive = lastPong !== undefined && (now - lastPong <= 10000);
                 if (!isAlive) {
-                    this.engine.logToUI(`Guest ping timeout exceeded for: ${perm.name} (${peerId}). Removing.`);
-                    this.removePeerPermanently(peerId);
-                    return;
+                    const graceStartedAt = this.reconnectStartTimes.get(peerId);
+                    // 유예 시간이 이미 만료된 재연결 대기 피어만 실제로 제거합니다.
+                    if (perm.connectionStatus === 'reconnecting' && graceStartedAt !== undefined
+                        && now - graceStartedAt >= ParticipantManager.HOST_RECONNECT_GRACE_MS) {
+                        this.engine.logToUI(`Guest reconnect grace (45s) expired for: ${perm.name} (${peerId}). Removing.`);
+                        this.removePeerPermanently(peerId);
+                        return;
+                    }
+                    // 최초 단절이면 즉시 지우지 않고 45초 유예 상태로 전환합니다(복구된 호스트 창도 동일).
+                    if (perm.connectionStatus !== 'reconnecting') {
+                        this.engine.logToUI(`Guest ping timeout for: ${perm.name} (${peerId}). Holding for 45s reconnect grace.`);
+                        this.markPeerReconnecting(peerId);
+                    }
                 }
             });
 
@@ -1464,6 +1541,7 @@ export class ParticipantManager {
      */
     public handlePong(peerId: string): void {
         if (!this.engine.isHost) return;
+        this.clearHostGraceTimer(peerId);
         this.lastPongTimes.set(peerId, Date.now());
         this.reconnectStartTimes.delete(peerId);
 
@@ -1485,6 +1563,8 @@ export class ParticipantManager {
             clearTimeout(this.broadcastUserListDebounceTimer);
             this.broadcastUserListDebounceTimer = undefined;
         }
+        this.hostGraceTimers.forEach(timer => clearTimeout(timer));
+        this.hostGraceTimers.clear();
         this.lastPongTimes.clear();
         this.reconnectStartTimes.clear();
         this.stopGuestReconnectGracePeriod();

@@ -783,3 +783,87 @@ input:checked + .slider:before {
         opacity: 0.3;
     }
 }
+
+
+/* 게스트 입장 진행 단계 표시 */
+#guestLoading {
+    text-align: center;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+}
+.join-progress-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 11px;
+    margin-bottom: 6px;
+}
+.join-progress-room {
+    font-weight: 600;
+    color: var(--vscode-foreground, #e0e0e0);
+}
+.join-progress-spinner {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--vscode-descriptionForeground, #9d9d9d);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: join-spin 0.9s linear infinite;
+    display: inline-block;
+    flex: 0 0 auto;
+}
+@keyframes join-spin {
+    to { transform: rotate(360deg); }
+}
+.join-progress-steps {
+    list-style: none;
+    margin: 0 0 6px 0;
+    padding: 0;
+    display: inline-block;
+    text-align: left;
+}
+.join-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.7;
+    opacity: 0.5;
+}
+.join-step.active {
+    opacity: 1;
+    font-weight: 600;
+    color: var(--vscode-foreground, #e0e0e0);
+}
+.join-step.done {
+    opacity: 0.85;
+}
+.join-step-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    flex: 0 0 auto;
+}
+.join-step-spinner {
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--vscode-charts-blue, #4daafc);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: join-spin 0.9s linear infinite;
+}
+.join-progress-detail {
+    font-size: 11px;
+    margin-bottom: 2px;
+}
+.join-progress-detail.failed {
+    color: var(--vscode-errorForeground, #f14c4c);
+    font-weight: 600;
+}
+.join-progress-elapsed {
+    font-size: 10px;
+    opacity: 0.7;
+}

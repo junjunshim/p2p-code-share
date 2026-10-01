@@ -94,6 +94,7 @@ export function activate(context: vscode.ExtensionContext) {
         else if (msg.type === 'roomNameError') hub.onRoomNameError?.(msg.errorType);
         else if (msg.type === 'iceFailed') hub.onIceFailed?.(pid);
         else if (msg.type === 'requestTurnCredentials') hub.handleTurnCredentialsRequest(msg.requestId, msg.role);
+        else if (msg.type === 'joinProgress') engine.setJoinStage(msg.stage, msg.text);
         else if (msg.type === 'sdpGenerated') {
             hub.sdpMap.set(pid, msg.sdp);
             hub.onSdpGenerated?.(msg.sdp, pid);
@@ -258,6 +259,9 @@ export function activate(context: vscode.ExtensionContext) {
     let guestUnavailableRetryCount = 0;
     let hostDuplicateRetryCount = 0;
 
+    /** 게스트가 '방 없음(peer-unavailable)'을 받았을 때 호스트 등록 직전 경합만 흡수하는 짧은 재시도 횟수 */
+    const GUEST_UNAVAILABLE_RETRY_MAX = 1;
+
     // 방 이름 선점 성공 시 화면 전환 및 게스트 수락 대기열(Invite Slot) 자동 생성
     hub.onRoomNameSuccess = () => {
         engine.sessionRecoveryManager.isRestoringSession = false;
@@ -329,10 +333,12 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            if (errorType === 'unavailable' && guestUnavailableRetryCount < 2) {
+            // 방이 없다는 응답은 방 이름 오타이거나 아직 호스트가 등록되기 전입니다.
+            // 호스트 등록 직전의 짧은 경합만 1회 재시도로 흡수하고, 그 뒤에는 시도 자체를 끊습니다.
+            if (errorType === 'unavailable' && guestUnavailableRetryCount < GUEST_UNAVAILABLE_RETRY_MAX) {
                 guestUnavailableRetryCount++;
-                const retryDelay = 1200 + Math.floor(Math.random() * 600);
-                engine.logToUI(`Host room not found yet. Retrying connection (${guestUnavailableRetryCount}/2) in ${retryDelay}ms...`);
+                const retryDelay = 800 + Math.floor(Math.random() * 400);
+                engine.logToUI(`Host room not found yet. Retrying connection (${guestUnavailableRetryCount}/${GUEST_UNAVAILABLE_RETRY_MAX}) in ${retryDelay}ms...`);
                 hub.dispose();
                 setTimeout(() => {
                     if (engine.isHost || engine.isConnected) return;
@@ -351,6 +357,9 @@ export function activate(context: vscode.ExtensionContext) {
                 msg = "시그널링 서버 연결에 실패했습니다.";
             }
             vscode.window.showErrorMessage(msg);
+            // 최종 실패: 자동 입장 타이머(30초/20초 재시도)까지 끊어 추가 연결 시도가 이어지지 않게 합니다.
+            engine.participantManager.clearJoinTimeout();
+            engine.participantManager.isAutoJoin = false;
             hub.dispose();
             engine.reset();
             return;
