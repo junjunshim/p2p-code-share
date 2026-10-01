@@ -52,6 +52,18 @@ export class CursorManager {
         endPos: vscode.Position;
     }>();
 
+    /**
+     * 피어별로 마지막으로 "정상적으로 그린" 좌표.
+     * Yjs 기준 좌표가 아직 에디터 버퍼에 반영되지 않은 동안, VS Code 가 범위를 문서 끝으로 잘라 그리는 대신
+     * 직전 정상 좌표를 그대로 유지하기 위해 사용한다(순간적으로 커서가 사라지거나 튀는 것 방지).
+     */
+    private lastDrawnPositions = new Map<string, {
+        fileName: string;
+        activePos: vscode.Position;
+        startPos: vscode.Position;
+        endPos: vscode.Position;
+    }>();
+
     /** 커서 업데이트 전송 과부하 방지를 위한 쓰로틀 타이머 */
     private sendThrottleTimer?: NodeJS.Timeout;
     private pendingEditor?: vscode.TextEditor;
@@ -344,6 +356,31 @@ export class CursorManager {
      * @returns {void}
      */
     private applyPeerDecorationWithPositions(peerId: string, state: any, file: SharedFile, rank: number, activePos: vscode.Position, startPos: vscode.Position, endPos: vscode.Position): void {
+        // Yjs 기준 좌표가 아직 에디터 버퍼에 반영되지 않았으면 VS Code 가 범위를 문서 끝으로 잘라 그린다(커서 튐의 원인).
+        // 이때는 비우는 대신, 직전에 정상적으로 그린 좌표를 그대로 유지한다(커서가 사라지거나 튀지 않도록).
+        const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, file.path) && !d.isClosed);
+        const isDrawable = (pos: vscode.Position): boolean =>
+            !!doc && pos.line >= 0 && pos.line < doc.lineCount &&
+            pos.character >= 0 && pos.character <= doc.lineAt(pos.line).text.length;
+
+        const inSync = isDrawable(activePos) && isDrawable(startPos) && isDrawable(endPos);
+        const cachedPositions = this.lastDrawnPositions.get(peerId);
+        const fallback = (cachedPositions && cachedPositions.fileName === file.name) ? cachedPositions : undefined;
+
+        let drawActive = activePos;
+        let drawStart = startPos;
+        let drawEnd = endPos;
+        if (inSync) {
+            this.lastDrawnPositions.set(peerId, { fileName: file.name, activePos, startPos, endPos });
+        } else if (fallback) {
+            drawActive = fallback.activePos;
+            drawStart = fallback.startPos;
+            drawEnd = fallback.endPos;
+        }
+
+        // 좌표가 버퍼 범위를 벗어나고 직전 정상 좌표도 없으면 이번 렌더에서는 그리지 않는다.
+        const drawable = inSync || !!fallback;
+
         const editorConfig = vscode.workspace.getConfiguration('editor', vscode.Uri.file(file.path));
         const editorFontSize = editorConfig.get<number>('fontSize') || 14;
         const badgeFontSize = Math.max(9, Math.round(editorFontSize * 0.8));
@@ -353,7 +390,7 @@ export class CursorManager {
         const userName = state.userName || 'Anonymous';
 
         // 이전 렌더링 결과와 정확히 동일한 경우 재생성 생략 (성능 최적화)
-        const cacheKey = `${activePos.line},${activePos.character},${startPos.line},${startPos.character},${endPos.line},${endPos.character},${rank},${badgeFontSize},${color},${userName}`;
+        const cacheKey = `${drawActive.line},${drawActive.character},${drawStart.line},${drawStart.character},${drawEnd.line},${drawEnd.character},${rank},${badgeFontSize},${color},${userName}`;
         
         const cached = this.remoteCursorDecoTypes.get(peerId);
         if (cached && cached.key === cacheKey) {
@@ -389,8 +426,8 @@ export class CursorManager {
         this.remoteSelectionDecorations.set(peerId, selectionDeco);
         this.remoteCursorDecoTypes.set(peerId, { cursorDeco, selectionDeco, key: cacheKey });
         
-        const cursorRange = [new vscode.Range(activePos, activePos)];
-        const selectionRange = [new vscode.Range(startPos, endPos)];
+        const cursorRange = [new vscode.Range(drawActive, drawActive)];
+        const selectionRange = [new vscode.Range(drawStart, drawEnd)];
 
         // 현재 보이는 모든 해당 파일의 에디터에 데코레이션 적용
         // 화면 밖 피어 커서로 인한 에디터 렌더러 과부하를 방지하기 위해 가시 범위(+상하 50줄 여유 버퍼)에 있는 피어만 주입
@@ -404,17 +441,17 @@ export class CursorManager {
             const isCursorVisible = !visibleRanges || visibleRanges.length === 0 || visibleRanges.some(vr => {
                 const minLine = Math.max(0, vr.start.line - OVERSCAN_LINES);
                 const maxLine = Math.min(docLineCount - 1, vr.end.line + OVERSCAN_LINES);
-                return activePos.line >= minLine && activePos.line <= maxLine;
+                return drawActive.line >= minLine && drawActive.line <= maxLine;
             });
 
             const isSelectionVisible = !visibleRanges || visibleRanges.length === 0 || visibleRanges.some(vr => {
                 const minLine = Math.max(0, vr.start.line - OVERSCAN_LINES);
                 const maxLine = Math.min(docLineCount - 1, vr.end.line + OVERSCAN_LINES);
-                return endPos.line >= minLine && startPos.line <= maxLine;
+                return drawEnd.line >= minLine && drawStart.line <= maxLine;
             });
 
-            editor.setDecorations(cursorDeco, isCursorVisible ? cursorRange : []);
-            editor.setDecorations(selectionDeco, isSelectionVisible ? selectionRange : []);
+            editor.setDecorations(cursorDeco, (isCursorVisible && drawable) ? cursorRange : []);
+            editor.setDecorations(selectionDeco, (isSelectionVisible && drawable) ? selectionRange : []);
         });
     }
 
@@ -466,6 +503,7 @@ export class CursorManager {
         }
         this.remoteCursorStates.delete(peerId);
         this.remoteCursorDecoTypes.delete(peerId);
+        this.lastDrawnPositions.delete(peerId);
     }
 
     /**
@@ -507,6 +545,7 @@ export class CursorManager {
 
         this.userColorMap.delete(peerId); 
         this.peerPositionCache.delete(peerId);
+        this.lastDrawnPositions.delete(peerId);
         this.engine.pushUIUpdate(); 
     }
 
@@ -551,6 +590,7 @@ export class CursorManager {
         this.userColorMap.clear();
         this.remoteCursorDecoTypes.clear();
         this.peerPositionCache.clear();
+        this.lastDrawnPositions.clear();
     }
 
     /**

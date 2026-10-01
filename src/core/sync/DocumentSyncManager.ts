@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import * as Y from 'yjs';
 import * as fs from 'fs';
 import { SyncEngine } from '../SyncEngine';
-import { isPathEqual } from '../../utils/helpers';
+import { isPathEqual, normalizeEOL } from '../../utils/helpers';
 
 /**
  * DocumentSyncManager 클래스.
@@ -22,8 +22,16 @@ export class DocumentSyncManager {
     /** 파일명별 공유 텍스트 Y.Text 인스턴스 맵 */
     public yTexts = new Map<string, Y.Text>();
 
-    /** 원격 델타 변경을 에디터에 적용하는 동안 로컬 텍스트 변경 리스너가 중복 발동(에코)되는 것을 방지하기 위한 플래그 맵 */
-    public isApplyingRemote = new Map<string, boolean>();
+    /**
+     * 확장이 에디터에 반영한 최근 원격 목표 텍스트(줄바꿈 정규화) 목록.
+     * VS Code 는 applyEdit 완료 뒤에 문서 변경 이벤트를 전달하므로 불리언 플래그로는 에코를 식별할 수 없다.
+     * 따라서 "변경된 내용이 최근에 적용한 원격 내용과 같은가"를 비교하여 에코를 판정한다.
+     * 원격 델타가 연속 도착하면 Yjs 가 먼저 전진할 수 있어 마지막 1건만으로는 부족하므로 최근 N건을 보관한다.
+     */
+    private recentRemoteTargets = new Map<string, string[]>();
+
+    /** 파일별로 기억해 둘 최근 원격 목표 텍스트 개수 */
+    private static readonly RECENT_TARGET_LIMIT = 8;
 
     /** 고속 연속 타이핑 시 에디터 UI 스레드 부하를 방지하기 위한 렌더링 디바운스(30ms) 타이머 맵 */
     private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
@@ -52,6 +60,33 @@ export class DocumentSyncManager {
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
     constructor(private engine: SyncEngine) {}
+
+    /**
+     * 변경 이벤트가 확장이 적용한 원격 내용(에코)인지 판정합니다.
+     * VS Code 는 applyEdit 완료 후에 문서 변경 이벤트를 전달하므로 플래그 기반 가드는 신뢰할 수 없습니다.
+     * 대신 "에디터 텍스트가 Yjs 와 같아졌는가"를 내용으로 검사하여 에코를 식별하고,
+     * 다르면 사용자 편집으로 간주하여 절대 버리지 않습니다(호출측에서 Yjs 에 반영).
+     * @param fileName 대상 파일 이름.
+     * @param doc 변경이 발생한 VS Code 문서.
+     * @returns 에코(원격 반영 결과)이면 true.
+     */
+    public isRemoteEcho(fileName: string, doc: vscode.TextDocument): boolean {
+        const ytext = this.yTexts.get(fileName);
+        if (!ytext) return false;
+
+        const editorText = normalizeEOL(doc.getText());
+        if (editorText === normalizeEOL(ytext.toString())) {
+            return true;
+        }
+
+        // 적용 직후 Yjs 가 더 전진한 경우(원격 델타가 먼저 반영됨)에도 에코로 인식한다.
+        const targets = this.recentRemoteTargets.get(fileName);
+        if (targets && targets.includes(editorText)) {
+            return true;
+        }
+
+        return false;
+    }
 
     /**
      * 호스트가 새로운 파일을 공유할 때 Yjs 문서 및 텍스트를 생성하고 초기 파일 내용을 로드합니다.
@@ -328,26 +363,47 @@ export class DocumentSyncManager {
         }
 
         const oldText = doc.getText();
-        if (oldText === targetContent) return;
+        // Yjs 텍스트는 항상 LF 로 정규화되어 있으므로, 줄바꿈만 다른 경우는 내용이 같다(불필요한 전체 교체/캐럿 이동 방지).
+        const oldTextNorm = normalizeEOL(oldText);
+        const targetNorm = normalizeEOL(targetContent);
+        if (oldTextNorm === targetNorm) return;
 
-        // 최소 변경 범위 (Surgical Range) 계산
+        // 최소 변경 범위 (Surgical Range) 계산 — 줄바꿈을 LF 로 통일한 뒤 비교한다.
         let start = 0;
-        while (start < oldText.length && start < targetContent.length && oldText[start] === targetContent[start]) {
+        while (start < oldTextNorm.length && start < targetNorm.length && oldTextNorm[start] === targetNorm[start]) {
             start++;
         }
 
-        let oldEnd = oldText.length;
-        let newEnd = targetContent.length;
-        while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === targetContent[newEnd - 1]) {
+        let oldEnd = oldTextNorm.length;
+        let newEnd = targetNorm.length;
+        while (oldEnd > start && newEnd > start && oldTextNorm[oldEnd - 1] === targetNorm[newEnd - 1]) {
             oldEnd--;
             newEnd--;
         }
 
-        const range = new vscode.Range(doc.positionAt(start), doc.positionAt(oldEnd));
-        const replaceText = targetContent.slice(start, newEnd);
+        // LF 정규화 오프셋을 원본 문서(CRLF 가능) 오프셋으로 되돌린다.
+        const toRawOffset = (normOffset: number): number => {
+            if (doc.eol !== vscode.EndOfLine.CRLF) return normOffset;
+            let raw = 0;
+            for (let i = 0; i < normOffset; i++) {
+                raw += (oldText.charCodeAt(raw) === 13 && oldText.charCodeAt(raw + 1) === 10) ? 2 : 1;
+            }
+            return raw;
+        };
 
-        // 에코 무한 루프 방지를 위해 원격 변경 적용 플래그 설정
-        this.isApplyingRemote.set(fileName, true);
+        const range = new vscode.Range(doc.positionAt(toRawOffset(start)), doc.positionAt(toRawOffset(oldEnd)));
+        // 문서의 줄바꿈 규칙을 유지하여 개행이 섞이지 않게 한다(혼합 개행은 이후 diff 를 계속 어긋나게 만든다).
+        const replaceText = doc.eol === vscode.EndOfLine.CRLF
+            ? targetNorm.slice(start, newEnd).replace(/\n/g, '\r\n')
+            : targetNorm.slice(start, newEnd);
+
+        // 에코 판정은 플래그가 아니라 내용 비교로 수행하므로, 적용한 목표 텍스트를 최근 목록에 기록해 둔다.
+        const targets = this.recentRemoteTargets.get(fileName) ?? [];
+        targets.push(normalizeEOL(targetContent));
+        if (targets.length > DocumentSyncManager.RECENT_TARGET_LIMIT) {
+            targets.splice(0, targets.length - DocumentSyncManager.RECENT_TARGET_LIMIT);
+        }
+        this.recentRemoteTargets.set(fileName, targets);
         try {
             const edit = new vscode.WorkspaceEdit();
             edit.replace(doc.uri, range, replaceText);
@@ -355,7 +411,6 @@ export class DocumentSyncManager {
         } catch (e) {
             this.engine.logToUI(`applyEdit failed for ${fileName}: ${e}`);
         } finally {
-            this.isApplyingRemote.set(fileName, false);
             this.engine.decorationManager.debouncedRecalculateDecorations(fileName, filePath);
             this.engine.cursorManager.refreshAllDecorations();
             this.engine.fileStorageManager.scheduleDebouncedSave(filePath);
@@ -381,7 +436,8 @@ export class DocumentSyncManager {
             if (doc) {
                 const editorText = doc.getText();
                 const yjsText = ytext.toString();
-                if (editorText !== yjsText) {
+                // 줄바꿈 차이만 있는 경우는 동기화된 것으로 본다(불필요한 재적용/캐럿 이동 방지).
+                if (normalizeEOL(editorText) !== normalizeEOL(yjsText)) {
                     this.engine.logToUI(`Self-correction sync for ${fileName}`);
                     await this.queueUpdateEditor(fileName);
                 }
@@ -412,7 +468,7 @@ export class DocumentSyncManager {
             this.yDocs.delete(fileName);
             this.yTexts.delete(fileName);
         }
-        this.isApplyingRemote.delete(fileName);
+        this.recentRemoteTargets.delete(fileName);
         this.editorUpdateQueues.delete(fileName);
     }
 
@@ -428,7 +484,7 @@ export class DocumentSyncManager {
         this.yDocs.forEach(d => d.destroy());
         this.yDocs.clear();
         this.yTexts.clear();
-        this.isApplyingRemote.clear();
+        this.recentRemoteTargets.clear();
         this.editorUpdateQueues.clear();
         this.pendingRemoteUpdates.clear();
     }

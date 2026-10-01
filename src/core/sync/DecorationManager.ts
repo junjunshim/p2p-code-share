@@ -105,10 +105,22 @@ export class DecorationManager {
         const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
         if (!doc) return;
 
+        // 다른 파일이거나 상대 위치가 없는 항목을 먼저 걸러 대상만 남깁니다(조기 필터링).
+        const targets = this.decorations.filter(d => d.fileName === fileName && !!d.startRel && !!d.endRel);
+        if (targets.length === 0) {
+            // 좌표 보정 대상이 없어도 다른 사용자 커서는 다시 렌더링합니다.
+            this.engine.cursorManager.refreshAllDecorations();
+            return;
+        }
+
+        // Yjs 는 문서가 증분 편집되어 item 리스트가 쪼개지면 toString() 마다 전체 텍스트를 다시 만듭니다.
+        // 항목마다 호출하면 그 O(N) 비용이 데코레이션 수만큼 반복되므로, 루프 밖에서 1회만 만들어 재사용합니다.
+        const yjsText = ytext.toString();
+
         let isModified = false;
 
-        this.decorations.forEach(d => {
-            if (d.fileName !== fileName || !d.startRel || !d.endRel) return;
+        targets.forEach(d => {
+            if (!d.startRel || !d.endRel) return;
 
             try {
                 const startRelPos = Y.createRelativePositionFromJSON(d.startRel);
@@ -118,7 +130,6 @@ export class DecorationManager {
                 const endAbs = Y.createAbsolutePositionFromRelativePosition(endRelPos, ydoc);
 
                 if (startAbs && endAbs) {
-                    const yjsText = ytext.toString();
                     const newStartPos = this.engine.getPositionFromIndex(yjsText, startAbs.index);
                     const newEndPos = this.engine.getPositionFromIndex(yjsText, endAbs.index);
 

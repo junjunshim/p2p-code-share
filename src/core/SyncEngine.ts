@@ -707,14 +707,19 @@ export class SyncEngine {
             const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.document.uri.fsPath));
             if (!file) return;
 
-            // 원격 변경 적용 중이거나 닫히는 중인 문서라면 무시 (에코 폭주 100% 원천 차단)
-            if (this.documentSyncManager.isApplyingRemote.get(file.name) || this.fileStorageManager.closingDocuments.has(e.document.uri.fsPath)) {
+            // 문서가 닫히는 중이면 무시
+            if (this.fileStorageManager.closingDocuments.has(e.document.uri.fsPath)) {
                 return;
             }
 
-            // 권한 체크
+            // 확장이 적용한 원격 내용(에코)이면 Yjs 에 되돌려 반영하지 않는다 (에코 폭주 원천 차단).
+            // VS Code 는 applyEdit 완료 뒤에 변경 이벤트를 전달하므로, 플래그가 아니라 내용 비교로 판정한다.
+            if (this.documentSyncManager.isRemoteEcho(file.name, e.document)) {
+                return;
+            }
+
+            // 권한 체크: 권한 없는 편집은 조용히 무시한다(로그 없음)
             if (!this.participantManager.canIEdit(file.name)) {
-                this.logToUI(`Blocked unauthorized edit on ${file.name}`);
                 return;
             }
 
