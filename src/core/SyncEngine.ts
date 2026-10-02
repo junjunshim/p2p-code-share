@@ -247,12 +247,8 @@ export class SyncEngine {
                             if (!isDuplicate) {
                                 this.chatHistory.push(msg.chatMessage);
                                 if (this.isHost) {
-                                    // 다른 참여자들에게만 채팅 중계 (보낸 사람 제외)
-                                    Object.keys(this.participantManager.participants).forEach(pId => {
-                                        if (pId !== 'host' && pId !== peerId) {
-                                            this.sendMessageToPeer(pId, 'CHAT_MESSAGE', { chatMessage: msg.chatMessage });
-                                        }
-                                    });
+                                    // 다른 참여자들에게만 채팅 중계 (보낸 사람 제외, 단일 IPC 팬아웃)
+                                    this.sendMessage('CHAT_MESSAGE', { chatMessage: msg.chatMessage }, [peerId]);
                                 }
                                 
                                 // 안 읽은 카운트 누적 (채팅 패널이 열려있지 않을 때만)
@@ -302,12 +298,8 @@ export class SyncEngine {
 
                         await this.documentSyncManager.handleYjsUpdate(msg);
                         if (this.isHost) {
-                            // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외)
-                            Object.keys(this.participantManager.participants).forEach(pId => {
-                                if (pId !== 'host' && pId !== peerId) {
-                                    this.sendMessageToPeer(pId, 'YJS_UPDATE', msg);
-                                }
-                            });
+                            // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외, 단일 IPC 팬아웃)
+                            this.sendMessage('YJS_UPDATE', msg, [peerId]);
                         }
                         break;
                     case 'GUEST_JOIN': 
@@ -358,12 +350,8 @@ export class SyncEngine {
                                 }
                             });
 
-                            // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신
-                            Object.keys(this.participantManager.participants).forEach(pId => {
-                                if (pId !== 'host' && pId !== renameTargetId) {
-                                    this.sendMessageToPeer(pId, 'GUEST_RENAME', { newName, peerId: renameTargetId });
-                                }
-                            });
+                            // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신 (단일 IPC 팬아웃)
+                            this.sendMessage('GUEST_RENAME', { newName, peerId: renameTargetId }, [renameTargetId]);
                         }
                         this.cursorManager.refreshAllDecorations();
                         this.pushUIUpdate();
@@ -636,12 +624,8 @@ export class SyncEngine {
     }
 
     private sendBroadcastCursorToPeers(msg: any, senderId: string) {
-        // 보낸 피어 및 호스트를 제외한 다른 게스트들에게만 커서 중계 (에코 차단 및 대역폭 절약)
-        Object.keys(this.participantManager.participants).forEach(pId => {
-            if (pId !== 'host' && pId !== senderId) {
-                this.sendMessageToPeer(pId, 'CURSOR_UPDATE', msg);
-            }
-        });
+        // 보낸 피어 및 호스트를 제외한 다른 게스트들에게만 커서 중계 (에코 차단 및 대역폭 절약, 단일 IPC 팬아웃)
+        this.sendMessage('CURSOR_UPDATE', msg, [senderId]);
     }
 
     /**
@@ -809,11 +793,16 @@ export class SyncEngine {
      * 엔진을 통해 메시지를 전송합니다.
      * 호스트가 N명의 게스트에게 보낼 때도 수신자별로 IPC를 반복하지 않고,
      * 대상 피어 목록을 담은 단 1회의 IPC(단일 브로드캐스트)로 통합합니다.
+     * @param type 메시지 타입.
+     * @param data 페이로드.
+     * @param excludePeerIds 호스트일 때 수신 대상에서 제외할 피어 ID 목록(중계 시 보낸 피어 제외용).
      */
-    public sendMessage(type: string, data: any) { 
+    public sendMessage(type: string, data: any, excludePeerIds?: string[]) { 
         const value = { type, ...data };
         if (this.isHost) {
-            const targets = Object.keys(this.participantManager.participants).filter(peerId => peerId !== 'host');
+            const exclude = new Set(excludePeerIds ?? []);
+            const targets = Object.keys(this.participantManager.participants)
+                .filter(peerId => peerId !== 'host' && !exclude.has(peerId));
             if (targets.length === 0) return;
             this.hub.sendToEngine({ type: 'peerData', value }, undefined, targets);
         } else {
