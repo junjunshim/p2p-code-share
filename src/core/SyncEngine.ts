@@ -312,7 +312,7 @@ export class SyncEngine {
                             }
                         }
                         break;
-                    case 'GUEST_RENAME':
+                    case 'GUEST_RENAME': {
                         const newName = msg.newName;
                         const renameTargetId = msg.peerId || peerId;
                         if (renameTargetId) {
@@ -356,14 +356,16 @@ export class SyncEngine {
                         this.cursorManager.refreshAllDecorations();
                         this.pushUIUpdate();
                         break;
+                    }
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'FILE_ASSIGNEE_UPDATE': await this.handleFileAssigneeUpdate(msg); break;
                     case 'STOP_SHARING': await this.fileStorageManager.handleRemoteStop(msg.fileName); break;
-                    case 'CURSOR_UPDATE': 
+                    case 'CURSOR_UPDATE': { 
                         const senderId = msg.userId || peerId; 
                         this.cursorManager.updateRemoteCursor(msg, senderId); 
                         if (this.isHost) this.broadcastCursor(msg, senderId);
                         break;
+                    }
                     case 'JOIN_REQUEST': this.participantManager.handleJoinRequest(msg, peerId); break;
                     case 'JOIN_REQUEST_ACK': this.participantManager.handleJoinRequestAck(msg); break;
                     case 'JOIN_RESPONSE': this.participantManager.handleJoinResponse(msg); break;
