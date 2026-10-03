@@ -351,13 +351,16 @@ export class SessionRecoveryManager {
             this.engine.participantManager.startPingCheck();
             this.engine.pushUIUpdate();
             vscode.window.showInformationMessage(`"${session.roomName}" P2P 방 세션이 새 창으로 복원되었습니다.`);
+            // 호스트는 시그널링 서버에 방이 다시 등록(roomNameSuccess)되거나 최종 실패할 때까지
+            // '복구 중' 플래그를 유지합니다. 이 플래그를 검사하는 고스트 ID 재시도 경로가 살아 있어야
+            // 이전 창의 소켓이 서버에서 정리되는 동안(수 초) 같은 이름으로 조용히 재등록할 수 있습니다.
         } else {
             // 게스트인 경우 호스트에게 재연결 요청 시도
             this.engine.isSetupMode = false;
             this.engine.participantManager.isAutoJoin = true;
             this.engine.participantManager.sendJoinRequest(session.roomName, session.myName, session.myId);
+            // 게스트는 JOIN_RESPONSE(승인/거절) 수신 시점에 복구 절차가 끝나므로 여기서 플래그를 해제합니다.
+            this.isRestoringSession = false;
         }
-
-        this.isRestoringSession = false;
     }
 }

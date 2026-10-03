@@ -366,12 +366,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 호스트인 경우: 이전 창의 소켓이 서버에서 정리되는 중일 수 있으므로(고스트 ID),
-        // 세션 복구 중이라면 팝업을 띄우지 않고 1초 간격으로 최대 10회 조용히 재시도
-        if (engine.sessionRecoveryManager.isRestoringSession && errorType === 'duplicate') {
-            if (engine.sessionRecoveryManager.restoreRetryCount < 10) {
+        // 세션 복구 중이라면 팝업을 띄우지 않고 1초 간격으로 최대 15회 조용히 재시도합니다.
+        // 일시적인 네트워크/서버 오류로 끊긴 경우도 같은 재시도로 흡수합니다.
+        if (engine.sessionRecoveryManager.isRestoringSession && (errorType === 'duplicate' || errorType === 'server')) {
+            if (engine.sessionRecoveryManager.restoreRetryCount < 15) {
                 engine.sessionRecoveryManager.restoreRetryCount++;
                 const delay = 900 + Math.floor(Math.random() * 300);
-                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in ${delay}ms (${engine.sessionRecoveryManager.restoreRetryCount}/10)...`);
+                engine.logToUI(`Previous host session ghost ID still clearing on server. Retrying in ${delay}ms (${engine.sessionRecoveryManager.restoreRetryCount}/15)...`);
                 setTimeout(() => {
                     if (engine.sessionRecoveryManager.isRestoringSession) {
                         hub.dispose();
@@ -383,10 +384,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 세션 복구 중이 아니어도 이전 창의 소켓이 서버에서 정리되는 중(고스트 ID)일 수 있으므로 짧게 재시도합니다.
-        if (errorType === 'duplicate' && hostDuplicateRetryCount < 2) {
+        if ((errorType === 'duplicate' || errorType === 'server') && hostDuplicateRetryCount < 2) {
             hostDuplicateRetryCount++;
             const retryDelay = 1500 + Math.floor(Math.random() * 700);
-            engine.logToUI(`Room name is still held by a previous session on the server. Retrying in ${retryDelay}ms (${hostDuplicateRetryCount}/2)...`);
+            engine.logToUI(`Signaling server not ready (${errorType}). Retrying in ${retryDelay}ms (${hostDuplicateRetryCount}/2)...`);
             hub.dispose();
             setTimeout(() => {
                 if (!engine.isHost || !engine.roomName) return;

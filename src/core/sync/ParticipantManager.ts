@@ -40,6 +40,9 @@ export class ParticipantManager {
     /** 초대 링크 생성 시 발급된 대기 중인 초대 피어 ID 세트 */
     public pendingInvites = new Set<string>();
 
+    /** 같은 밀리초에 여러 초대 슬롯을 만들 때 피어 ID 가 충돌하지 않도록 하는 단조 증가 시퀀스 */
+    private inviteSeq = 0;
+
     /** 호스트가 단절된 게스트를 유예 시간(45초) 후 제거하기 위해 피어별로 예약한 타이머 맵 */
     private hostGraceTimers = new Map<string, NodeJS.Timeout>();
 
@@ -550,6 +553,38 @@ export class ParticipantManager {
     }
 
     /**
+     * 재접속 토큰과 일치하는 기존 참가자 ID를 찾습니다. 이전 피어 ID가 유실되거나
+     * 호스트/게스트 저장 시점이 어긋나(고스트 ID·승계 지연) ID가 맞지 않아도
+     * 비밀 토큰만으로 동일 게스트임을 증명할 수 있습니다.
+     * @param token 게스트가 보관하던 256비트 재접속 토큰.
+     * @param excludePeerId 제외할 신규 피어 ID.
+     * @returns 일치하는 기존 참가자 ID 또는 undefined.
+     */
+    private findPeerIdByReconnectToken(token: string, excludePeerId?: string): string | undefined {
+        if (!token) return undefined;
+        for (const [id, stored] of this.peerReconnectTokens) {
+            if (id === excludePeerId) continue;
+            if (stored === token && this.participants[id]) return id;
+        }
+        return undefined;
+    }
+
+    /**
+     * 이전 피어 ID를 우선 사용하고, 맞지 않으면 토큰 역추적으로 재접속 대상을 해석합니다.
+     * @param previousPeerId 게스트가 신고한 이전 피어 ID.
+     * @param token 재접속 토큰.
+     * @param newPeerId 이번에 할당된 신규 피어 ID.
+     * @returns 승계 대상 기존 참가자 ID 또는 undefined.
+     */
+    private resolveReconnectPeerId(previousPeerId: string | undefined, token: string, newPeerId: string): string | undefined {
+        if (previousPeerId && previousPeerId !== newPeerId && this.participants[previousPeerId] &&
+            this.peerReconnectTokens.get(previousPeerId) === token) {
+            return previousPeerId;
+        }
+        return this.findPeerIdByReconnectToken(token, newPeerId);
+    }
+
+    /**
      * 호스트가 방에 참여한 게스트를 참가자 명단에 등록하고 최신 공유 파일 스냅샷과 데코레이션을 전송합니다.
      * 창 새로고침 등으로 재연결된 게스트인 경우 비밀 토큰을 확인한 뒤 이전 권한과 파일 담당자 상태를 승계합니다.
      * @param msg 게스트 참여 메시지 (사용자 이름, 이전 피어 ID, 재접속 토큰 등).
@@ -564,10 +599,8 @@ export class ParticipantManager {
             const assignedToken = this.peerReconnectTokens.get(peerId);
 
             // 1. 재접속 토큰이 일치하는 이전 참가자만 권한을 승계합니다.
-            const oldPeerId = previousPeerId && previousPeerId !== peerId && this.participants[previousPeerId] &&
-                this.peerReconnectTokens.get(previousPeerId) === requestToken
-                ? previousPeerId
-                : undefined;
+            //    (이전 피어 ID가 유실·불일치하면 토큰 역추적으로 보정합니다.)
+            const oldPeerId = this.resolveReconnectPeerId(previousPeerId, requestToken, peerId);
             const isCurrentPeer = !!this.participants[peerId] && assignedToken === requestToken;
             if (assignedToken !== requestToken && !oldPeerId) {
                 this.engine.logToUI(`Rejected guest join from ${peerId}: invalid reconnect token.`);
@@ -809,7 +842,7 @@ export class ParticipantManager {
     public inviteGuest(isSilent: boolean = false): void {
         if (!this.engine.isHost) return;
         // 새로운 피어 ID 생성
-        const newPeerId = 'guest_' + Date.now();
+        const newPeerId = `guest_${Date.now()}_${++this.inviteSeq}`;
         this.getOrCreatePeerReconnectToken(newPeerId);
         this.pendingInvites.add(newPeerId);
         
@@ -1122,9 +1155,10 @@ export class ParticipantManager {
             const previousPeerId = typeof msg.previousPeerId === 'string' ? msg.previousPeerId : undefined;
             const reconnectToken = typeof msg.reconnectToken === 'string' ? msg.reconnectToken : '';
             const assignedToken = this.peerReconnectTokens.get(peerId);
-            const tokenMatchesPreviousPeer = !!previousPeerId && previousPeerId !== peerId &&
-                !!this.participants[previousPeerId] &&
-                this.peerReconnectTokens.get(previousPeerId) === reconnectToken;
+            // 이전 피어 ID와 토큰이 모두 맞으면 그대로, ID가 어긋나면 토큰 역추적으로 승계 대상을 보정합니다.
+            const matchedPreviousPeerId = this.resolveReconnectPeerId(previousPeerId, reconnectToken, peerId);
+            const effectivePreviousPeerId = matchedPreviousPeerId || previousPeerId;
+            const tokenMatchesPreviousPeer = !!matchedPreviousPeerId;
 
             if (assignedToken !== reconnectToken && !tokenMatchesPreviousPeer) {
                 this.engine.logToUI(`Rejected JOIN_REQUEST from ${peerId}: invalid reconnect token.`);
@@ -1140,20 +1174,20 @@ export class ParticipantManager {
 
             // 같은 피어 ID이거나 이전 피어의 비밀 토큰이 확인된 경우에만 기존 참가자로 판정합니다.
             const existingParticipant = (assignedToken === reconnectToken ? this.participants[peerId] : undefined) ||
-                (tokenMatchesPreviousPeer ? this.participants[previousPeerId!] : undefined);
+                (matchedPreviousPeerId ? this.participants[matchedPreviousPeerId] : undefined);
 
             // 호스트 창 전환 후 재접속한 기존 게스트이거나 자동 승인 모드인 경우 즉시 승인
             if (existingParticipant || this.isAutoApprove) {
                 // 이전 대기열에 동일 피어 ID나 이전 피어 ID의 요청이 남아있다면 정리
                 this.joinRequests = this.joinRequests.filter(req =>
-                    req.peerId !== peerId && (!tokenMatchesPreviousPeer || req.peerId !== previousPeerId)
+                    req.peerId !== peerId && (!effectivePreviousPeerId || req.peerId !== effectivePreviousPeerId)
                 );
 
                 const finalName = existingParticipant 
                     ? (existingParticipant.name || rawGuestName) 
                     : this.getUniqueParticipantName(rawGuestName, peerId);
 
-                const approved = this.handleGuestJoin({ name: finalName, previousPeerId, reconnectToken }, peerId);
+                const approved = this.handleGuestJoin({ name: finalName, previousPeerId: effectivePreviousPeerId, reconnectToken }, peerId);
                 if (!approved) return;
                 this.engine.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
                 setTimeout(() => {
@@ -1223,6 +1257,13 @@ export class ParticipantManager {
                 vscode.window.showInformationMessage("방 참여가 승인되었습니다!");
                 // 에디터 락 해제 및 최신 권한 적용
                 await this.engine.fileStorageManager.updateAllReadonlyStates();
+            } else if (this.isReconnecting) {
+                // 재연결 유예 중의 거절은 호스트/게스트 저장 시점 차이(고스트 ID·토큰 승계 지연)로
+                // 일시적으로 발생할 수 있으므로, 즉시 퇴장시키지 않고 남은 유예 시간 동안 다음 프로브를 시도합니다.
+                Logger.get().warn('GuestJoin', `Join rejected during reconnect grace: ${msg.reason || 'No reason provided'}. Scheduling next probe.`);
+                this.engine.logToUI(`재연결 승인이 아직 확인되지 않았습니다(${msg.reason || '사유 없음'}). 잠시 후 다시 시도합니다...`);
+                this.onGuestReconnectProbeFailed();
+                return;
             } else {
                 Logger.get().warn('GuestJoin', `Join rejected by host: ${msg.reason || 'No reason provided'}`);
                 this.stopGuestReconnectGracePeriod();
