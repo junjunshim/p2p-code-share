@@ -82,11 +82,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 방 참여 요청 처리 (게스트의 참가 요청 전송)
     sidebar.onJoinRoom = (roomName, userName) => {
-        const cleanupStartedAt = Date.now();
         hub.dispose();
         engine.reset(true);
-        engine.joinStartedAt = cleanupStartedAt;
-        engine.logToUI(`[Join Timing] 세션 정리(dispose+reset) ${Date.now() - cleanupStartedAt}ms`);
         engine.sendJoinRequest(roomName, userName);
     };
 

@@ -55,7 +55,6 @@ export class FileStorageManager {
      * @returns {Promise<void>}
      */
     private async cleanOldRoomStoragesAsync(currentRoomName?: string): Promise<void> {
-        const startedAt = Date.now();
         try {
             const baseStorage = this.engine.context.globalStorageUri.fsPath;
             if (!fs.existsSync(baseStorage)) return;
@@ -63,7 +62,6 @@ export class FileStorageManager {
             const currentSanitized = currentRoomName ? sanitizePath(currentRoomName) : (this.engine.roomName ? sanitizePath(this.engine.roomName) : '');
 
             const entries = await fs.promises.readdir(baseStorage, { withFileTypes: true });
-            let removed = 0;
             for (const entry of entries) {
                 if (!entry.isDirectory()) continue;
                 // 현재 참여 중인 방의 폴더가 아니면 이전 세션의 잔여 임시 폴더이므로 정리
@@ -71,13 +69,9 @@ export class FileStorageManager {
                 const targetDir = path.join(baseStorage, entry.name);
                 try {
                     await fs.promises.rm(targetDir, { recursive: true, force: true });
-                    removed++;
                 } catch (e) {
                     // 권한 문제나 파일 락 등으로 삭제 실패 시 다음 기회로 패스
                 }
-            }
-            if (removed > 0) {
-                this.engine.logToUI(`[Join Timing] 이전 방 임시 폴더 정리 ${Date.now() - startedAt}ms (${removed}개, 백그라운드)`);
             }
         } catch (e) {
             // 디렉터리 정리 실패가 전체 연결 프로세스에 영향을 주지 않도록 방어

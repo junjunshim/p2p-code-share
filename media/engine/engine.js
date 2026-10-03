@@ -616,6 +616,11 @@
         pendingSignalingQueue = [];
         peerSignalingConnMap = {};
         remoteSignalMap = {};
+        // 피어 ID 별칭 맵을 비웁니다. 남겨 두면 이전 세션의 호스트 peerId 가 새 세션 SDP 전송에 섞입니다.
+        remotePeerIdMap = {};
+        // 미완성 청크 조립 버퍼와 만료 타이머를 즉시 정리합니다(세션 간 잔여 상태 방지).
+        incomingChunkBuffers.forEach(buf => { if (buf && buf.timer) clearTimeout(buf.timer); });
+        incomingChunkBuffers.clear();
         if (guestSignalingConn) {
             try { guestSignalingConn.close(); } catch(e) {}
             guestSignalingConn = null;
@@ -1290,7 +1295,7 @@
     /**
      * P2P 엔진 연결을 활성화합니다.
      */
-    window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role, joinStartedAt) {
+    window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role) {
         stopEngine(); // 기존 실행 중인 엔진 정지
 
         // 새 세션 시작이므로 이전 엔진 정리 중 발생한 이벤트가 새 인스턴스에 영향을 주지 않도록 초기화합니다.
@@ -1312,9 +1317,6 @@
         lastJoinStageKey = '';
         roomUnavailableDetected = false;
         postJoinStage('signaling', '시그널링 서버에 연결하는 중입니다.');
-        if (!currentInitiator && typeof joinStartedAt === 'number' && joinStartedAt > 0) {
-            log('[Join Timing] 입장 클릭→엔진 시작 ' + (Date.now() - joinStartedAt) + 'ms');
-        }
 
         function setupPeerJS(rName) {
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
@@ -1723,7 +1725,7 @@
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.peerId, m.stunServers, m.localIps, m.turnRole, m.joinStartedAt);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.peerId, m.stunServers, m.localIps, m.turnRole);
             return;
         }
         if (m.type === 'turnCredentialsResult') {

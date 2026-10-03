@@ -145,22 +145,16 @@ export class HubManager {
      * @param initiator 현재 노드가 연결 시작자(Host)인지 여부.
      * @param roomName 자동 시그널링에 사용할 방 이름 (기본값: 빈 문자열).
      * @param peerId 피어의 고유 식별자 (기본값: 'default').
-     * @param joinStartedAt 게스트가 입장을 시작한 시각(ms). 엔진의 단계별 지연 로그에 사용됩니다.
      * @returns {void}
      */
-    public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default', joinStartedAt: number = 0): void {
+    public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default'): void {
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
         if (peerId === 'none' || peerId === 'default') {
             // STUN 주소 해석만 미리 준비합니다. TURN 자격 증명은 엔진이 SDP 생성 직전에 요청합니다.
             const generation = ++this._startGeneration;
-            const resolveStartedAt = Date.now();
-            const hadCachedStun = this._stunServerUrls !== null;
             void this.resolveStunServers().then(stunServers => {
                 // 이전 시작 요청의 늦은 응답이면 무시합니다.
                 if (generation !== this._startGeneration) return;
-                if (!initiator) {
-                    this.sendToEngine({ type: 'log', message: `[Join Timing] STUN 해석 ${Date.now() - resolveStartedAt}ms (${hadCachedStun ? '캐시' : '실해석'}, ${stunServers.length}개)` });
-                }
                 // TURN 자격 증명은 여기서 미리 받지 않습니다. 엔진이 SDP/시그널링 채널을 만들기 직전에
                 // requestTurnCredentials 로 요청하므로, Worker가 꺼져 있어도 시작이 지연되지 않습니다.
                 this.sendToEngine({
@@ -171,7 +165,6 @@ export class HubManager {
                     peerId,
                     stunServers,
                     turnRole: initiator ? 'host' : 'guest',
-                    joinStartedAt,
                     // Webview(Chromium)가 host 후보를 mDNS로 난독화하므로, 실제 사설 IP 후보를
                     // 추가할 수 있도록 로컬 LAN 주소 목록을 함께 전달합니다.
                     localIps: getLocalIpAddresses()

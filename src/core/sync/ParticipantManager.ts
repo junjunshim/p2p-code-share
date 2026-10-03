@@ -227,10 +227,8 @@ export class ParticipantManager {
             this.armJoinHandshakeTimeout(roomName, userName, attemptTimeout, previousPeerId);
         }
 
-        const elapsed = this.engine.joinStartedAt ? Date.now() - this.engine.joinStartedAt : 0;
-        this.engine.logToUI(`[Join Timing] 입장 준비 완료 ${elapsed}ms (상태 저장·백그라운드 정리 요청 제외)`);
-        // 허브 생성 (게스트 모드). joinStartedAt 을 넘겨 엔진에서 클릭→엔진 시작 총 시간을 기록합니다.
-        this.engine.hub.createHub(false, roomName, 'default', this.engine.joinStartedAt);
+        // 허브 생성 (게스트 모드)
+        this.engine.hub.createHub(false, roomName);
     }
 
     /**
@@ -1505,14 +1503,15 @@ export class ParticipantManager {
 
     /**
      * 호스트가 게스트들의 실시간 연결 상태를 주기적으로 확인하기 위해 Ping 타이머를 시작합니다.
-     * 8초 이상 응답이 없으면 'reconnecting'으로 표시하고, 30초 초과 시 연결을 종료합니다.
+     * 4초마다 검사하며, 10초 이상 응답이 없으면 'reconnecting'으로 표시하고
+     * 호스트 재연결 유예(45초)가 만료된 피어만 실제로 제거합니다.
      * @returns {void}
      */
     public startPingCheck(): void {
         this.stopPingCheck();
         if (!this.engine.isHost) return;
 
-        // 5초마다 모든 게스트에게 PING 전송 및 PONG 타임아웃(10초) 검사
+        // 4초마다 모든 게스트에게 PING 전송 및 PONG 타임아웃(10초) 검사
         this.pingTimer = setInterval(() => {
             if (!this.engine.isHost) return;
 

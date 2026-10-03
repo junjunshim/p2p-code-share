@@ -77,9 +77,6 @@ export class SyncEngine {
     /** 참여 중인 P2P 방 이름 */
     public roomName = '';
 
-    /** 게스트가 방 입장을 시작한 시각(ms). 입장 단계별 지연 진단에 사용합니다. */
-    public joinStartedAt = 0;
-
     /** 방 생성/참여 설정 단계(초대 대기 등)에 있는지 여부 플래그 */
     public isSetupMode = false;
 
