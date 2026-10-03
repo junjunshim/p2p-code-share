@@ -35,6 +35,9 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebar = new SidebarProvider(context.extensionUri);
     const hub = new HubManager();
     activeHub = hub;
+
+    // 방 입장 임계 경로에서 STUN DNS 대기(느린 망에서 최대 1.5초)를 제거하기 위해 미리 해석해 둡니다.
+    hub.warmUpStunResolution();
     const engine = new SyncEngine(hub, context, (state) => {
         // 로그 메시지는 엔진 웹뷰 및 OutputChannel로 전달하고 불필요한 setContext 및 사이드바 렌더링을 즉시 건너뜀
         if (state.type === 'log') {
@@ -79,8 +82,11 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 방 참여 요청 처리 (게스트의 참가 요청 전송)
     sidebar.onJoinRoom = (roomName, userName) => {
+        const cleanupStartedAt = Date.now();
         hub.dispose();
         engine.reset(true);
+        engine.joinStartedAt = cleanupStartedAt;
+        engine.logToUI(`[Join Timing] 세션 정리(dispose+reset) ${Date.now() - cleanupStartedAt}ms`);
         engine.sendJoinRequest(roomName, userName);
     };
 
@@ -253,14 +259,15 @@ export function activate(context: vscode.ExtensionContext) {
         engine.inviteGuest(true);
     };
 
-    // 게스트가 '방 없음' 응답을 받아도 호스트의 시그널링 서버 등록(고스트 ID 정리)이 아직 끝나지 않았을 수 있고,
-    // 호스트도 이전 창의 소켓이 서버에서 정리되는 중이라 '이미 사용 중' 응답을 받을 수 있습니다.
-    // 두 경우 모두 곧바로 실패 처리하지 않고 짧게 재시도한 뒤 최종 에러를 보여줍니다.
+    // 게스트가 '방 없음(peer-unavailable)' 응답을 받으면 최초 입장에서는 재시도 없이 즉시 실패 처리합니다.
+    // 같은 방으로 곧바로 다시 connect 하면 시그널링 서버가 이전 시도의 전달을 정리하는 동안
+    // EXPIRE 응답이 오지 않아 제어 채널 가드(8초)까지 대기하게 되어 방 부재 판정이 오히려 느려집니다.
+    // 재연결(호스트 창 복구)은 위 isReconnecting 분기에서 별도로 여러 번 재시도합니다.
     let guestUnavailableRetryCount = 0;
     let hostDuplicateRetryCount = 0;
 
-    /** 게스트가 '방 없음(peer-unavailable)'을 받았을 때 호스트 등록 직전 경합만 흡수하는 짧은 재시도 횟수 */
-    const GUEST_UNAVAILABLE_RETRY_MAX = 1;
+    /** 최초 입장에서 '방 없음'을 받았을 때의 추가 재시도 횟수(0 = 즉시 실패). 재연결은 별도 경로다. */
+    const GUEST_UNAVAILABLE_RETRY_MAX = 0;
 
     // 방 이름 선점 성공 시 화면 전환 및 게스트 수락 대기열(Invite Slot) 자동 생성
     hub.onRoomNameSuccess = () => {
@@ -334,7 +341,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             // 방이 없다는 응답은 방 이름 오타이거나 아직 호스트가 등록되기 전입니다.
-            // 호스트 등록 직전의 짧은 경합만 1회 재시도로 흡수하고, 그 뒤에는 시도 자체를 끊습니다.
+            // 최초 입장은 재시도 없이 즉시 실패 처리하고(GUEST_UNAVAILABLE_RETRY_MAX = 0), 재연결만 여러 번 재시도합니다.
             if (errorType === 'unavailable' && guestUnavailableRetryCount < GUEST_UNAVAILABLE_RETRY_MAX) {
                 guestUnavailableRetryCount++;
                 const retryDelay = 800 + Math.floor(Math.random() * 400);

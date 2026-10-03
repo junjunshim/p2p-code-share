@@ -227,8 +227,10 @@ export class ParticipantManager {
             this.armJoinHandshakeTimeout(roomName, userName, attemptTimeout, previousPeerId);
         }
 
-        // 허브 생성 (게스트 모드)
-        this.engine.hub.createHub(false, roomName, 'default');
+        const elapsed = this.engine.joinStartedAt ? Date.now() - this.engine.joinStartedAt : 0;
+        this.engine.logToUI(`[Join Timing] 입장 준비 완료 ${elapsed}ms (상태 저장·백그라운드 정리 요청 제외)`);
+        // 허브 생성 (게스트 모드). joinStartedAt 을 넘겨 엔진에서 클릭→엔진 시작 총 시간을 기록합니다.
+        this.engine.hub.createHub(false, roomName, 'default', this.engine.joinStartedAt);
     }
 
     /**

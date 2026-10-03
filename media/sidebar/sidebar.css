@@ -840,6 +840,11 @@ input:checked + .slider:before {
 .join-step.done {
     opacity: 0.85;
 }
+.join-step.failed {
+    opacity: 1;
+    font-weight: 600;
+    color: var(--vscode-errorForeground, #f14c4c);
+}
 .join-step-mark {
     display: inline-flex;
     align-items: center;

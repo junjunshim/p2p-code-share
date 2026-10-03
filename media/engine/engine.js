@@ -710,8 +710,20 @@
             if (pc.__controlDiagnosticsAttached) return;
             pc.__controlDiagnosticsAttached = true;
             log('[Control ICE] 진단 시작 (role=' + tag + ')');
+            // 게스트: 원격 description 이 적용됐다는 것은 호스트(방)가 실제로 응답했다는 뜻이므로
+            // '방 확인' 단계를 마치고 '제어 채널 수립(ICE 후보 교환)' 단계로 넘어갑니다.
+            // (호스트 역할은 postJoinStage 가 무시하므로 별도 역할 분기를 두지 않습니다.)
+            let controlConnectingPosted = false;
+            const markControlConnecting = () => {
+                if (controlConnectingPosted) return;
+                controlConnectingPosted = true;
+                postJoinStage('control-connecting', '호스트와 제어 채널을 수립하는 중입니다. (ICE 후보 교환)');
+            };
             pc.addEventListener('iceconnectionstatechange', () => {
-                log('[Control ICE] iceConnectionState=' + pc.iceConnectionState + ' (role=' + tag + ')');
+                const iceState = pc.iceConnectionState;
+                log('[Control ICE] iceConnectionState=' + iceState + ' (role=' + tag + ')');
+                // ICE checking/connected 는 원격 description 이 적용된 뒤에만 도달하므로 방 존재 확인 시점입니다.
+                if (iceState === 'checking' || iceState === 'connected' || iceState === 'completed') markControlConnecting();
             });
             pc.addEventListener('icegatheringstatechange', () => {
                 log('[Control ICE] iceGatheringState=' + pc.iceGatheringState + ' (role=' + tag + ')');
@@ -733,6 +745,7 @@
                             stats.remoteDescriptionAt = Date.now();
                             log('[Control Timeline] 원격 description 적용 (type=' + description.type
                                 + ', 후보 ' + formatCandidateCounts(countCandidatesByType(description.sdp)) + ')');
+                            markControlConnecting();
                         }
                     } catch (e) {}
                     return originalSetRemoteDescription(description);
@@ -755,6 +768,7 @@
 
             const timer = setInterval(() => {
                 const state = pc.iceConnectionState;
+                if (pc.remoteDescription) markControlConnecting(); // 원격 description 폴링 폴백
                 if (state === 'connected' || state === 'completed') {
                     clearInterval(timer);
                     setTimeout(() => logControlSelectedPair(pc, tag), 500);
@@ -1276,7 +1290,7 @@
     /**
      * P2P 엔진 연결을 활성화합니다.
      */
-    window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role) {
+    window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role, joinStartedAt) {
         stopEngine(); // 기존 실행 중인 엔진 정지
 
         // 새 세션 시작이므로 이전 엔진 정리 중 발생한 이벤트가 새 인스턴스에 영향을 주지 않도록 초기화합니다.
@@ -1298,6 +1312,9 @@
         lastJoinStageKey = '';
         roomUnavailableDetected = false;
         postJoinStage('signaling', '시그널링 서버에 연결하는 중입니다.');
+        if (!currentInitiator && typeof joinStartedAt === 'number' && joinStartedAt > 0) {
+            log('[Join Timing] 입장 클릭→엔진 시작 ' + (Date.now() - joinStartedAt) + 'ms');
+        }
 
         function setupPeerJS(rName) {
             const toSafeId = (n) => 'p2p_room_' + Array.from(n).map(c => c.charCodeAt(0).toString(16)).join('');
@@ -1328,7 +1345,7 @@
                 const reconnectedAfterSec = (signalingSocketReconnects > 0 && lastSignalingReconnectAt > 0)
                     ? Math.round((Date.now() - lastSignalingReconnectAt) / 1000) : -1;
                 log('Successfully connected to PeerJS signaling server.');
-                postJoinStage('signaling-ready', '시그널링 서버 연결됨. 방 호스트를 찾는 중입니다.');
+                postJoinStage('signaling-ready', '시그널링 서버 연결됨.');
                 log('[Control Timeline] 시그널링 소켓 open (open #' + signalingSocketOpens + ', reconnects=' + signalingSocketReconnects
                     + (reconnectedAfterSec >= 0 ? ', 직전 재연결 후 ' + reconnectedAfterSec + 's' : '') + ')');
                 if (currentInitiator) {
@@ -1621,7 +1638,9 @@
                 return;
             }
             log('Connecting to room host for room: "' + activeRoomName + '" (' + reason + ')...');
-            postJoinStage('control-connecting', '호스트와 제어 채널을 수립하는 중입니다. (ICE 후보 교환)');
+            // 이 시점부터 시그널링 서버가 방(호스트 peer) 등록 여부를 판정합니다.
+            // 방이 없으면 peer-unavailable(EXPIRE) 로 즉시 실패하고, 있으면 원격 description 이 도착합니다.
+            postJoinStage('room-check', '방이 시그널링 서버에 등록되어 있는지 확인하는 중입니다.');
             log('[Control Timeline] 제어 채널 connect() 호출 (room="' + activeRoomName + '", 시도 ' + (controlChannelRetryCount + 1) + '회)');
             const conn = peerServer.connect(activeRoomPeerId || activeRoomName);
             guestSignalingConnOpenedAt = Date.now();
@@ -1704,7 +1723,7 @@
     window.addEventListener('message', e => {
         const m = e.data;
         if (m.type === 'startEngine') {
-            window.startEngine(m.initiator, m.autoStart, m.roomName, m.peerId, m.stunServers, m.localIps, m.turnRole);
+            window.startEngine(m.initiator, m.autoStart, m.roomName, m.peerId, m.stunServers, m.localIps, m.turnRole, m.joinStartedAt);
             return;
         }
         if (m.type === 'turnCredentialsResult') {

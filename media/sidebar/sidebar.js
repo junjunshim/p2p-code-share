@@ -82,7 +82,9 @@ function setDisabled(id, disabled) {
  * 게스트 입장 진행 단계 정의. stages 순서대로 진행되며 현재 단계까지 완료 표시됩니다.
  */
 const JOIN_PROGRESS_STEPS = [
-    { label: '시그널링 서버 연결 · ICE 준비', stages: ['signaling', 'signaling-ready', 'ice-preparing', 'join-retry'] },
+    { label: 'PeerJS 서버 연결', stages: ['signaling', 'signaling-ready', 'join-retry'] },
+    { label: 'ICE 준비 (STUN·TURN)', stages: ['ice-preparing'] },
+    { label: '방 확인 (호스트 등록 여부)', stages: ['room-check'] },
     { label: '제어 채널 수립 (ICE 후보 교환)', stages: ['control-connecting', 'control-ready'] },
     { label: 'SDP 교환 (데이터 채널 협상)', stages: ['sdp-request', 'sdp-exchange'] },
     { label: '데이터 채널 연결', stages: ['data-ready'] },
@@ -91,9 +93,10 @@ const JOIN_PROGRESS_STEPS = [
 
 /** 단계 키별 기본 설명(엔진/호스트가 문구를 주지 않았을 때 사용). */
 const JOIN_STAGE_DETAILS = {
-    'signaling': '시그널링 서버에 연결하는 중입니다.',
-    'signaling-ready': '시그널링 서버 연결됨. 방 호스트를 찾는 중입니다.',
+    'signaling': 'PeerJS 시그널링 서버에 연결하는 중입니다.',
+    'signaling-ready': 'PeerJS 시그널링 서버 연결됨.',
     'ice-preparing': 'ICE 후보(사설 IP·공인 IP·TURN)를 준비하는 중입니다.',
+    'room-check': '방이 시그널링 서버에 등록되어 있는지 확인하는 중입니다.',
     'control-connecting': '호스트와 제어 채널을 수립하는 중입니다. (ICE 후보 교환)',
     'control-ready': '제어 채널 연결됨. 데이터 채널 SDP를 교환하는 중입니다.',
     'sdp-request': '호스트에 SDP offer를 요청하는 중입니다.',
@@ -107,6 +110,7 @@ const JOIN_STAGE_DETAILS = {
 };
 
 let joinProgressSignature = '';
+let joinLastActiveIndex = -1;
 let joinElapsedTimer = null;
 let joinElapsedStartedAt = 0;
 
@@ -115,6 +119,7 @@ let joinElapsedStartedAt = 0;
  */
 function resetJoinProgress() {
     joinProgressSignature = '';
+    joinLastActiveIndex = -1;
     if (joinElapsedTimer) {
         clearInterval(joinElapsedTimer);
         joinElapsedTimer = null;
@@ -166,14 +171,19 @@ function renderJoinProgress(stage, text, roomName) {
     if (signature === joinProgressSignature) return;
     joinProgressSignature = signature;
 
-    const activeIndex = JOIN_PROGRESS_STEPS.findIndex(step => step.stages.indexOf(stage) >= 0);
+    const foundIndex = JOIN_PROGRESS_STEPS.findIndex(step => step.stages.indexOf(stage) >= 0);
+    const isFailed = stage === 'failed';
+    if (foundIndex >= 0) joinLastActiveIndex = foundIndex;
+    // 실패하면 마지막으로 도달한 단계를 실패 표시로 남겨 어느 단계에서 멈췄는지 보여줍니다.
+    const activeIndex = foundIndex >= 0 ? foundIndex : (isFailed ? joinLastActiveIndex : -1);
     let html = '';
     JOIN_PROGRESS_STEPS.forEach((step, index) => {
         let state = 'pending';
         if (activeIndex >= 0) {
             state = index < activeIndex ? 'done' : (index === activeIndex ? 'active' : 'pending');
         }
-        const mark = state === 'done' ? '✓' : (state === 'active' ? '<span class="join-step-spinner"></span>' : '•');
+        if (isFailed && index === activeIndex) state = 'failed';
+        const mark = state === 'done' ? '✓' : (state === 'failed' ? '✗' : (state === 'active' ? '<span class="join-step-spinner"></span>' : '•'));
         html += '<li class="join-step ' + state + '"><span class="join-step-mark">' + mark + '</span><span>' + step.label + '</span></li>';
     });
     stepsEl.innerHTML = html;

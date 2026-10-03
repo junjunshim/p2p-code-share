@@ -45,27 +45,39 @@ export class FileStorageManager {
      */
     public cleanOldRoomStorages(currentRoomName?: string): void {
         if (this.engine.isHost) return;
+        // 방 입장 임계 경로에서 대용량 잔여 폴더의 동기 삭제(이벤트 루프 블로킹)를 제거하기 위해
+        // 정리는 백그라운드에서 수행하고 입장 흐름은 기다리지 않는다.
+        void this.cleanOldRoomStoragesAsync(currentRoomName);
+    }
 
+    /** 이전 방 임시 폴더를 백그라운드에서 정리합니다(입장 지연 방지).
+     * @param currentRoomName 현재 참여 중인 방 이름(이 방의 폴더는 보존).
+     * @returns {Promise<void>}
+     */
+    private async cleanOldRoomStoragesAsync(currentRoomName?: string): Promise<void> {
+        const startedAt = Date.now();
         try {
             const baseStorage = this.engine.context.globalStorageUri.fsPath;
             if (!fs.existsSync(baseStorage)) return;
 
             const currentSanitized = currentRoomName ? sanitizePath(currentRoomName) : (this.engine.roomName ? sanitizePath(this.engine.roomName) : '');
 
-            const entries = fs.readdirSync(baseStorage, { withFileTypes: true });
+            const entries = await fs.promises.readdir(baseStorage, { withFileTypes: true });
+            let removed = 0;
             for (const entry of entries) {
-                if (entry.isDirectory()) {
-                    // 현재 참여 중인 방의 폴더가 아니면 이전 세션의 잔여 임시 폴더이므로 정리
-                    if (currentSanitized && entry.name === currentSanitized) {
-                        continue;
-                    }
-                    const targetDir = path.join(baseStorage, entry.name);
-                    try {
-                        fs.rmSync(targetDir, { recursive: true, force: true });
-                    } catch (e) {
-                        // 권한 문제나 파일 락 등으로 삭제 실패 시 다음 기회로 패스
-                    }
+                if (!entry.isDirectory()) continue;
+                // 현재 참여 중인 방의 폴더가 아니면 이전 세션의 잔여 임시 폴더이므로 정리
+                if (currentSanitized && entry.name === currentSanitized) continue;
+                const targetDir = path.join(baseStorage, entry.name);
+                try {
+                    await fs.promises.rm(targetDir, { recursive: true, force: true });
+                    removed++;
+                } catch (e) {
+                    // 권한 문제나 파일 락 등으로 삭제 실패 시 다음 기회로 패스
                 }
+            }
+            if (removed > 0) {
+                this.engine.logToUI(`[Join Timing] 이전 방 임시 폴더 정리 ${Date.now() - startedAt}ms (${removed}개, 백그라운드)`);
             }
         } catch (e) {
             // 디렉터리 정리 실패가 전체 연결 프로세스에 영향을 주지 않도록 방어
