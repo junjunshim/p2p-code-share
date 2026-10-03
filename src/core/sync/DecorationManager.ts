@@ -115,7 +115,7 @@ export class DecorationManager {
 
         // Yjs 는 문서가 증분 편집되어 item 리스트가 쪼개지면 toString() 마다 전체 텍스트를 다시 만듭니다.
         // 항목마다 호출하면 그 O(N) 비용이 데코레이션 수만큼 반복되므로, 루프 밖에서 1회만 만들어 재사용합니다.
-        const yjsText = ytext.toString();
+        const yjsText = this.engine.documentSyncManager.getYjsText(fileName) ?? ytext.toString();
 
         let isModified = false;
 

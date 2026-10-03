@@ -33,6 +33,13 @@ export class DocumentSyncManager {
     /** 파일별로 기억해 둘 최근 원격 목표 텍스트 개수 */
     private static readonly RECENT_TARGET_LIMIT = 8;
 
+    /**
+     * 파일별 최신 Yjs 텍스트(LF) 캐시.
+     * Yjs 는 편집이 누적되면 item 이 쪼개져 toString() 이 O(n) 전체 재구성이 되므로,
+     * 입력/커서/데코레이션 경로에서 반복 호출하지 않도록 문자열을 재사용한다. ydoc update 마다 무효화한다.
+     */
+    private yjsTextCache = new Map<string, string>();
+
     /** 고속 연속 타이핑 시 에디터 UI 스레드 부하를 방지하기 위한 렌더링 디바운스(30ms) 타이머 맵 */
     private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
 
@@ -62,6 +69,31 @@ export class DocumentSyncManager {
     constructor(private engine: SyncEngine) {}
 
     /**
+     * 파일의 최신 Yjs 텍스트(LF)를 반환합니다. 캐시가 유효하면 재사용해 toString() 재구성을 줄입니다.
+     * @param fileName 대상 파일 이름.
+     * @returns 텍스트, 또는 Y.Text 가 없으면 undefined.
+     */
+    public getYjsText(fileName: string): string | undefined {
+        const ytext = this.yTexts.get(fileName);
+        if (!ytext) return undefined;
+        return this.getYjsTextFor(fileName, ytext);
+    }
+
+    /** Y.Text 인스턴스를 이미 보유한 호출자용 캐시 조회. 길이까지 확인해 무효화 누락 시에도 안전하다. */
+    private getYjsTextFor(fileName: string, ytext: Y.Text): string {
+        const cached = this.yjsTextCache.get(fileName);
+        if (cached !== undefined && cached.length === ytext.length) return cached;
+        const text = ytext.toString();
+        this.yjsTextCache.set(fileName, text);
+        return text;
+    }
+
+    /** 파일의 Yjs 텍스트 캐시를 무효화합니다. ydoc update 직후 호출합니다. */
+    public invalidateYjsText(fileName: string): void {
+        this.yjsTextCache.delete(fileName);
+    }
+
+    /**
      * 변경 이벤트가 확장이 적용한 원격 내용(에코)인지 판정합니다.
      * VS Code 는 applyEdit 완료 후에 문서 변경 이벤트를 전달하므로 플래그 기반 가드는 신뢰할 수 없습니다.
      * 대신 "에디터 텍스트가 Yjs 와 같아졌는가"를 내용으로 검사하여 에코를 식별하고,
@@ -74,8 +106,14 @@ export class DocumentSyncManager {
         const ytext = this.yTexts.get(fileName);
         if (!ytext) return false;
 
-        const editorText = normalizeEOL(doc.getText());
-        if (editorText === normalizeEOL(ytext.toString())) {
+        // Yjs 텍스트 삽입은 CRLF 를 차단하므로 LF 가 보장된다. CR 이 없으면 정규화(정규식 스캔)를 생략한다.
+        const yjsText = this.getYjsTextFor(fileName, ytext);
+        const yjsNorm = yjsText.includes('\r') ? normalizeEOL(yjsText) : yjsText;
+
+        // 에디터 텍스트도 CR 이 없으면 정규화 결과가 동일하므로 생략한다.
+        const rawEditorText = doc.getText();
+        const editorText = rawEditorText.includes('\r') ? normalizeEOL(rawEditorText) : rawEditorText;
+        if (editorText === yjsNorm) {
             return true;
         }
 
@@ -155,6 +193,8 @@ export class DocumentSyncManager {
     private bindYjsEvents(name: string, ydoc: Y.Doc, ytext: Y.Text): void {
         // Yjs 로컬 변경이 발생했을 때 피어들에게 브로드캐스트
         ydoc.on('update', (update, origin) => {
+            // 텍스트가 바뀌었으므로 LF 텍스트 캐시를 무효화한다(모든 origin 공통).
+            this.invalidateYjsText(name);
             // 원격 변경 적용 또는 초기화 단계는 브로드캐스트하지 않음 (무한 루프 방지)
             if (origin === 'remote' || origin === 'init') return;
 
@@ -192,7 +232,7 @@ export class DocumentSyncManager {
         ydoc.transact(() => {
             for (const change of sortedChanges) {
                 // CRLF 환경에서도 Yjs(LF 기준)와 완벽히 일치하는 시작 인덱스 및 삭제 길이 계산
-                const currentContent = ytext.toString();
+                const currentContent = this.getYjsTextFor(fileName, ytext);
                 const startIndex = this.engine.getIndexFromPosition(currentContent, change.range.start);
                 const endIndex = this.engine.getIndexFromPosition(currentContent, change.range.end);
                 const deleteLength = Math.max(0, endIndex - startIndex);
@@ -206,6 +246,9 @@ export class DocumentSyncManager {
                 if (textToInsert.length > 0) {
                     ytext.insert(startIndex, textToInsert);
                 }
+
+                // 트랜잭션 내부에서는 update 이벤트가 아직 발생하지 않으므로 직접 캐시를 무효화한다.
+                this.invalidateYjsText(fileName);
             }
         }, 'local');
     }
@@ -349,7 +392,7 @@ export class DocumentSyncManager {
 
         const ytext = this.yTexts.get(fileName);
         if (!ytext) return;
-        const targetContent = ytext.toString();
+        const targetContent = this.getYjsTextFor(fileName, ytext);
 
         const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
         if (!doc) {
@@ -435,7 +478,7 @@ export class DocumentSyncManager {
             const doc = vscode.workspace.textDocuments.find(d => isPathEqual(d.uri.fsPath, filePath) && !d.isClosed);
             if (doc) {
                 const editorText = doc.getText();
-                const yjsText = ytext.toString();
+                const yjsText = this.getYjsTextFor(fileName, ytext);
                 // 줄바꿈 차이만 있는 경우는 동기화된 것으로 본다(불필요한 재적용/캐럿 이동 방지).
                 if (normalizeEOL(editorText) !== normalizeEOL(yjsText)) {
                     this.engine.logToUI(`Self-correction sync for ${fileName}`);
@@ -470,6 +513,7 @@ export class DocumentSyncManager {
         }
         this.recentRemoteTargets.delete(fileName);
         this.editorUpdateQueues.delete(fileName);
+        this.yjsTextCache.delete(fileName);
     }
 
     /**
@@ -487,5 +531,6 @@ export class DocumentSyncManager {
         this.recentRemoteTargets.clear();
         this.editorUpdateQueues.clear();
         this.pendingRemoteUpdates.clear();
+        this.yjsTextCache.clear();
     }
 }

@@ -68,6 +68,13 @@ export class CursorManager {
     private sendThrottleTimer?: NodeJS.Timeout;
     private pendingEditor?: vscode.TextEditor;
 
+    /** 마지막으로 전송한 커서 상태 키(파일·문서버전·선택영역)와 시각. 짧은 시간 내 동일 상태 중복 전송을 막는다. */
+    private lastSentCursorKey = '';
+    private lastSentCursorAt = 0;
+
+    /** 위 키가 같아도 이 시간(ms)이 지나면 정상 재전송으로 허용한다(파일 재포커스 등). */
+    private static readonly CURSOR_DEDUPE_WINDOW_MS = 200;
+
     /** 파일별 커서 렌더링 디바운스 타이머 맵 (동일 파일에 여러 커서 변경 시 렌더링 폭주 방지) */
     private renderDebounceTimers = new Map<string, NodeJS.Timeout>();
 
@@ -140,9 +147,14 @@ export class CursorManager {
         const selection = editor.selection;
         const document = editor.document;
 
+        // 선택 이벤트와 입력 이벤트가 같은 상태를 연달아 보내는 중복만 억제한다.
+        // 창을 오래 두었다가 다시 포커스하는 등 정당한 재전송은 아래 시간창이 지나면 허용된다.
+        const cursorKey = `${file.name}|${document.version}|${selection.start.line}:${selection.start.character}|${selection.end.line}:${selection.end.character}|${selection.active.line}:${selection.active.character}`;
+        if (cursorKey === this.lastSentCursorKey && Date.now() - this.lastSentCursorAt < CursorManager.CURSOR_DEDUPE_WINDOW_MS) return;
+
         try {
             // 커서 위치 및 드래그 영역의 Yjs 상대 위치 생성 (LF 기준 정확한 오프셋 인덱스 산출)
-            const yjsContent = ytext.toString();
+            const yjsContent = this.engine.documentSyncManager.getYjsText(file.name) ?? ytext.toString();
             const startIndex = this.engine.getIndexFromPosition(yjsContent, selection.start);
             const endIndex = this.engine.getIndexFromPosition(yjsContent, selection.end);
             const activeIndex = this.engine.getIndexFromPosition(yjsContent, selection.active);
@@ -174,6 +186,8 @@ export class CursorManager {
                 endRel,
                 activeRel
             });
+            this.lastSentCursorKey = cursorKey;
+            this.lastSentCursorAt = Date.now();
         } catch (err) {
             this.engine.logToUI(`Error creating relative cursor positions: ${err}`);
         }
@@ -261,7 +275,7 @@ export class CursorManager {
 
         // Yjs 상대 좌표(RelativePosition)로부터 최신 실제 텍스트 오프셋 및 에디터 Position 계산
         const parsedPeers: { peerId: string; state: any; activePos: vscode.Position; startPos: vscode.Position; endPos: vscode.Position }[] = [];
-        const yjsText = ytext.toString();
+        const yjsText = this.engine.documentSyncManager.getYjsText(file.name) ?? ytext.toString();
         const currentDocLen = ytext.length;
 
         peersInFile.forEach(([peerId, state]) => {
@@ -604,6 +618,8 @@ export class CursorManager {
         this.remoteCursorDecoTypes.clear();
         this.peerPositionCache.clear();
         this.lastDrawnPositions.clear();
+        this.lastSentCursorKey = '';
+        this.lastSentCursorAt = 0;
     }
 
     /**
