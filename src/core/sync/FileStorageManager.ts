@@ -32,6 +32,12 @@ export class FileStorageManager {
     /** 파일별 디스크 디바운스 저장을 제어하는 타이머 맵 */
     private debouncedSaveTimers = new Map<string, NodeJS.Timeout>();
 
+    /** 방 폴더 하위에 만드는 "이 창이 사용 중" 마커 디렉터리 이름 */
+    private static readonly LIVE_MARKER_DIR = '.p2p-live';
+
+    /** 이 인스턴스가 활성 마커를 남겨둔 방 폴더 경로 (이탈 시 회수용) */
+    private markedRoomDir: string = '';
+
     /**
      * FileStorageManager 인스턴스를 생성합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
@@ -40,6 +46,7 @@ export class FileStorageManager {
 
     /**
      * 현재 방을 제외한 이전 임시 세션 디렉터리들을 안전하게 삭제하여 디스크 용량을 확보합니다 (게스트 전용).
+     * 다른 창이 실제로 사용 중인 방 폴더는 마커를 확인해 보존합니다.
      * @param currentRoomName 현재 참여 중인 방 이름 (선택 사항).
      * @returns {void}
      */
@@ -60,13 +67,18 @@ export class FileStorageManager {
             if (!fs.existsSync(baseStorage)) return;
 
             const currentSanitized = currentRoomName ? sanitizePath(currentRoomName) : (this.engine.roomName ? sanitizePath(this.engine.roomName) : '');
+            // 방 이름이 확정되지 않으면 보존 대상을 특정할 수 없으므로 아무것도 삭제하지 않는다.
+            if (!currentSanitized) return;
 
             const entries = await fs.promises.readdir(baseStorage, { withFileTypes: true });
             for (const entry of entries) {
                 if (!entry.isDirectory()) continue;
-                // 현재 참여 중인 방의 폴더가 아니면 이전 세션의 잔여 임시 폴더이므로 정리
-                if (currentSanitized && entry.name === currentSanitized) continue;
+                // 현재 참여 중인 방의 폴더는 보존
+                if (entry.name === currentSanitized) continue;
                 const targetDir = path.join(baseStorage, entry.name);
+                // 다른 창(프로세스)이 실제로 사용 중인 방 폴더는 보존한다.
+                // 창 두 개가 서로 다른 방에 들어가 있을 때 상대 방 폴더를 지우지 않기 위한 핵심 조건.
+                if (this.hasLiveRoomMarker(targetDir)) continue;
                 try {
                     await fs.promises.rm(targetDir, { recursive: true, force: true });
                 } catch (e) {
@@ -79,10 +91,102 @@ export class FileStorageManager {
     }
 
     /**
+     * 방 폴더에 "이 창이 사용 중"이라는 마커를 남깁니다.
+     * 같은 방을 여러 창이 쓸 수 있으므로 프로세스(창)별 파일로 분리해 생성합니다.
+     * @param roomDir 대상 방 폴더 경로.
+     * @returns {void}
+     */
+    private markRoomActive(roomDir: string): void {
+        try {
+            if (!roomDir || !fs.existsSync(roomDir)) return;
+            const markerDir = path.join(roomDir, FileStorageManager.LIVE_MARKER_DIR);
+            ensureDirectory(markerDir);
+            fs.writeFileSync(path.join(markerDir, String(process.pid)), '');
+            this.markedRoomDir = roomDir;
+        } catch (e) {
+            // 마커 생성 실패가 방 입장/파일 공유를 막지 않도록 방어
+        }
+    }
+
+    /**
+     * 이 창이 남긴 활성 마커를 회수하고, 남은 마커가 없으면 마커 디렉터리도 정리합니다.
+     * @returns {void}
+     */
+    private unmarkRoomActive(): void {
+        const roomDir = this.markedRoomDir;
+        this.markedRoomDir = '';
+        if (!roomDir) return;
+        try {
+            const markerDir = path.join(roomDir, FileStorageManager.LIVE_MARKER_DIR);
+            const ownMarker = path.join(markerDir, String(process.pid));
+            if (fs.existsSync(ownMarker)) {
+                fs.rmSync(ownMarker, { force: true });
+            }
+            if (fs.existsSync(markerDir) && fs.readdirSync(markerDir).length === 0) {
+                fs.rmdirSync(markerDir);
+            }
+        } catch (e) {
+            // 회수 실패는 무시한다(창 종료 시 pid 사망으로 정리 가능해짐)
+        }
+    }
+
+    /**
+     * 해당 방 폴더에 살아있는 "다른 창"의 활성 마커가 있는지 확인합니다.
+     * 이 메서드는 현재 방이 아닌 폴더(또는 마커 회수 직후의 방 폴더)에만 호출되므로,
+     * 자기 자신(process.pid)의 마커는 이전에 머물던 방의 잔여 마커로 보고 제거합니다.
+     * 죽은 프로세스의 마커도 이 기회에 함께 정리합니다.
+     * @param roomDir 대상 방 폴더 경로.
+     * @returns 다른 창이 사용 중이면 true.
+     */
+    private hasLiveRoomMarker(roomDir: string): boolean {
+        try {
+            const markerDir = path.join(roomDir, FileStorageManager.LIVE_MARKER_DIR);
+            if (!fs.existsSync(markerDir)) return false;
+
+            let live = false;
+            for (const name of fs.readdirSync(markerDir)) {
+                const pid = Number(name);
+                if (!Number.isInteger(pid) || pid <= 0) continue;
+                if (pid === process.pid) {
+                    // 이 창이 이전에 머물던 방의 잔여 마커: 지금은 사용 중이 아니므로 제거하고 정리 대상으로 둔다.
+                    try { fs.rmSync(path.join(markerDir, name), { force: true }); } catch (e) { /* ignore */ }
+                    continue;
+                }
+                if (FileStorageManager.isProcessAlive(pid)) {
+                    live = true;
+                } else {
+                    try { fs.rmSync(path.join(markerDir, name), { force: true }); } catch (e) { /* ignore */ }
+                }
+            }
+            return live;
+        } catch (e) {
+            // 판단에 실패하면 보수적으로 사용 중으로 간주해 삭제하지 않는다.
+            return true;
+        }
+    }
+
+    /**
+     * pid 를 가진 프로세스가 살아있는지 확인합니다(signal 0 = 존재 확인).
+     * @param pid 확인할 프로세스 ID.
+     * @returns 살아있으면 true.
+     */
+    private static isProcessAlive(pid: number): boolean {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (e: any) {
+            // EPERM 은 프로세스가 존재하지만 권한이 없는 경우이므로 살아있는 것으로 본다.
+            return e?.code === 'EPERM';
+        }
+    }
+
+    /**
      * 게스트가 방을 퇴장하거나 강퇴당했을 때 현재 방의 임시 스토리지 전체를 깨끗하게 삭제합니다.
      * @returns {Promise<void>}
      */
     public async clearLocalStorage(): Promise<void> {
+        // 창이 방을 떠나는 것이므로 호스트/게스트 모두 이 창의 활성 마커를 먼저 회수한다.
+        this.unmarkRoomActive();
         if (this.engine.isHost) return;
 
         // 1. 열려있는 모든 공유 파일 에디터 탭 닫기 및 파일별 정리
@@ -97,14 +201,17 @@ export class FileStorageManager {
                 fs.rmSync(this.storagePath, { recursive: true, force: true });
             }
 
-            // 상위의 방 폴더(방 이름 폴더)도 다른 하위 디렉터리(예: 호스트 폴더나 다른 게스트 폴더)가 없을 때만 정리
+            // 상위의 방 폴더(방 이름 폴더)는 이 창의 마커를 회수한 뒤,
+            // 다른 창이 아직 사용 중이 아니고 남은 항목이 없을 때만 정리한다.
             if (this.engine.roomName) {
                 const roomDir = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName));
                 if (fs.existsSync(roomDir)) {
                     try {
-                        const remaining = fs.readdirSync(roomDir);
-                        if (remaining.length === 0) {
-                            fs.rmSync(roomDir, { recursive: true, force: true });
+                        if (!this.hasLiveRoomMarker(roomDir)) {
+                            const remaining = fs.readdirSync(roomDir).filter(name => name !== FileStorageManager.LIVE_MARKER_DIR);
+                            if (remaining.length === 0) {
+                                fs.rmSync(roomDir, { recursive: true, force: true });
+                            }
                         }
                     } catch (e) {
                         // ignore
@@ -141,6 +248,8 @@ export class FileStorageManager {
         this.storagePath = path.join(this.engine.context.globalStorageUri.fsPath, sanitizePath(this.engine.roomName), sanitizePath(folderName));
         ensureDirectory(this.storagePath);
         this.isStorageInitialized = true;
+        // 이 창이 해당 방을 사용 중임을 표시해, 다른 창의 정리 로직이 이 방 폴더를 지우지 않게 한다.
+        this.markRoomActive(path.dirname(this.storagePath));
     }
 
     /**
@@ -538,5 +647,7 @@ export class FileStorageManager {
         this.closingDocuments.clear();
         this.isStorageInitialized = false;
         this.storagePath = '';
+        // 창이 살아있어도 이 방 폴더가 "사용 중"으로 남지 않도록 마커를 회수한다.
+        this.unmarkRoomActive();
     }
 }
