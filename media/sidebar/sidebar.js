@@ -960,99 +960,274 @@ function renderFiles(m) {
 }
 
 /**
-* 데코레이션 목록을 화면에 렌더링합니다.
+ * 사용자가 접어 둔 데코레이션 파일 그룹(파일 이름) 상태. 목록이 다시 그려져도 접힘 상태를 유지합니다.
+ */
+const decoCollapsedFiles = new Set();
+
+/**
+ * 사용자가 펼쳐 둔 데코레이션 메모(데코레이션 id) 상태. 목록이 다시 그려져도 유지합니다.
+ */
+const decoExpandedMemos = new Set();
+
+/**
+* 데코레이션 유형 코드를 한글 표시 이름으로 변환합니다.
+* @param {string} type 데코레이션 유형 코드
+* @returns {string} 표시 이름
+*/
+function getDecoTypeName(type) {
+    switch (type) {
+        case 'Typo': return '오타';
+        case 'Grammar': return '문법 오류';
+        case 'Logical': return '논리 오류';
+        case 'Other': return '기타';
+        default: return '하이라이트';
+    }
+}
+
+/**
+* 메모가 접힌 상태에서 2줄을 넘는 경우에만 "더 보기" 토글을 노출합니다.
+* 조상이 max-height:0 으로 잘려 있어도 자식의 레이아웃 박스는 유지되므로 측정할 수 있습니다.
+* @param {HTMLElement} item 데코레이션 항목 엘리먼트
+* @param {string} decoId 데코레이션 id
+*/
+function refreshDecoMemoToggle(item, decoId) {
+    const memo = item.querySelector('.deco-memo');
+    const toggle = item.querySelector('.deco-memo-toggle');
+    if (!memo || !toggle) return;
+    const expanded = decoExpandedMemos.has(decoId);
+    memo.classList.toggle('expanded', expanded);
+    toggle.innerText = expanded ? '접기' : '더 보기';
+    // 펼친 상태에서는 scrollHeight 와 clientHeight 가 같아져 잘림 여부를 알 수 없습니다.
+    const truncated = memo.scrollHeight > memo.clientHeight + 1;
+    toggle.classList.toggle('hidden', !expanded && !truncated);
+}
+
+/**
+* 데코레이션 패널 아코디언의 높이를 현재 내용에 맞춰 재보정합니다.
+* 파일 그룹 접기/펼치기는 클래스 변경이라 상위 MutationObserver 가 감지하지 못합니다.
+*/
+function recalcDecorationsHeight() {
+    const decodiv = document.getElementById('decorations');
+    if (decodiv && decodiv.classList.contains('expanded')) {
+        decodiv.style.maxHeight = decodiv.scrollHeight + 'px';
+    }
+}
+
+/**
+* 데코레이션 삭제 버튼을 생성합니다.
+* @param {string} decoId 데코레이션 id
+* @returns {HTMLButtonElement} 삭제 버튼
+*/
+function createDecoDeleteButton(decoId) {
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'deco-delete-btn';
+    deleteBtn.title = 'Delete review';
+    deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 1 0z"/></svg>';
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'deleteDecoration', id: decoId });
+    };
+    return deleteBtn;
+}
+
+/**
+* 데코레이션 한 건의 DOM 을 생성합니다.
+* @param {object} d 데코레이션 데이터
+* @param {boolean} canDelete 삭제 버튼 노출 여부
+* @returns {HTMLElement} 데코레이션 항목 엘리먼트
+*/
+function createDecoItem(d, canDelete) {
+    const item = document.createElement('div');
+    item.className = 'deco-item';
+    item.setAttribute('data-deco-id', d.id);
+    // 클릭 시 해당 위치로 이동
+    item.onclick = () => {
+        vscode.postMessage({
+            type: 'jumpToDecoration',
+            fileName: d.fileName,
+            line: d.startLine,
+            char: d.startChar
+        });
+    };
+
+    const header = document.createElement('div');
+    header.className = 'deco-header';
+
+    const title = document.createElement('div');
+    title.className = 'deco-title';
+
+    const badge = document.createElement('span');
+    badge.className = 'deco-badge ' + d.type;
+    badge.innerText = getDecoTypeName(d.type);
+    title.appendChild(badge);
+
+    const lineSpan = document.createElement('span');
+    lineSpan.className = 'deco-line';
+    lineSpan.innerText = 'L.' + (d.startLine + 1);
+    title.appendChild(lineSpan);
+
+    header.appendChild(title);
+    if (canDelete) header.appendChild(createDecoDeleteButton(d.id));
+    item.appendChild(header);
+
+    // 메모 (기본 2줄까지만 표시, 넘치면 "더 보기" 로 펼침)
+    if (d.memo) {
+        const memo = document.createElement('div');
+        memo.className = 'deco-memo';
+        memo.innerText = d.memo;
+        item.appendChild(memo);
+
+        const toggle = document.createElement('span');
+        toggle.className = 'deco-memo-toggle hidden';
+        toggle.onclick = (e) => {
+            e.stopPropagation();
+            if (decoExpandedMemos.has(d.id)) {
+                decoExpandedMemos.delete(d.id);
+            } else {
+                decoExpandedMemos.add(d.id);
+            }
+            refreshDecoMemoToggle(item, d.id);
+            recalcDecorationsHeight();
+        };
+        item.appendChild(toggle);
+    }
+
+    // 메타 데이터 (작성자 및 가시성)
+    const meta = document.createElement('div');
+    meta.className = 'deco-meta';
+
+    const creator = document.createElement('span');
+    creator.innerText = 'By: ' + d.creatorName;
+    meta.appendChild(creator);
+
+    const visibility = document.createElement('span');
+    visibility.style.fontSize = '9px';
+    visibility.style.opacity = '0.7';
+    visibility.innerText = d.visibility === 'host' ? '🔒 Host Only' : '👥 Everyone';
+    meta.appendChild(visibility);
+
+    item.appendChild(meta);
+
+    // 리렌더 직후 깜빡임 없이 펼침 상태를 먼저 적용합니다.
+    // (잘림 여부 측정은 실제 레이아웃이 필요해 다음 프레임에 다시 수행합니다)
+    if (d.memo) refreshDecoMemoToggle(item, d.id);
+    return item;
+}
+
+/**
+* 데코레이션 목록을 파일별 아코디언 그룹으로 렌더링합니다.
+* 표시 순서: 파일 이름 오름차순, 그룹 내부는 시작 라인 오름차순.
 */
 function renderDecorations(m) {
     const decodiv = document.getElementById('decorations');
     if (!decodiv) return;
+
+    const decos = (m.decorations || []).slice();
+    const myId = m.participants ? m.participants.myId : undefined;
+    const isMeHost = myId === 'host';
+
+    // 내용이 같으면 기존 DOM 을 그대로 두어 그룹 접힘/메모 펼침 상태를 보존합니다.
+    const fingerprint = JSON.stringify([
+        myId, isMeHost,
+        decos.map(d => [d.id, d.fileName, d.startLine, d.startChar, d.type, d.memo, d.creatorId, d.creatorName, d.visibility])
+    ]);
+    if (decodiv.getAttribute('data-fingerprint') === fingerprint) {
+        return;
+    }
+    decodiv.setAttribute('data-fingerprint', fingerprint);
     decodiv.innerHTML = '';
 
-    const decos = m.decorations || [];
     if (decos.length === 0) {
+        recalcDecorationsHeight();
         return;
     }
 
-    const myId = m.participants.myId;
-    const isMeHost = myId === 'host';
-
+    // 1. 파일별 그룹화 (표시 순서: 파일 이름 오름차순)
+    const groups = new Map();
     decos.forEach(d => {
-        const item = document.createElement('div');
-        item.className = 'deco-item';
-        // 클릭 시 해당 위치로 이동
-        item.onclick = () => {
-            vscode.postMessage({
-                type: 'jumpToDecoration',
-                fileName: d.fileName,
-                line: d.startLine,
-                char: d.startChar
-            });
+        const key = d.fileName || '(알 수 없는 파일)';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(d);
+    });
+
+    const sortedFileNames = Array.from(groups.keys()).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+    sortedFileNames.forEach(fileName => {
+        const items = groups.get(fileName).slice().sort((a, b) => {
+            if (a.startLine !== b.startLine) return a.startLine - b.startLine;
+            if (a.startChar !== b.startChar) return a.startChar - b.startChar;
+            return String(a.id).localeCompare(String(b.id));
+        });
+
+        const group = document.createElement('div');
+        group.className = 'deco-file-group';
+        group.setAttribute('data-file-name', fileName);
+
+        // 2. 그룹 헤더 (파일 이름 + 건수, 클릭 시 접기/펼치기)
+        const groupHeader = document.createElement('div');
+        groupHeader.className = 'deco-file-header';
+        groupHeader.title = fileName + ' (' + items.length + ')';
+
+        const arrow = document.createElement('span');
+        arrow.className = 'deco-file-arrow';
+        arrow.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'deco-file-name';
+        nameSpan.innerText = fileName;
+
+        const countSpan = document.createElement('span');
+        countSpan.className = 'deco-file-count';
+        countSpan.innerText = String(items.length);
+
+        groupHeader.appendChild(arrow);
+        groupHeader.appendChild(nameSpan);
+        groupHeader.appendChild(countSpan);
+        group.appendChild(groupHeader);
+
+        const body = document.createElement('div');
+        body.className = 'deco-file-body';
+        group.appendChild(body);
+
+        const collapsed = decoCollapsedFiles.has(fileName);
+        group.classList.toggle('collapsed', collapsed);
+        if (collapsed) body.style.display = 'none';
+
+        groupHeader.onclick = () => {
+            const nextCollapsed = !group.classList.contains('collapsed');
+            group.classList.toggle('collapsed', nextCollapsed);
+            body.style.display = nextCollapsed ? 'none' : '';
+            if (nextCollapsed) {
+                decoCollapsedFiles.add(fileName);
+            } else {
+                decoCollapsedFiles.delete(fileName);
+                // display:none 동안에는 메모 높이를 측정할 수 없으므로 펼칠 때 다시 측정합니다.
+                body.querySelectorAll('.deco-item[data-deco-id]').forEach(item => {
+                    refreshDecoMemoToggle(item, item.getAttribute('data-deco-id'));
+                });
+            }
+            recalcDecorationsHeight();
         };
 
-        const header = document.createElement('div');
-        header.className = 'deco-header';
+        // 3. 항목 생성 (그룹을 먼저 문서에 붙여야 메모 높이를 측정할 수 있습니다)
+        decodiv.appendChild(group);
+        items.forEach(d => {
+            const canDelete = isMeHost || d.creatorId === myId;
+            body.appendChild(createDecoItem(d, canDelete));
+        });
+    });
 
-        const title = document.createElement('div');
-        title.className = 'deco-title';
+    recalcDecorationsHeight();
 
-        // 배지 표시
-        const typeName = d.type === 'Typo' ? '오타' :
-        d.type === 'Grammar' ? '문법 오류' :
-        d.type === 'Logical' ? '논리 오류' :
-        d.type === 'Other' ? '기타' : '하이라이트';
-
-        const badge = document.createElement('span');
-        badge.className = 'deco-badge ' + d.type;
-        badge.innerText = typeName;
-        title.appendChild(badge);
-
-        // 파일명 및 라인
-        const fileSpan = document.createElement('span');
-        fileSpan.innerText = d.fileName.split('_')[0] + ' (L.' + (d.startLine + 1) + ')';
-        title.appendChild(fileSpan);
-
-        header.appendChild(title);
-
-        // 삭제 버튼 (호스트이거나 본인이 작성한 데코레이션인 경우에만 표시)
-        const canDelete = isMeHost || d.creatorId === myId;
-        if (canDelete) {
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'deco-delete-btn';
-            deleteBtn.title = 'Delete review';
-            deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 1 0z"/></svg>';
-            deleteBtn.onclick = (e) => {
-                e.stopPropagation();
-                vscode.postMessage({ type: 'deleteDecoration', id: d.id });
-            };
-            header.appendChild(deleteBtn);
-        }
-
-        item.appendChild(header);
-
-        // 메모
-        if (d.memo) {
-            const memo = document.createElement('div');
-            memo.className = 'deco-memo';
-            memo.innerText = d.memo;
-            item.appendChild(memo);
-        }
-
-        // 메타 데이터 (작성자 및 가시성)
-        const meta = document.createElement('div');
-        meta.className = 'deco-meta';
-
-        const creator = document.createElement('span');
-        creator.innerText = 'By: ' + d.creatorName;
-        meta.appendChild(creator);
-
-        const visibility = document.createElement('span');
-        visibility.style.fontSize = '9px';
-        visibility.style.opacity = '0.7';
-        visibility.innerText = d.visibility === 'host' ? '🔒 Host Only' : '👥 Everyone';
-        meta.appendChild(visibility);
-
-        item.appendChild(meta);
-
-        decodiv.appendChild(item);
+    // 메모 잘림 여부는 실제 레이아웃이 필요하므로 다음 프레임에 측정합니다.
+    // (최초 렌더 시점에는 메인 컨텐츠가 아직 숨겨져 있을 수 있습니다)
+    requestAnimationFrame(() => {
+        decodiv.querySelectorAll('.deco-item[data-deco-id]').forEach(item => {
+            if (item.offsetParent !== null) {
+                refreshDecoMemoToggle(item, item.getAttribute('data-deco-id'));
+            }
+        });
     });
 }
 
