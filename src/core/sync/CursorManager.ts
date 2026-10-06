@@ -1,7 +1,4 @@
-/**
- * @file CursorManager.ts
- * @description 원격/로컬 커서 위치 동기화, 사용자별 고유 색상 매핑 및 에디터 렌더링을 처리합니다.
- */
+/** 원격/로컬 커서 위치 동기화, 사용자별 고유 색상 매핑 및 에디터 렌더링을 처리합니다. */
 
 import * as vscode from 'vscode';
 import * as Y from 'yjs';
@@ -80,7 +77,6 @@ export class CursorManager {
 
     /** 스크롤 시 커서 데코레이션 갱신 디바운스 타이머 */
     private scrollDebounceTimer?: NodeJS.Timeout;
-    private visibleRangesDisposable?: vscode.Disposable;
 
     /**
      * CursorManager 인스턴스를 생성하고 에디터 선택 및 스크롤 이벤트 리스너를 바인딩합니다.
@@ -91,11 +87,9 @@ export class CursorManager {
         this.setupVisibleRangesListener();
     }
 
-    /**
-     * 에디터 스크롤(가시 범위 변경) 시 화면 안의 커서 데코레이션을 갱신합니다.
-     */
+    /** 에디터 스크롤(가시 범위 변경) 시 화면 안의 커서 데코레이션을 갱신합니다. */
     private setupVisibleRangesListener(): void {
-        this.visibleRangesDisposable = vscode.window.onDidChangeTextEditorVisibleRanges(e => {
+        vscode.window.onDidChangeTextEditorVisibleRanges(e => {
             const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.textEditor.document.uri.fsPath));
             if (!file) return;
 
@@ -111,7 +105,6 @@ export class CursorManager {
 
     /**
      * VS Code 에디터의 커서/선택 영역 이동 이벤트를 감지하는 리스너를 설정합니다.
-     * @returns {void}
      */
     private setupSelectionListeners(): void {
         vscode.window.onDidChangeTextEditorSelection(e => {
@@ -134,7 +127,6 @@ export class CursorManager {
     /**
      * 현재 에디터의 커서 및 드래그 선택 영역을 Yjs 상대 좌표(RelativePosition)로 변환하여 피어들에게 브로드캐스트합니다.
      * @param editor 대상 VS Code 텍스트 에디터.
-     * @returns {void}
      */
     public sendCursorUpdate(editor: vscode.TextEditor): void {
         const file = this.engine.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
@@ -197,7 +189,6 @@ export class CursorManager {
      * 원격 피어로부터 수신된 커서 및 선택 영역 상태를 저장하고 에디터 상에 렌더링합니다.
      * @param msg 수신된 커서 업데이트 메시지 객체.
      * @param peerId 메시지를 보낸 피어 ID.
-     * @returns {void}
      */
     public updateRemoteCursor(msg: any, peerId: string): void {
         const actualPeerId = msg.userId || peerId; 
@@ -245,7 +236,6 @@ export class CursorManager {
      * 특정 공유 파일에 대해 수신된 원격 커서들을 상대 위치로부터 실제 문서 좌표로 복원하고 렌더링합니다.
      * 동일 좌표에 여러 커서가 존재할 경우 배지가 겹치지 않도록 수직 스택(Rank)을 계산합니다.
      * @param file 커서를 렌더링할 대상 공유 파일 객체.
-     * @returns {void}
      */
     public renderCursorsForFile(file: SharedFile): void {
         // 화면에 보이지 않는 파일이면 데코레이션 연산 생략
@@ -380,7 +370,6 @@ export class CursorManager {
      * @param activePos 커서 활성 위치 (캐럿 위치).
      * @param startPos 선택 영역 시작 위치.
      * @param endPos 선택 영역 종료 위치.
-     * @returns {void}
      */
     private applyPeerDecorationWithPositions(peerId: string, state: any, file: SharedFile, rank: number, activePos: vscode.Position, startPos: vscode.Position, endPos: vscode.Position): void {
         // Yjs 기준 좌표가 아직 에디터 버퍼에 반영되지 않았으면 VS Code 가 범위를 문서 끝으로 잘라 그린다(커서 튐의 원인).
@@ -484,7 +473,6 @@ export class CursorManager {
 
     /**
      * 현재 열려 있는 모든 화면 에디터의 커서 데코레이션을 현재 상태를 기반으로 다시 렌더링합니다.
-     * @returns {void}
      */
     public refreshAllDecorations(): void {
         const processedFiles = new Set<string>();
@@ -502,7 +490,6 @@ export class CursorManager {
     /**
      * 특정 파일에 등록되어 있는 모든 원격 커서 데코레이션을 제거합니다.
      * @param fileName 대상 파일 이름.
-     * @returns {void}
      */
     public clearCursorsForFile(fileName: string): void {
         this.remoteCursorStates.forEach((state, peerId) => {
@@ -515,7 +502,6 @@ export class CursorManager {
     /**
      * 특정 피어에 대해 등록된 커서 및 선택 영역 데코레이션 자원을 해제합니다.
      * @param peerId 대상 피어 ID.
-     * @returns {void}
      */
     public clearCursorForPeer(peerId: string): void {
         const cursorDeco = this.remoteCursorDecorations.get(peerId);
@@ -551,7 +537,6 @@ export class CursorManager {
     /**
      * 특정 피어가 방을 퇴장할 때 해당 피어의 모든 커서 자원 및 색상 매핑을 완전히 제거합니다.
      * @param peerId 퇴장한 피어 ID.
-     * @returns {void}
      */
     public clearPeerCursor(peerId: string): void {
         const deco = this.remoteCursorDecorations.get(peerId); 
@@ -579,7 +564,6 @@ export class CursorManager {
     /**
      * 커서 필터 모드를 변경하고 현재 활성 에디터의 커서 표시를 갱신합니다.
      * @param filter 새로운 커서 필터 모드 ('host' | 'editable' | 'all').
-     * @returns {void}
      */
     public setCursorFilter(filter: 'host' | 'editable' | 'all'): void {
         this.cursorFilter = filter;
@@ -595,7 +579,6 @@ export class CursorManager {
 
     /**
      * 모든 원격 커서 및 선택 영역 데코레이션을 파기하고 캐시를 초기화합니다.
-     * @returns {void}
      */
     public stopAll(): void {
         if (this.sendThrottleTimer) {
@@ -624,7 +607,6 @@ export class CursorManager {
 
     /**
      * CursorManager의 모든 상태를 초기 상태로 리셋합니다.
-     * @returns {void}
      */
     public reset(): void {
         this.stopAll();

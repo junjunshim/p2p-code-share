@@ -1,8 +1,4 @@
-/**
- * @file jobWorker.ts
- * @description Node.js Worker Thread 엔트리 포인트
- * 메인 스레드로부터 작업을 수신하여 무거운 연산(JSON 파싱, 직렬화, 바이너리 검증 등)을 독립 실행합니다.
- */
+/** Node.js Worker Thread 엔트리 포인트 메인 스레드로부터 작업을 수신하여 무거운 연산(JSON 파싱, 직렬화, 바이너리 검증 등)을 독립 실행합니다. */
 
 import { parentPort } from 'worker_threads';
 import { safeParseJson, validateAndDecodeYjsUpdate, encodeInitialYjsState, computeTextDiffSummary } from './pureCalculations';

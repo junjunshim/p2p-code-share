@@ -1,11 +1,6 @@
-/**
- * @file index.ts
- * @description P2P 동기화를 위한 공유 인터페이스와 타입을 정의합니다.
- */
+/** P2P 동기화를 위한 공유 인터페이스와 타입을 정의합니다. */
 
-/**
- * 공유 중인 파일에 대한 메타데이터 및 경로 정보를 나타냅니다.
- */
+/** 공유 중인 파일에 대한 메타데이터 및 경로 정보를 나타냅니다. */
 export interface SharedFile {
     /** 공유 파일 이름 (확장자 포함) */
     name: string;
@@ -19,9 +14,7 @@ export interface SharedFile {
     assigneeName?: string;
 }
 
-/**
- * P2P 세션에 참가한 개별 피어의 이름, 읽기/쓰기 권한 및 연결 상태를 나타냅니다.
- */
+/** P2P 세션에 참가한 개별 피어의 이름, 읽기/쓰기 권한 및 연결 상태를 나타냅니다. */
 export interface PeerPermission {
     /** 참가자의 표시 이름 */
     name: string;
@@ -33,21 +26,7 @@ export interface PeerPermission {
     connectionStatus?: 'connected' | 'reconnecting';
 }
 
-/**
- * P2P 세션에서 참가자 목록 및 방 상태 정보를 나타냅니다.
- */
-export interface ParticipantState {
-    /** 현재 로컬 사용자의 표시 이름 */
-    myName: string;
-    /** 세션에 참가한 다른 피어들의 권한 및 연결 상태 매핑 (피어 ID -> 권한 정보) */
-    others: { [key: string]: PeerPermission };
-    /** 현재 세션이 생성되거나 접속한 방 이름 */
-    roomName: string;
-}
-
-/**
- * P2P 데이터 채널을 통해 노드 간 교환되는 범용 메시지 규격을 정의합니다.
- */
+/** P2P 데이터 채널을 통해 노드 간 교환되는 범용 메시지 규격을 정의합니다. */
 export interface P2PMessage {
     /** 메시지 유형 식별자 (예: 'FILE_CHANGE', 'CURSOR_UPDATE' 등) */
     type: string;
@@ -55,9 +34,7 @@ export interface P2PMessage {
     [key: string]: any;
 }
 
-/**
- * 공유 파일 내 코드 특정 위치에 작성된 코드 리뷰/메모 데코레이션 정보를 정의합니다.
- */
+/** 공유 파일 내 코드 특정 위치에 작성된 코드 리뷰/메모 데코레이션 정보를 정의합니다. */
 export interface FileDecoration {
     /** 데코레이션 고유 식별자 ID */
     id: string;
@@ -87,9 +64,7 @@ export interface FileDecoration {
     endRel?: any;
 }
 
-/**
- * 실시간 P2P 채팅 메시지 데이터 포맷을 정의합니다.
- */
+/** 실시간 P2P 채팅 메시지 데이터 포맷을 정의합니다. */
 export interface ChatMessage {
     /** 채팅 메시지 고유 식별자 ID */
     id: string;

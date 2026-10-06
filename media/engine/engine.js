@@ -48,6 +48,7 @@
     const SEND_RETRY_DELAY_MS = 50;
     const SEND_NOT_CONNECTED_DELAY_MS = 100;
     const SEND_ITEM_TIMEOUT_MS = 30000;
+    const CHUNK_SIZE = 16384; // DataChannel 1회 전송 안전 MTU(16KB). 초과분은 청크로 분할한다.
 
     /**
      * 큐에 전송 항목을 넣고 즉시 드레인을 시도합니다.
@@ -131,6 +132,27 @@
             log(reason + ' (대기 ' + queue.items.length + '건)');
         }
         peerSendQueues.delete(peer);
+    }
+
+    /**
+     * 직렬화된 페이로드를 대상 피어(단일/다중/전체)의 전송 큐에 넣습니다.
+     * @param message targetPeerId(s) 라우팅 정보를 담은 수신 메시지.
+     * @param payload 전송할 바이너리.
+     * @param group 대용량 분할 전송의 묶음 식별자(일반 패킷은 undefined).
+     */
+    function dispatchPeerPayload(message, payload, group) {
+        if (message.targetPeerIds && Array.isArray(message.targetPeerIds)) {
+            // 호스트 팬아웃: 페이로드는 1회만 직렬화하고 대상 피어에게만 뿌립니다.
+            message.targetPeerIds.forEach(id => {
+                const key = resolvePeerKey(id);
+                if (peers[key]) enqueueSend(peers[key], payload, group);
+            });
+        } else if (message.targetPeerId) {
+            const key = resolvePeerKey(message.targetPeerId);
+            if (peers[key]) enqueueSend(peers[key], payload, group);
+        } else {
+            Object.keys(peers).forEach(key => enqueueSend(peers[key], payload, group));
+        }
     }
 
     // 확장 호스트에서 STUN 목록을 전달하지 못했을 때 사용하는 기본 STUN 서버
@@ -537,10 +559,7 @@
         (pendingRemoteSignals[peerId] = pendingRemoteSignals[peerId] || []).push(signal);
     }
 
-
-    /**
-     * 로그 메시지를 콘솔에 출력합니다.
-     */
+    /** 로그 메시지를 콘솔에 출력합니다. */
     function log(m) {
         console.log('[P2P Engine]', m);
     }
@@ -562,9 +581,7 @@
         }
     }
 
-    /**
-     * P2P 엔진 및 연결을 종료합니다.
-     */
+    /** P2P 엔진 및 연결을 종료합니다. */
     function stopEngine() {
         log('Stopping P2P engine and disposing connections...');
         myLocalIps = [];
@@ -632,9 +649,7 @@
         if (st) st.innerText = 'DISCONNECTED';
     }
 
-    /**
-     * 대기 중인 게스트 시그널링 요청 큐를 확인하고 생성된 SDP 오퍼를 즉시 전송합니다.
-     */
+    /** 대기 중인 게스트 시그널링 요청 큐를 확인하고 생성된 SDP 오퍼를 즉시 전송합니다. */
     function flushPendingSignalingRequests() {
         if (!currentInitiator || pendingSignalingQueue.length === 0) return;
 
@@ -804,9 +819,7 @@
         attach();
     }
 
-    /**
-     * SDP에 담긴 ICE 후보를 유형별로 집계합니다.
-     */
+    /** SDP에 담긴 ICE 후보를 유형별로 집계합니다. */
     function countCandidatesByType(sdp) {
         const counts = {};
         String(sdp || '').split('\n').forEach(line => {
@@ -819,18 +832,14 @@
         return counts;
     }
 
-    /**
-     * 후보 집계 결과를 로그용 문자열로 변환합니다.
-     */
+    /** 후보 집계 결과를 로그용 문자열로 변환합니다. */
     function formatCandidateCounts(counts) {
         const keys = Object.keys(counts);
         if (keys.length === 0) return 'none';
         return keys.map(key => key + ' x' + counts[key]).join(', ');
     }
 
-    /**
-     * 공인 IP(srflx) 후보 포함 여부를 함께 기록합니다.
-     */
+    /** 공인 IP(srflx) 후보 포함 여부를 함께 기록합니다. */
     function logCandidateSummary(kind, counts, hasLanDirect) {
         log('[ICE Summary] ' + kind + ' SDP candidates -> ' + formatCandidateCounts(counts));
         if (!counts.srflx && !counts.relay && !hasLanDirect) {
@@ -840,9 +849,7 @@
         }
     }
 
-    /**
-     * 실제 ICE 수집이 완료될 때까지 기다립니다(최대 timeoutMs).
-     */
+    /** 실제 ICE 수집이 완료될 때까지 기다립니다(최대 timeoutMs). */
     function waitForIceGatheringComplete(pc, timeoutMs) {
         return new Promise(resolve => {
             if (!pc || pc.iceGatheringState === 'complete') { resolve(); return; }
@@ -872,9 +879,7 @@
         return sdp.split(/\r?\n/).filter(line => !(line.indexOf('a=candidate:') === 0 && line.indexOf('.local') >= 0)).join('\r\n');
     }
 
-    /**
-     * 게스트(비 initiator)가 원격 offer를 적용할 때 mDNS 후보를 제외한 signal을 만듭니다.
-     */
+    /** 게스트(비 initiator)가 원격 offer를 적용할 때 mDNS 후보를 제외한 signal을 만듭니다. */
     function parseSignalPayload(signal) {
         if (typeof signal !== 'string') return signal;
         try {
@@ -885,6 +890,7 @@
         }
     }
 
+    /** 원격 signal 을 적용 전 정규화합니다. 게스트가 받은 offer 에서 mDNS 후보는 제거하고 STUN 공인 IP 수집은 유지합니다. */
     function prepareRemoteSignalFor(p, signal) {
         const normalized = parseSignalPayload(signal);
         if (!normalized || typeof normalized.sdp !== 'string') return normalized;
@@ -897,17 +903,13 @@
         return normalized;
     }
 
-    /**
-     * 새 SDP가 기존 SDP보다 더 많은 후보(특히 공인 IP)를 담고 있는지 확인합니다.
-     */
+    /** 새 SDP가 기존 SDP보다 더 많은 후보(특히 공인 IP)를 담고 있는지 확인합니다. */
     function isBetterSdp(candidateSdp, currentSdp) {
         const score = counts => Object.keys(counts).reduce((sum, key) => sum + counts[key], 0) + (counts.srflx ? 100 : 0);
         return score(countCandidatesByType(candidateSdp)) > score(countCandidatesByType(currentSdp));
     }
 
-    /**
-     * 생성된 SDP를 UI 및 시그널링 채널로 전달합니다.
-     */
+    /** 생성된 SDP를 UI 및 시그널링 채널로 전달합니다. */
     function publishSdp(peerId, sdpStr) {
         pendingSdpMap[peerId] = sdpStr;
         vscode.postMessage({ type: 'sdpGenerated', sdp: sdpStr, peerId });
@@ -1013,9 +1015,7 @@
         });
     }
 
-    /**
-     * WebRTC 피어 연결 및 데이터 채널을 설정합니다.
-     */
+    /** WebRTC 피어 연결 및 데이터 채널을 설정합니다. */
     function setupWebRTCPeer(peerId, p) {
         const rawPc = p._pc;
         if (rawPc) {
@@ -1224,12 +1224,8 @@
         });
     }
 
-    /**
-     * 새로운 피어 연결 객체를 생성하고 관리 목록에 추가합니다.
-     */
-    /**
-     * ASSIGN_PEER_ID 로 peers 키가 'default' -> 'guest_...' 로 바뀌어도 현재 살아있는 피어를 찾도록 키를 보정합니다.
-     */
+    /** 새로운 피어 연결 객체를 생성하고 관리 목록에 추가합니다. */
+    /** ASSIGN_PEER_ID 로 peers 키가 'default' -> 'guest_...' 로 바뀌어도 현재 살아있는 피어를 찾도록 키를 보정합니다. */
     function resolvePeerKey(id) {
         if (peers[id]) return id;
         // 'default' -> 'guest_xxx' 로 키가 바뀐 뒤 늦게 도착한 시그널이 이전 키로 라우팅되어
@@ -1244,13 +1240,12 @@
         return id;
     }
 
-    /**
-     * 후보 재수집 등으로 교체되어 peers 맵에서 빠진 이전 피어 객체는 null 을 돌려줍니다.
-     */
+    /** 후보 재수집 등으로 교체되어 peers 맵에서 빠진 이전 피어 객체는 null 을 돌려줍니다. */
     function findPeerKey(target) {
         return Object.keys(peers).find(id => peers[id] === target) || null;
     }
 
+    /** 새 피어(제어/데이터 채널)를 만들고 TURN 자격 증명을 적재한 뒤 대기 중이던 원격 signal 을 적용합니다. */
     function addPeer(peerId, isInitiator) {
         if (peers[peerId]) return;
         // 자격 증명 조회가 끝나기 전에 같은 피어로 다시 호출되면 피어와 TURN 요청이 중복 생성되므로 무시합니다.
@@ -1292,9 +1287,7 @@
         });
     }
 
-    /**
-     * P2P 엔진 연결을 활성화합니다.
-     */
+    /** P2P 엔진 연결을 활성화합니다. */
     window.startEngine = function(initiator, autoStart, roomName, peerId, stunServers, localIps, role) {
         stopEngine(); // 기존 실행 중인 엔진 정지
 
@@ -1732,7 +1725,6 @@
             const finish = pendingTurnRequests[m.requestId];
             if (finish) finish(m.turnServers);
             return;
-            return;
         }
         if (m.type === 'stopEngine') {
             stopEngine();
@@ -1805,29 +1797,12 @@
         }
         if (m.type === 'peerData') {
             const rawStr = JSON.stringify(m.value);
-            const CHUNK_SIZE = 16384; // 16KB 안전 MTU 규격
-
-            // 피어별 FIFO 큐(전역)로 전송하여 순서를 보장하고 소형 패킷 유실을 막는다.
-            function dispatchPayload(payload, group) {
-                if (m.targetPeerIds && Array.isArray(m.targetPeerIds)) {
-                    // 호스트 팬아웃: 페이로드는 위에서 1회만 직렬화하고, 대상 피어에게만 뿌린다.
-                    m.targetPeerIds.forEach(id => {
-                        const key = resolvePeerKey(id);
-                        if (peers[key]) enqueueSend(peers[key], payload, group);
-                    });
-                } else if (m.targetPeerId) {
-                    const key = resolvePeerKey(m.targetPeerId);
-                    if (peers[key]) enqueueSend(peers[key], payload, group);
-                } else {
-                    Object.keys(peers).forEach(key => enqueueSend(peers[key], payload, group));
-                }
-            }
 
             // WebRTC DataChannel 의 max-message-size(256KB)를 넘는 패킷은 그대로 보내면 전송이 실패하므로
             // 16KB 단위로 분할해 보내고 수신 측에서 재조립한다. (파일 스냅샷 등 대용량 페이로드)
+            // 소형 패킷은 단일 전송한다(타자, 커서, 핑퐁, 채팅 등).
             if (rawStr.length <= CHUNK_SIZE) {
-                // 16KB 이하 일반 패킷: 단일 전송 (타자, 커서, 핑퐁, 채팅 등)
-                dispatchPayload(new TextEncoder().encode(rawStr));
+                dispatchPeerPayload(m, new TextEncoder().encode(rawStr));
             } else {
                 const transferId = 'c_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
                 const totalChunks = Math.ceil(rawStr.length / CHUNK_SIZE);
@@ -1841,7 +1816,7 @@
                         data: chunkData
                     });
                     // 청크는 같은 transferId 그룹으로 묶어, 적체로 전송이 지연되면 묶음 단위로 중단/정리한다.
-                    dispatchPayload(new TextEncoder().encode(chunkPacket), transferId);
+                    dispatchPeerPayload(m, new TextEncoder().encode(chunkPacket), transferId);
                 }
             }
         }

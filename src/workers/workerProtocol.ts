@@ -1,7 +1,4 @@
-/**
- * @file workerProtocol.ts
- * @description 메인 스레드와 워커 스레드 간의 통신 메시지 규격(DTO) 및 우선순위 정의
- */
+/** 메인 스레드와 워커 스레드 간의 통신 메시지 규격(DTO) 및 우선순위 정의 */
 
 /** 작업 우선순위. 값이 작을수록 먼저 처리된다. */
 export enum TaskPriority {

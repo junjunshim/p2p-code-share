@@ -134,9 +134,7 @@ export class WorkerPoolManager {
         }
     }
 
-    /**
-     * 대기 중인 작업을 유휴(Idle) 워커에 디스패치합니다.
-     */
+    /** 대기 중인 작업을 유휴(Idle) 워커에 디스패치합니다. */
     private dispatchNext(): void {
         if (this.isDisposed || this.taskQueue.isEmpty()) return;
 
@@ -151,9 +149,7 @@ export class WorkerPoolManager {
         idleWorker.postMessage(task);
     }
 
-    /**
-     * 작업을 큐에 추가하고 실행 완료 프로미스를 반환합니다.
-     */
+    /** 작업을 큐에 추가하고 실행 완료 프로미스를 반환합니다. */
     public executeTask(type: WorkerTaskType, peerId: string, priority: TaskPriority, payload: any): Promise<WorkerResponse> {
         if (this.isDisposed) {
             return Promise.reject(new Error('WorkerPool is disposed'));
@@ -202,16 +198,12 @@ export class WorkerPoolManager {
         });
     }
 
-    /**
-     * 특정 피어가 퇴장했을 때 대기 큐에서 해당 피어의 작업을 정리합니다.
-     */
+    /** 특정 피어가 퇴장했을 때 대기 큐에서 해당 피어의 작업을 정리합니다. */
     public cancelTasksForPeer(peerId: string): void {
         this.taskQueue.cancelTasksForPeer(peerId);
     }
 
-    /**
-     * 모든 워커 스레드와 리소스를 안전하게 종료합니다.
-     */
+    /** 모든 워커 스레드와 리소스를 안전하게 종료합니다. */
     public dispose(): void {
         this.isDisposed = true;
         this.taskQueue.clear();

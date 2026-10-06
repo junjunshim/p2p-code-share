@@ -877,7 +877,6 @@ input:checked + .slider:before {
     }
 }
 
-
 /* 게스트 입장 진행 단계 표시 */
 #guestLoading {
     text-align: center;

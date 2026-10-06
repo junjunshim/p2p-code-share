@@ -1,8 +1,4 @@
-/**
- * @file SessionRecoveryManager.ts
- * @description VS Code 창 새로고침(Reload Window) 및 작업 공간 전환(Open Folder) 시
- * P2P 세션 정보(방, 파일, Yjs 상태, 권한, 채팅, 데코레이션)의 영속화 및 자동 복구를 관리합니다.
- */
+/** VS Code 창 새로고침(Reload Window) 및 작업 공간 전환(Open Folder) 시 P2P 세션 정보(방, 파일, Yjs 상태, 권한, 채팅, 데코레이션)의 영속화 및 자동 복구를 관리합니다. */
 
 import * as vscode from 'vscode';
 import * as Y from 'yjs';
@@ -119,7 +115,6 @@ export class SessionRecoveryManager {
 
     /**
      * 활성 세션 상태를 주기적으로 globalState에 저장하는 하트비트 타이머를 시작합니다.
-     * @returns {void}
      */
     public startHeartbeat(): void {
         this.stopHeartbeat();
@@ -132,7 +127,6 @@ export class SessionRecoveryManager {
 
     /**
      * 실행 중인 하트비트 타이머를 중단합니다.
-     * @returns {void}
      */
     public stopHeartbeat(): void {
         if (this.heartbeatTimer) {
@@ -143,7 +137,6 @@ export class SessionRecoveryManager {
 
     /**
      * 현재 활성 세션의 모든 상태(방 설정, 참가자, 파일 스냅샷, Yjs 상태, 데코레이션, 채팅)를 globalState에 저장합니다.
-     * @returns {Promise<void>}
      */
     public async saveSession(isShuttingDown = false): Promise<void> {
         if (!this.engine.isConnected && !this.engine.isHost) return;
@@ -207,7 +200,6 @@ export class SessionRecoveryManager {
 
     /**
      * 사용자가 명시적으로 방을 종료하거나 나갔을 때 영속화된 세션을 완전히 삭제합니다.
-     * @returns {Promise<void>}
      */
     public async clearSession(): Promise<void> {
         this.stopHeartbeat();
@@ -255,7 +247,6 @@ export class SessionRecoveryManager {
     /**
      * 이전 세션 데이터를 현재 활성 엔진 인스턴스에 복원하고 P2P 허브 또는 재연결 플로우를 재개합니다.
      * @param session 복원할 세션 데이터 객체.
-     * @returns {Promise<void>}
      */
     public async restoreSession(session: PersistentSessionData): Promise<void> {
         this.isRestoringSession = true;

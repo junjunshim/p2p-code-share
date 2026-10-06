@@ -1,8 +1,4 @@
-/**
- * @file pureCalculations.ts
- * @description VS Code API(vscode.*) 종속성이 전혀 없는 순수 연산 함수 모음
- * 메인 스레드 또는 워커 스레드 어디에서든 안전하게 실행 가능합니다.
- */
+/** VS Code API(vscode.*) 종속성이 전혀 없는 순수 연산 함수 모음 메인 스레드 또는 워커 스레드 어디에서든 안전하게 실행 가능합니다. */
 
 import * as Y from 'yjs';
 
@@ -55,9 +51,7 @@ export function computeSurgicalRange(oldText: string, targetContent: string): Su
     };
 }
 
-/**
- * 게스트로부터 수신된 Base64 인코딩된 Yjs Update의 유효성을 검증하고 Uint8Array로 변환합니다.
- */
+/** 게스트로부터 수신된 Base64 인코딩된 Yjs Update의 유효성을 검증하고 Uint8Array로 변환합니다. */
 export function validateAndDecodeYjsUpdate(base64Update: string): Uint8Array | null {
     try {
         if (!base64Update || typeof base64Update !== 'string') return null;
@@ -69,9 +63,7 @@ export function validateAndDecodeYjsUpdate(base64Update: string): Uint8Array | n
     }
 }
 
-/**
- * 원시 텍스트로부터 초기 Yjs 상태 벡터를 Base64로 인코딩하여 반환합니다.
- */
+/** 원시 텍스트로부터 초기 Yjs 상태 벡터를 Base64로 인코딩하여 반환합니다. */
 export function encodeInitialYjsState(content: string): string {
     const ydoc = new Y.Doc();
     const ytext = ydoc.getText('codetext');
@@ -81,9 +73,7 @@ export function encodeInitialYjsState(content: string): string {
     return Buffer.from(update).toString('base64');
 }
 
-/**
- * 수신된 원시 JSON 문자열을 안전하게 파싱하고 유효한 객체인지 검사합니다.
- */
+/** 수신된 원시 JSON 문자열을 안전하게 파싱하고 유효한 객체인지 검사합니다. */
 export function safeParseJson(rawText: string): { success: boolean; data?: any; error?: string } {
     try {
         const parsed = JSON.parse(rawText);
@@ -96,9 +86,7 @@ export function safeParseJson(rawText: string): { success: boolean; data?: any; 
     }
 }
 
-/**
- * 두 텍스트 간의 변경점 요약 및 범위를 계산합니다.
- */
+/** 두 텍스트 간의 변경점 요약 및 범위를 계산합니다. */
 export function computeTextDiffSummary(original: string, current: string): TextDiffSummary {
     const hasChanges = original !== current;
     return {

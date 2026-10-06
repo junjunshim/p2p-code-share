@@ -1,8 +1,4 @@
-/**
- * @file extension.ts
- * @description p2p-code-share를 위한 VS Code 확장 프로그램 진입점입니다.
- * 핵심 컴포넌트를 조율하고 확장 프로그램 명령어를 등록합니다.
- */
+/** p2p-code-share를 위한 VS Code 확장 프로그램 진입점입니다. 핵심 컴포넌트를 조율하고 확장 프로그램 명령어를 등록합니다. */
 
 // VS Code API 및 핵심 확장 컴포넌트
 import * as vscode from 'vscode';
@@ -161,7 +157,7 @@ export function activate(context: vscode.ExtensionContext) {
     sidebar.onSignal = (sdp, peerId) => hub.applySignal(sdp, peerId || 'default');
     
     // 취소 처리 및 엔진 상태 초기화
-    sidebar.onCancel = async (data?: any) => {
+    sidebar.onCancel = async () => {
         if (engine.isConnected && engine.isHost && engine.isSetupMode) {
             // 설정 모드 종료
             engine.isSetupMode = false;

@@ -1,7 +1,4 @@
-/**
- * @file DocumentSyncManager.ts
- * @description Yjs CRDT 문서 관리, 초기 스냅샷 번들링, 실시간 델타 업데이트 및 에디터 동기화를 전담합니다.
- */
+/** Yjs CRDT 문서 관리, 초기 스냅샷 번들링, 실시간 델타 업데이트 및 에디터 동기화를 전담합니다. */
 
 import * as vscode from 'vscode';
 import * as Y from 'yjs';
@@ -153,7 +150,6 @@ export class DocumentSyncManager {
      * @param name 대상 파일 이름.
      * @param yjsStateBase64 호스트가 전송한 Yjs 초기 상태 벡터 Base64 문자열 (선택 사항).
      * @param fallbackContent Yjs 복원 실패 시 사용할 원시 텍스트 내용 (선택 사항).
-     * @returns {void}
      */
     public createDocForGuest(name: string, yjsStateBase64?: string, fallbackContent?: string): void {
         this.destroyYjsDoc(name);
@@ -188,7 +184,6 @@ export class DocumentSyncManager {
      * @param name 대상 파일 이름.
      * @param ydoc 바인딩할 Y.Doc 인스턴스.
      * @param ytext 바인딩할 Y.Text 인스턴스.
-     * @returns {void}
      */
     private bindYjsEvents(name: string, ydoc: Y.Doc, ytext: Y.Text): void {
         // Yjs 로컬 변경이 발생했을 때 피어들에게 브로드캐스트
@@ -214,7 +209,6 @@ export class DocumentSyncManager {
      * 로컬 사용자가 VS Code 에디터에서 타이핑하거나 편집한 변경 사항을 Yjs 트랜잭션으로 변환하여 반영합니다.
      * @param fileName 대상 파일 이름.
      * @param contentChanges VS Code 텍스트 문서 변경 이벤트 배열.
-     * @returns {void}
      */
     public applyLocalChanges(fileName: string, contentChanges: readonly vscode.TextDocumentContentChangeEvent[]): void {
         const ydoc = this.yDocs.get(fileName);
@@ -256,7 +250,6 @@ export class DocumentSyncManager {
     /**
      * 원격 피어로부터 수신된 Yjs 델타 업데이트(YJS_UPDATE) 바이너리를 로컬 Y.Doc에 병합 적용합니다.
      * @param msg 수신된 Yjs 업데이트 메시지 (파일명, Base64 직렬화 바이너리).
-     * @returns {Promise<void>}
      */
     public async handleYjsUpdate(msg: any): Promise<void> {
         const fileName = typeof msg?.fileName === 'string' ? msg.fileName : '';
@@ -277,7 +270,6 @@ export class DocumentSyncManager {
      * 문서 생성 직후 적용하여 편집 유실을 방지합니다.
      * @param msg 수신된 Yjs 업데이트 메시지.
      * @param fileName 대상 파일 이름.
-     * @returns {void}
      */
     private bufferPendingRemoteUpdate(msg: any, fileName: string): void {
         if (!fileName) return;
@@ -305,7 +297,6 @@ export class DocumentSyncManager {
     /**
      * 문서 생성 직후, 보관해 둔 원격 델타를 수신 순서대로 적용합니다.
      * @param fileName 스냅샷 생성이 끝난 파일 이름.
-     * @returns {void}
      */
     private flushPendingRemoteUpdates(fileName: string): void {
         const queue = this.pendingRemoteUpdates.get(fileName);
@@ -332,7 +323,6 @@ export class DocumentSyncManager {
      * @param fileName 대상 파일 이름.
      * @param ydoc 적용 대상 Y.Doc.
      * @param msg 수신된 Yjs 업데이트 메시지.
-     * @returns {void}
      */
     private applyRemoteUpdate(fileName: string, ydoc: Y.Doc, msg: any): void {
         try {
@@ -384,7 +374,6 @@ export class DocumentSyncManager {
      * 에디터가 열려있지 않은 경우 디스크 파일에 직접 기록합니다.
      * @param fileName 대상 파일 이름.
      * @param filePath 로컬 파일 절대 경로.
-     * @returns {Promise<void>}
      */
     private async applyYjsTextToEditor(fileName: string, filePath: string): Promise<void> {
         // 이미 공유가 중지되었거나 Yjs 문서가 파기된 경우 즉시 중단
@@ -464,7 +453,6 @@ export class DocumentSyncManager {
      * 사용자가 타이핑을 멈춘 후 1.5초간 유휴 상태일 때 혹시 모를 에디터와 Yjs 간의 불일치를 자동 검사하여 보정합니다.
      * @param fileName 대상 파일 이름.
      * @param filePath 로컬 파일 절대 경로.
-     * @returns {void}
      */
     public triggerSelfCorrection(fileName: string, filePath: string): void {
         const timer = this.selfCorrectionTimers.get(fileName);
@@ -492,7 +480,6 @@ export class DocumentSyncManager {
     /**
      * 특정 파일의 Y.Doc 및 관련 버퍼링 타이머, 업데이트 큐 자원을 완전히 해제합니다.
      * @param fileName 대상 파일 이름.
-     * @returns {void}
      */
     public destroyYjsDoc(fileName: string): void {
         const timer = this.selfCorrectionTimers.get(fileName);
@@ -518,7 +505,6 @@ export class DocumentSyncManager {
 
     /**
      * 관리 중인 모든 Yjs 문서와 타이머, 큐 자원을 정리하고 초기화합니다.
-     * @returns {void}
      */
     public reset(): void {
         this.selfCorrectionTimers.forEach(t => clearTimeout(t));

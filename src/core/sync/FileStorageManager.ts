@@ -1,7 +1,4 @@
-/**
- * @file FileStorageManager.ts
- * @description 공유 파일 목록, 로컬 스토리지 I/O, 읽기 전용 상태 및 공유 시작/중지 관리를 담당합니다.
- */
+/** 공유 파일 목록, 로컬 스토리지 I/O, 읽기 전용 상태 및 공유 시작/중지 관리를 담당합니다. */
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -48,7 +45,6 @@ export class FileStorageManager {
      * 현재 방을 제외한 이전 임시 세션 디렉터리들을 안전하게 삭제하여 디스크 용량을 확보합니다 (게스트 전용).
      * 다른 창이 실제로 사용 중인 방 폴더는 마커를 확인해 보존합니다.
      * @param currentRoomName 현재 참여 중인 방 이름 (선택 사항).
-     * @returns {void}
      */
     public cleanOldRoomStorages(currentRoomName?: string): void {
         if (this.engine.isHost) return;
@@ -59,7 +55,6 @@ export class FileStorageManager {
 
     /** 이전 방 임시 폴더를 백그라운드에서 정리합니다(입장 지연 방지).
      * @param currentRoomName 현재 참여 중인 방 이름(이 방의 폴더는 보존).
-     * @returns {Promise<void>}
      */
     private async cleanOldRoomStoragesAsync(currentRoomName?: string): Promise<void> {
         try {
@@ -94,7 +89,6 @@ export class FileStorageManager {
      * 방 폴더에 "이 창이 사용 중"이라는 마커를 남깁니다.
      * 같은 방을 여러 창이 쓸 수 있으므로 프로세스(창)별 파일로 분리해 생성합니다.
      * @param roomDir 대상 방 폴더 경로.
-     * @returns {void}
      */
     private markRoomActive(roomDir: string): void {
         try {
@@ -110,7 +104,6 @@ export class FileStorageManager {
 
     /**
      * 이 창이 남긴 활성 마커를 회수하고, 남은 마커가 없으면 마커 디렉터리도 정리합니다.
-     * @returns {void}
      */
     private unmarkRoomActive(): void {
         const roomDir = this.markedRoomDir;
@@ -182,7 +175,6 @@ export class FileStorageManager {
 
     /**
      * 게스트가 방을 퇴장하거나 강퇴당했을 때 현재 방의 임시 스토리지 전체를 깨끗하게 삭제합니다.
-     * @returns {Promise<void>}
      */
     public async clearLocalStorage(): Promise<void> {
         // 창이 방을 떠나는 것이므로 호스트/게스트 모두 이 창의 활성 마커를 먼저 회수한다.
@@ -225,7 +217,6 @@ export class FileStorageManager {
 
     /**
      * 공유 파일 저장을 위한 전용 임시 디렉터리를 초기화하고 준비합니다.
-     * @returns {void}
      */
     public initializeStorage(): void {
         // 이미 초기화되었고 실제 디스크에도 폴더가 존재하는 경우에만 return
@@ -255,7 +246,6 @@ export class FileStorageManager {
     /**
      * 호스트 측에서 현재 활성화된 에디터의 파일 또는 컨텍스트 메뉴에서 선택한 파일을 공유 시작합니다.
      * @param targetUri 컨텍스트 메뉴 등을 통해 전달된 대상 파일 URI (선택 사항).
-     * @returns {Promise<void>}
      */
     public async shareActiveFile(targetUri?: vscode.Uri): Promise<void> {
         if (!this.engine.isHost) return;
@@ -330,7 +320,6 @@ export class FileStorageManager {
     /**
      * 게스트가 호스트로부터 초기 파일 스냅샷(INIT_SNAPSHOT)을 수신하여 로컬 임시 파일로 저장하고 Yjs 문서를 동기화합니다.
      * @param msg 스냅샷 데이터(파일명, 텍스트 내용, Yjs 상태, 권한 등)를 담은 메시지 객체.
-     * @returns {Promise<void>}
      */
     public async handleGuestInitSnapshot(msg: any): Promise<void> {
         // 스냅샷은 게스트에서만 유효합니다. 파일명을 경로 생성이나 공유 파일 목록에 사용하기 전에 검증합니다.
@@ -408,7 +397,6 @@ export class FileStorageManager {
     /**
      * 특정 공유 파일에 대해 현재 사용자의 편집 권한에 따라 읽기 전용 상태를 적용합니다.
      * @param file 대상 공유 파일 객체.
-     * @returns {Promise<void>}
      */
     public async updateReadonlyState(file: SharedFile): Promise<void> {
         if (this.engine.isHost) return;
@@ -423,7 +411,6 @@ export class FileStorageManager {
 
     /**
      * 공유 중인 모든 파일의 읽기 전용 상태를 일괄 갱신합니다.
-     * @returns {Promise<void>}
      */
     public async updateAllReadonlyStates(): Promise<void> {
         if (this.engine.isHost) return;
@@ -436,7 +423,6 @@ export class FileStorageManager {
      * VS Code 에디터에 내장된 세션 단위 읽기 전용 모드를 토글합니다.
      * @param editor 대상 텍스트 에디터.
      * @param readonly 읽기 전용 여부.
-     * @returns {Promise<void>}
      */
     public async applyEditorReadonlyState(editor: vscode.TextEditor, readonly: boolean): Promise<void> {
         if (this.engine.isHost) return;
@@ -454,7 +440,6 @@ export class FileStorageManager {
     /**
      * 실시간 타이핑 중 빈번한 디스크 I/O 렉을 방지하기 위해 디바운스(1.5초) 방식으로 문서를 저장합니다.
      * @param filePath 저장 대상 로컬 파일 절대 경로.
-     * @returns {void}
      */
     public scheduleDebouncedSave(filePath: string): void {
         // 이미 공유 목록에 없는 파일이거나 닫히는 중인 파일은 저장 예약하지 않음
@@ -484,7 +469,6 @@ export class FileStorageManager {
 
     /**
      * 현재 활성화된 에디터 파일의 공유를 중지합니다.
-     * @returns {Promise<void>}
      */
     public async stopSharing(): Promise<void> {
         const editor = vscode.window.activeTextEditor;
@@ -496,7 +480,6 @@ export class FileStorageManager {
     /**
      * 특정 파일명의 공유를 중지하고 변경 사항을 백업본과 Diff 비교합니다 (호스트 전용).
      * @param fileName 공유를 중지할 파일 이름.
-     * @returns {Promise<void>}
      */
     public async stopSharingByName(fileName: string): Promise<void> {
         if (!this.engine.isHost) return;
@@ -552,7 +535,6 @@ export class FileStorageManager {
     /**
      * 공유 중지(호스트 명령 또는 피어 알림) 발생 시 메모리 자원, 타이머, 탭 및 임시 파일을 정리합니다.
      * @param fileName 정리할 파일 이름.
-     * @returns {Promise<void>}
      */
     public async handleRemoteStop(fileName: string): Promise<void> {
         const index = this.sharedFiles.findIndex(f => f.name === fileName);
@@ -638,7 +620,6 @@ export class FileStorageManager {
 
     /**
      * FileStorageManager의 모든 타이머, 파일 목록 및 상태를 초기화합니다.
-     * @returns {void}
      */
     public reset(): void {
         this.debouncedSaveTimers.forEach(t => clearTimeout(t));

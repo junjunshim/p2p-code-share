@@ -9,9 +9,7 @@ window.onerror = function(message, source, lineno, colno, error) {
 };
 let showingRequests = false;
 
-/**
-* 요청 창의 표시 상태를 토글합니다.
-*/
+/** 요청 창의 표시 상태를 토글합니다. */
 function toggleRequests() {
     showingRequests = !showingRequests;
     const ria = document.getElementById('roomInfoArea');
@@ -20,48 +18,32 @@ function toggleRequests() {
     if (ra) ra.classList.toggle('hidden', !showingRequests);
 }
 
-/**
-* 게스트의 참가 요청을 승인합니다.
-*/
+/** 게스트의 참가 요청을 승인합니다. */
 function approve(peerId) { vscode.postMessage({ type: 'approveRequest', peerId }); }
-/**
-* 모든 대기 중인 게스트 참가 요청을 일괄 승인합니다.
-*/
+/** 모든 대기 중인 게스트 참가 요청을 일괄 승인합니다. */
 function approveAll() { vscode.postMessage({ type: 'approveAllRequests' }); }
-/**
-* 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)합니다.
-*/
+/** 모든 게스트의 쓰기 권한을 일괄 해제(읽기 전용 전환)합니다. */
 function revokeAllPermissions() { vscode.postMessage({ type: 'revokeAllPermissions' }); }
-/**
-* 게스트의 참가 요청을 거절합니다.
-*/
+/** 게스트의 참가 요청을 거절합니다. */
 function reject(peerId) { vscode.postMessage({ type: 'rejectRequest', peerId }); }
 
-/**
-* 커서 필터 상태 변경 요청을 보냅니다.
-*/
+/** 커서 필터 상태 변경 요청을 보냅니다. */
 function changeCursorFilter(val) {
     vscode.postMessage({ type: 'changeCursorFilter', filter: val });
 }
 
-/**
-* 데코레이션 표시 온오프 토글 요청을 보냅니다.
-*/
+/** 데코레이션 표시 온오프 토글 요청을 보냅니다. */
 function toggleShowDecorations(checked) {
     vscode.postMessage({ type: 'toggleShowDecorations', show: checked });
 }
 
-/**
-* 방에서 나가는 요청을 보냅니다.
-*/
+/** 방에서 나가는 요청을 보냅니다. */
 function leaveRoom() {
     setVisible('reconnectingBanner', false);
     vscode.postMessage({ type: 'leaveRoom' });
 }
 
-/**
-* DOM 요소의 표시/숨김 상태를 토글하는 헬퍼 함수입니다.
-*/
+/** DOM 요소의 표시/숨김 상태를 토글하는 헬퍼 함수입니다. */
 function setVisible(id, visible) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -70,17 +52,13 @@ function setVisible(id, visible) {
     el.toggleAttribute('hidden', !visible);
 }
 
-/**
-* 버튼 요소의 활성/비활성 상태를 제어하는 헬퍼 함수입니다.
-*/
+/** 버튼 요소의 활성/비활성 상태를 제어하는 헬퍼 함수입니다. */
 function setDisabled(id, disabled) {
     const el = document.getElementById(id);
     if (el) el.disabled = disabled;
 }
 
-/**
- * 게스트 입장 진행 단계 정의. stages 순서대로 진행되며 현재 단계까지 완료 표시됩니다.
- */
+/** 게스트 입장 진행 단계 정의. stages 순서대로 진행되며 현재 단계까지 완료 표시됩니다. */
 const JOIN_PROGRESS_STEPS = [
     { label: 'PeerJS 서버 연결', stages: ['signaling', 'signaling-ready', 'join-retry'] },
     { label: 'ICE 준비 (STUN·TURN)', stages: ['ice-preparing'] },
@@ -114,9 +92,7 @@ let joinLastActiveIndex = -1;
 let joinElapsedTimer = null;
 let joinElapsedStartedAt = 0;
 
-/**
- * 진행 표시를 초기 상태로 되돌립니다(새 입장 시도 시작 시 호출).
- */
+/** 진행 표시를 초기 상태로 되돌립니다(새 입장 시도 시작 시 호출). */
 function resetJoinProgress() {
     joinProgressSignature = '';
     joinLastActiveIndex = -1;
@@ -130,9 +106,7 @@ function resetJoinProgress() {
     if (elapsed) elapsed.innerText = '';
 }
 
-/**
- * 경과 시간 표시를 시작합니다(이미 실행 중이면 그대로 유지).
- */
+/** 경과 시간 표시를 시작합니다(이미 실행 중이면 그대로 유지). */
 function startJoinElapsed() {
     if (joinElapsedTimer) return;
     const el = document.getElementById('joinProgressElapsed');
@@ -145,9 +119,7 @@ function startJoinElapsed() {
     joinElapsedTimer = setInterval(tick, 1000);
 }
 
-/**
- * 경과 시간 타이머를 멈춥니다(연결 완료 또는 화면 전환 시).
- */
+/** 경과 시간 타이머를 멈춥니다(연결 완료 또는 화면 전환 시). */
 function stopJoinProgress() {
     if (joinElapsedTimer) {
         clearInterval(joinElapsedTimer);
@@ -195,9 +167,7 @@ function renderJoinProgress(stage, text, roomName) {
     }
 }
 
-/**
-* 방 생성 폼을 보여주고 시작 버튼을 숨깁니다.
-*/
+/** 방 생성 폼을 보여주고 시작 버튼을 숨깁니다. */
 function showHostForm() {
     const rnEl = document.getElementById('setupRoomName');
     if (rnEl) rnEl.value = '';
@@ -212,9 +182,7 @@ function showHostForm() {
     setVisible('hostForm', true);
     setVisible('startButtons', false);
 }
-/**
-* 방 참가 폼을 보여주고 시작 버튼을 숨깁니다.
-*/
+/** 방 참가 폼을 보여주고 시작 버튼을 숨깁니다. */
 function showGuestForm() {
     const rnEl = document.getElementById('joinRoomName');
     const unEl = document.getElementById('joinUserName');
@@ -223,9 +191,7 @@ function showGuestForm() {
     setVisible('guestForm', true);
     setVisible('startButtons', false);
 }
-/**
-* 방 생성 전 안내 설명 아코디언을 토글합니다.
-*/
+/** 방 생성 전 안내 설명 아코디언을 토글합니다. */
 function toggleHostDesc() {
     const header = document.getElementById('hostDescHeader');
     const content = document.getElementById('hostDescContent');
@@ -240,9 +206,7 @@ function toggleHostDesc() {
     }
 }
 }
-/**
-* 입력 폼들과 진행 상태를 기본 상태로 되돌립니다.
-*/
+/** 입력 폼들과 진행 상태를 기본 상태로 되돌립니다. */
 function resetForms() {
     setVisible('hostForm', false);
     setVisible('guestForm', false);
@@ -267,9 +231,7 @@ function resetForms() {
     ['hostLoading', 'guestLoading'].forEach(id => setVisible(id, false));
 }
 
-/**
-* 호스트 또는 게스트로서 초기 연결을 초기화합니다.
-*/
+/** 호스트 또는 게스트로서 초기 연결을 초기화합니다. */
 function init(i) {
     try {
         let rn = '';
@@ -306,12 +268,10 @@ function init(i) {
     if (lsdp) lsdp.value = '';
     if (rsdp) rsdp.value = '';
     vscode.postMessage({ type: 'initPeer', initiator: i, roomName: rn });
-} catch (e) { console.error(e); }
+    } catch (e) { console.error(e); }
 }
 
-/**
-* 수동으로 게스트 연결을 위한 준비를 설정합니다.
-*/
+/** 수동으로 게스트 연결을 위한 준비를 설정합니다. */
 function initManualGuest() {
     const apid = document.getElementById('activePeerId');
     const lsdp = document.getElementById('lsdp');
@@ -322,9 +282,7 @@ function initManualGuest() {
     vscode.postMessage({ type: 'initPeer', initiator: false, roomName: '' });
 }
 
-/**
-* 게스트를 초대하기 위해 초대 연결 정보 생성을 시작합니다.
-*/
+/** 게스트를 초대하기 위해 초대 연결 정보 생성을 시작합니다. */
 function invite() {
     const lsdp = document.getElementById('lsdp');
     const rsdp = document.getElementById('rsdp');
@@ -333,9 +291,7 @@ function invite() {
     vscode.postMessage({ type: 'inviteGuest' });
 }
 
-/**
-* 제공된 SDP 값을 사용하여 상대방과 연결을 설정합니다.
-*/
+/** 제공된 SDP 값을 사용하여 상대방과 연결을 설정합니다. */
 function conn() {
     const rsdp = document.getElementById('rsdp');
     const apid = document.getElementById('activePeerId');
@@ -348,26 +304,18 @@ function conn() {
     } catch(e) { alert('Invalid Connection ID format!'); }
 }
 
-/**
-* 연결 설정 상태나 로딩 상태에서 뒤로 가기를 처리합니다.
-*/
+/** 연결 설정 상태나 로딩 상태에서 뒤로 가기를 처리합니다. */
 function goBack() {
     const b = document.getElementById('badge');
     const isInv = b && b.innerText === 'CONNECTED';
     vscode.postMessage({ type: 'cancel', isInviting: isInv });
 }
-/**
-* 자신의 이름을 변경 요청을 보냅니다.
-*/
+/** 자신의 이름을 변경 요청을 보냅니다. */
 function rename() { vscode.postMessage({ type: 'rename' }); }
-/**
-* 특정 피어를 세션에서 강퇴합니다.
-*/
+/** 특정 피어를 세션에서 강퇴합니다. */
 function kick(peerId) { vscode.postMessage({ type: 'kick', peerId }); }
 
-/**
-* 특정 피어에 대해 파일 편집 권한을 지정합니다.
-*/
+/** 특정 피어에 대해 파일 편집 권한을 지정합니다. */
 function togglePermission(peerId, name, canEdit) {
     vscode.postMessage({
         type: 'setPermission',
@@ -397,9 +345,7 @@ window.addEventListener('message', e => {
     } catch (err) { console.error("Webview Error:", err); }
 });
 
-/**
-* 연결 상태 배지를 업데이트합니다.
-*/
+/** 연결 상태 배지를 업데이트합니다. */
 function updateBadge(m) {
     const b = document.getElementById('badge');
     if (b) {
@@ -408,19 +354,17 @@ function updateBadge(m) {
             b.innerText = 'RECONNECTING...';
             b.className = 'badge reconnecting';
         } else if (m.isConnected) {
-        const isMeHost = m.participants && m.participants.myId === 'host';
-        b.innerText = (!isMeHost && m.connectionType === 'TURN') ? 'CONNECTED (TURN)' : 'CONNECTED';
-        b.className = 'badge online';
-    } else {
-    b.innerText = 'OFFLINE';
-    b.className = 'badge';
-}
-}
+            const isMeHost = m.participants && m.participants.myId === 'host';
+            b.innerText = (!isMeHost && m.connectionType === 'TURN') ? 'CONNECTED (TURN)' : 'CONNECTED';
+            b.className = 'badge online';
+        } else {
+            b.innerText = 'OFFLINE';
+            b.className = 'badge';
+        }
+    }
 }
 
-/**
-* 대기 중인 참여 요청 목록을 화면에 렌더링합니다.
-*/
+/** 대기 중인 참여 요청 목록을 화면에 렌더링합니다. */
 function renderRequests(m) {
     const btnShowRequests = document.getElementById('btnShowRequests');
     const reqCountDisp = document.getElementById('reqCount');
@@ -449,14 +393,12 @@ function renderRequests(m) {
             });
         }
     } else {
-    setVisible('btnShowRequests', false);
-    if (showingRequests) toggleRequests();
-}
+        setVisible('btnShowRequests', false);
+        if (showingRequests) toggleRequests();
+    }
 }
 
-/**
- * 접속자 목록에 내부 스크롤을 적용하기 시작하는 인원 수 (이 값을 초과하면 스크롤)
- */
+/** 접속자 목록에 내부 스크롤을 적용하기 시작하는 인원 수 (이 값을 초과하면 스크롤) */
 const USER_LIST_SCROLL_THRESHOLD = 8;
 
 /**
@@ -584,9 +526,7 @@ function renderUsers(m) {
     listWrap.classList.toggle('scrollable', orderedIds.length > USER_LIST_SCROLL_THRESHOLD);
 }
 
-/**
-* 현재 상태에 맞춰 화면 레이아웃을 업데이트합니다.
-*/
+/** 현재 상태에 맞춰 화면 레이아웃을 업데이트합니다. */
 function updateModeLayout(m) {
     const lsdp = document.getElementById('lsdp');
     const dispRoom = document.getElementById('dispRoomName');
@@ -602,117 +542,113 @@ function updateModeLayout(m) {
         const roleDisp = document.getElementById('roleTextDisp');
         if (roleDisp) roleDisp.innerText = isOffer ? 'INVITING NEW GUEST' : 'JOINING ROOM';
     } else if (m.isConnected || (m.isReconnecting && !m.isSetupMode)) {
-    // 2. 연결 완료 모드 또는 재연결 유예 모드 (호스트 창 복구/게스트 재접속 중에도 방 화면과 참가자 목록 유지)
-    setVisible('roleSelection', false);
-    setVisible('connArea', false);
-    stopJoinProgress();
-    setVisible('active', true);
-    if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
+        // 2. 연결 완료 모드 또는 재연결 유예 모드 (호스트 창 복구/게스트 재접속 중에도 방 화면과 참가자 목록 유지)
+        setVisible('roleSelection', false);
+        setVisible('connArea', false);
+        stopJoinProgress();
+        setVisible('active', true);
+        if (dispRoom) dispRoom.innerText = m.roomName || 'Untitled Room';
 
-    const isReconnecting = m.isReconnecting || (m.participants && m.participants.isReconnecting);
-    setVisible('reconnectingBanner', !!isReconnecting);
+        const isReconnecting = m.isReconnecting || (m.participants && m.participants.isReconnecting);
+        setVisible('reconnectingBanner', !!isReconnecting);
 
-    const isMeHost = m.participants.myId === 'host';
-    setVisible('btnAddUser', isMeHost);
-    setVisible('revokeAllOption', isMeHost);
+        const isMeHost = m.participants.myId === 'host';
+        setVisible('btnAddUser', isMeHost);
+        setVisible('revokeAllOption', isMeHost);
 
-    // 시그널링 서버 연결 상태 배지 업데이트 (호스트 전용 표시, 게스트에서는 숨김)
-    const sigBadge = document.getElementById('signalingStatusBadge');
-    const sigText = document.getElementById('signalingStatusText');
-    if (sigBadge && sigText) {
-        if (!isMeHost) {
-            sigBadge.style.display = 'none';
-        } else {
-        sigBadge.style.display = 'inline-flex';
-        if (m.isSignalingConnected) {
-            sigBadge.className = 'server-status-badge connected';
-            sigText.innerText = 'Server: Ready';
-            sigBadge.title = '시그널링 서버에 성공적으로 등록되어 게스트 접속 대기 중입니다.';
-        } else {
-        sigBadge.className = 'server-status-badge connecting';
-        sigText.innerText = 'Server: Connecting...';
-        sigBadge.title = '시그널링 서버에 방 ID 등록 및 연결을 시도하고 있습니다.';
+        // 시그널링 서버 연결 상태 배지 업데이트 (호스트 전용 표시, 게스트에서는 숨김)
+        const sigBadge = document.getElementById('signalingStatusBadge');
+        const sigText = document.getElementById('signalingStatusText');
+        if (sigBadge && sigText) {
+            if (!isMeHost) {
+                sigBadge.style.display = 'none';
+            } else {
+                sigBadge.style.display = 'inline-flex';
+                if (m.isSignalingConnected) {
+                    sigBadge.className = 'server-status-badge connected';
+                    sigText.innerText = 'Server: Ready';
+                    sigBadge.title = '시그널링 서버에 성공적으로 등록되어 게스트 접속 대기 중입니다.';
+                } else {
+                    sigBadge.className = 'server-status-badge connecting';
+                    sigText.innerText = 'Server: Connecting...';
+                    sigBadge.title = '시그널링 서버에 방 ID 등록 및 연결을 시도하고 있습니다.';
+                }
+            }
+        }
+
+        const cursorFilterSelect = document.getElementById('cursorFilterSelect');
+        if (cursorFilterSelect && m.cursorFilter) {
+            cursorFilterSelect.value = m.cursorFilter;
+        }
+
+        // 채팅 안 읽은 개수 배지 업데이트
+        const unreadBadge = document.getElementById('unreadChatBadge');
+        if (unreadBadge) {
+            const count = m.unreadChatCount || 0;
+            unreadBadge.innerText = count;
+            unreadBadge.classList.toggle('hidden', count === 0);
+        }
+
+        // 팔로우 모드 체크박스 및 가시성 제어
+        setVisible('followMeOption', isMeHost);
+        const followMeCheck = document.getElementById('followMeCheck');
+        if (followMeCheck) {
+            followMeCheck.checked = !!m.isFollowMeMode;
+        }
+
+        // 자동 승인 체크박스 및 가시성 제어
+        setVisible('autoApproveOption', isMeHost);
+        const autoApproveCheck = document.getElementById('autoApproveCheck');
+        if (autoApproveCheck) {
+            const isAutoApprove = (m.isAutoApprove !== undefined) ? m.isAutoApprove : (m.participants && m.participants.isAutoApprove);
+            autoApproveCheck.checked = !!isAutoApprove;
+        }
+
+        // 데코레이션 표시 토글 상태 동기화
+        const showDecoCheck = document.getElementById('showDecoCheck');
+        if (showDecoCheck && m.showDecorations !== undefined) {
+            showDecoCheck.checked = !!m.showDecorations;
+        }
+
+        renderRequests(m);
+        renderUsers(m);
+    } else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
+        // 3. 호스트 생성/연결 중 모드
+        setVisible('roleSelection', true);
+        setVisible('connArea', false);
+        setVisible('active', false);
+        setVisible('startButtons', false);
+        setVisible('hostForm', true);
+        setVisible('hostLoading', true);
+        setDisabled('btnStartHost', true);
+        setDisabled('btnCancelHost', true);
+    } else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
+        // 4. 게스트 승인 대기 모드
+        setVisible('roleSelection', true);
+        setVisible('connArea', false);
+        setVisible('active', false);
+        setVisible('startButtons', false);
+        setVisible('guestForm', true);
+        setVisible('guestLoading', true);
+        setDisabled('btnJoinAuto', true);
+        setDisabled('btnJoinManual', true);
+        const jrt = document.getElementById('joiningRoomText');
+        if (jrt) jrt.innerText = '"' + m.roomName + '"';
+        renderJoinProgress(m.participants.joinStage, m.participants.joinStageText, m.roomName);
+        startJoinElapsed();
+    } else {
+        // 5. 초기 모드 (방 생성/참여 선택)
+        setVisible('roleSelection', true);
+        setVisible('connArea', false);
+        setVisible('active', false);
+        resetForms();
     }
 }
-}
 
-const cursorFilterSelect = document.getElementById('cursorFilterSelect');
-if (cursorFilterSelect && m.cursorFilter) {
-    cursorFilterSelect.value = m.cursorFilter;
-}
-
-// 채팅 안 읽은 개수 배지 업데이트
-const unreadBadge = document.getElementById('unreadChatBadge');
-if (unreadBadge) {
-    const count = m.unreadChatCount || 0;
-    unreadBadge.innerText = count;
-    unreadBadge.classList.toggle('hidden', count === 0);
-}
-
-// 팔로우 모드 체크박스 및 가시성 제어
-setVisible('followMeOption', isMeHost);
-const followMeCheck = document.getElementById('followMeCheck');
-if (followMeCheck) {
-    followMeCheck.checked = !!m.isFollowMeMode;
-}
-
-// 자동 승인 체크박스 및 가시성 제어
-setVisible('autoApproveOption', isMeHost);
-const autoApproveCheck = document.getElementById('autoApproveCheck');
-if (autoApproveCheck) {
-    const isAutoApprove = (m.isAutoApprove !== undefined) ? m.isAutoApprove : (m.participants && m.participants.isAutoApprove);
-    autoApproveCheck.checked = !!isAutoApprove;
-}
-
-// 데코레이션 표시 토글 상태 동기화
-const showDecoCheck = document.getElementById('showDecoCheck');
-if (showDecoCheck && m.showDecorations !== undefined) {
-    showDecoCheck.checked = !!m.showDecorations;
-}
-
-renderRequests(m);
-renderUsers(m);
-} else if (m.participants.myId === 'host' && m.roomName && m.roomName !== 'Untitled Room') {
-// 3. 호스트 생성/연결 중 모드
-setVisible('roleSelection', true);
-setVisible('connArea', false);
-setVisible('active', false);
-setVisible('startButtons', false);
-setVisible('hostForm', true);
-setVisible('hostLoading', true);
-setDisabled('btnStartHost', true);
-setDisabled('btnCancelHost', true);
-} else if (m.roomName && m.roomName !== 'Untitled Room' && m.participants.myId !== 'host') {
-// 4. 게스트 승인 대기 모드
-setVisible('roleSelection', true);
-setVisible('connArea', false);
-setVisible('active', false);
-setVisible('startButtons', false);
-setVisible('guestForm', true);
-setVisible('guestLoading', true);
-setDisabled('btnJoinAuto', true);
-setDisabled('btnJoinManual', true);
-const jrt = document.getElementById('joiningRoomText');
-if (jrt) jrt.innerText = '"' + m.roomName + '"';
-renderJoinProgress(m.participants.joinStage, m.participants.joinStageText, m.roomName);
-startJoinElapsed();
-} else {
-// 5. 초기 모드 (방 생성/참여 선택)
-setVisible('roleSelection', true);
-setVisible('connArea', false);
-setVisible('active', false);
-resetForms();
-}
-}
-
-/**
-* 공유 중인 파일 목록을 화면에 렌더링합니다.
-*/
+/** 공유 중인 파일 목록을 화면에 렌더링합니다. */
 const fileIconCache = new Map();
 
-/**
-* 공유 중인 파일 목록의 아이콘 SVG를 반환합니다 (캐싱 적용).
-*/
+/** 공유 중인 파일 목록의 아이콘 SVG를 반환합니다 (캐싱 적용). */
 function getFileIconSvg(fileName) {
     if (!fileName) {
         return '<svg width="20" height="20" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="#858585" stroke-width="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#858585" stroke-width="1.5" stroke-linecap="round"/></svg>';
@@ -828,9 +764,7 @@ function getFileIconSvg(fileName) {
     return svg;
 }
 
-/**
-* 공유 중인 파일 목록을 화면에 렌더링합니다 (Diff 갱신 적용).
-*/
+/** 공유 중인 파일 목록을 화면에 렌더링합니다 (Diff 갱신 적용). */
 function renderFiles(m) {
     const fdiv = document.getElementById('files');
     if (!fdiv || !m.files) return;
@@ -959,14 +893,10 @@ function renderFiles(m) {
     });
 }
 
-/**
- * 사용자가 접어 둔 데코레이션 파일 그룹(파일 이름) 상태. 목록이 다시 그려져도 접힘 상태를 유지합니다.
- */
+/** 사용자가 접어 둔 데코레이션 파일 그룹(파일 이름) 상태. 목록이 다시 그려져도 접힘 상태를 유지합니다. */
 const decoCollapsedFiles = new Set();
 
-/**
- * 사용자가 펼쳐 둔 데코레이션 메모(데코레이션 id) 상태. 목록이 다시 그려져도 유지합니다.
- */
+/** 사용자가 펼쳐 둔 데코레이션 메모(데코레이션 id) 상태. 목록이 다시 그려져도 유지합니다. */
 const decoExpandedMemos = new Set();
 
 /**
@@ -1231,9 +1161,7 @@ function renderDecorations(m) {
     });
 }
 
-/**
-* UI의 상태 업데이트에 따른 렌더링을 일괄 수행합니다.
-*/
+/** UI의 상태 업데이트에 따른 렌더링을 일괄 수행합니다. */
 function renderUI(m) {
     if (m.type === 'refresh' || !m.participants) return;
 
@@ -1293,23 +1221,17 @@ document.querySelectorAll('#roomInfoArea .accordion-header').forEach(header => {
 });
 });
 
-/**
-* 채팅방 팝업창을 열기 위해 이벤트를 전송합니다.
-*/
+/** 채팅방 팝업창을 열기 위해 이벤트를 전송합니다. */
 function openChat() {
     vscode.postMessage({ type: 'openChat' });
 }
 
-/**
-* 화면 동기화 팔로우 모드를 활성화/비활성화합니다.
-*/
+/** 화면 동기화 팔로우 모드를 활성화/비활성화합니다. */
 function toggleFollowMe(val) {
     vscode.postMessage({ type: 'setFollowMeMode', enabled: val });
 }
 
-/**
-* 자동 승인 모드를 활성화/비활성화합니다.
-*/
+/** 자동 승인 모드를 활성화/비활성화합니다. */
 function toggleAutoApprove(val) {
     vscode.postMessage({ type: 'setAutoApprove', enabled: val });
 }
@@ -1323,4 +1245,3 @@ setTimeout(() => {
         vscode.postMessage({ type: 'ready' });
     }
 }, 1500);
-

@@ -1,11 +1,6 @@
-/**
- * @file helpers.ts
- * @description 파일 경로 정리 및 디렉토리 관리를 위한 유틸리티 함수들을 제공합니다.
- */
+/** 파일 경로 정리 및 디렉토리 관리를 위한 유틸리티 함수들을 제공합니다. */
 
-// VS Code API
-import * as vscode from 'vscode';
-// Node.js 경로 및 파일 시스템 모듈
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -15,39 +10,17 @@ import * as fs from 'fs';
  * @returns 정리된 경로 문자열.
  */
 export function sanitizePath(name: string): string {
-    // 잘못된 문자를 밑줄로 바꿉니다
     return name.replace(/[\\/:*?"<>|]/g, '_');
 }
 
 /**
  * 디렉토리가 존재하는지 확인하고, 없다면 생성합니다.
  * @param dir 디렉토리 경로.
- * @returns {void}
  */
 export function ensureDirectory(dir: string): void {
-    // 디렉토리가 존재하지 않으면 재귀적으로 생성합니다
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
     }
-}
-
-/**
- * 파일 확장자를 기반으로 언어 모드 문자열을 가져옵니다.
- * @param fileName 파일 이름.
- * @returns 언어 모드 문자열.
- */
-export function getLanguage(fileName: string): string {
-    // 파일 확장자를 언어 모드에 매핑
-    const ext = path.extname(fileName).toLowerCase();
-    const map: { [key: string]: string } = {
-        '.ts': 'typescript',
-        '.js': 'javascript',
-        '.py': 'python',
-        '.html': 'html',
-        '.css': 'css',
-        '.json': 'json'
-    };
-    return map[ext] || 'plaintext';
 }
 
 /**
@@ -60,15 +33,6 @@ export function getLanguage(fileName: string): string {
 export function isPathEqual(p1?: string, p2?: string): boolean {
     if (!p1 || !p2) return false;
     return path.normalize(p1).toLowerCase() === path.normalize(p2).toLowerCase();
-}
-
-/**
- * 파일 경로를 표준화하고 소문자로 변환하여 일관된 식별자를 생성합니다.
- * @param p 원본 파일 경로.
- * @returns 정규화된 파일 경로 문자열.
- */
-export function normalizePath(p: string): string {
-    return path.normalize(p).toLowerCase();
 }
 
 /**
@@ -90,8 +54,7 @@ export function normalizeEOL(text: string): string {
  * @returns 우선순위대로 정렬된 로컬 IPv4 주소 목록(최대 8개).
  */
 export function getLocalIpAddresses(): string[] {
-    const os = require('os') as typeof import('os');
-    // 가상 어댑터 이름 패턴: 실제 LAN 어댑터보다 우선순위를 낮춥니다.
+    // 가상 어댑터(WSL/Hyper-V 등)는 실제 LAN 어댑터보다 우선순위를 낮춘다.
     const VIRTUAL_ADAPTER_PATTERN = /(vethernet|hyper-v|vmware|virtualbox|vbox|docker|wsl|tailscale|zerotier|hamachi|radmin|tap|tun|vpn|bluetooth|loopback|npcap)/i;
 
     const preferred: string[] = [];

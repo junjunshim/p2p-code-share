@@ -1,7 +1,4 @@
-/**
- * @file CompletionTracker.ts
- * @description 워커 스레드 작업의 100% 완료 여부 및 타임아웃을 감시하는 관리자 클래스
- */
+/** 워커 스레드 작업의 100% 완료 여부 및 타임아웃을 감시하는 관리자 클래스 */
 
 import { WorkerResponse } from './workerProtocol';
 
@@ -19,9 +16,7 @@ interface TrackedJob {
 export class CompletionTracker {
     private activeJobs = new Map<string, TrackedJob>();
 
-    /**
-     * 다중 스레드 작업을 등록하고 타임아웃 타이머를 가동합니다.
-     */
+    /** 다중 스레드 작업을 등록하고 타임아웃 타이머를 가동합니다. */
     public registerJob(
         taskId: string,
         targetPeers: string[],
@@ -41,9 +36,7 @@ export class CompletionTracker {
         this.activeJobs.set(taskId, job);
     }
 
-    /**
-     * 특정 워커 스레드로부터 작업 완료 응답을 수신했을 때 호출됩니다.
-     */
+    /** 특정 워커 스레드로부터 작업 완료 응답을 수신했을 때 호출됩니다. */
     public reportDone(response: WorkerResponse): void {
         const job = this.activeJobs.get(response.taskId);
         if (!job) return;
@@ -68,9 +61,7 @@ export class CompletionTracker {
         job.onTimeout(pending, job.results);
     }
 
-    /**
-     * 진행 중인 모든 작업을 취소하고 타이머를 해제합니다.
-     */
+    /** 진행 중인 모든 작업을 취소하고 타이머를 해제합니다. */
     public clear(): void {
         this.activeJobs.forEach(job => clearTimeout(job.timeoutTimer));
         this.activeJobs.clear();

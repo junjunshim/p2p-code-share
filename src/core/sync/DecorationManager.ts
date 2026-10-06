@@ -1,7 +1,4 @@
-/**
- * @file DecorationManager.ts
- * @description 데코레이션(리뷰/피드백 오타, 문법오류 등) 추가/삭제, 재계산, 에디터 렌더링 및 가기 기능 등을 관리합니다.
- */
+/** 데코레이션(리뷰/피드백 오타, 문법오류 등) 추가/삭제, 재계산, 에디터 렌더링 및 가기 기능 등을 관리합니다. */
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
@@ -54,17 +51,15 @@ export class DecorationManager {
         backgroundColor: 'rgba(92, 184, 92, 0.22)'
     });
 
-    /** 스크롤 시 데코레이션 렌더링 디바운스를 위한 타이머 */
+    /** 스크롤 시 데코레이션 렌더링 디바운스 타이머 */
     private scrollDebounceTimer?: NodeJS.Timeout;
-    /** 에디터 가시 범위(스크롤) 변경 이벤트 리스너 구독 객체 */
-    private visibleRangesDisposable?: vscode.Disposable;
 
     /**
      * DecorationManager 인스턴스를 생성하고 에디터 스크롤(가시 범위 변경) 리스너를 바인딩합니다.
      * @param engine SyncEngine 메인 오케스트레이터 인스턴스.
      */
     constructor(private engine: SyncEngine) {
-        this.visibleRangesDisposable = vscode.window.onDidChangeTextEditorVisibleRanges(() => {
+        vscode.window.onDidChangeTextEditorVisibleRanges(() => {
             if (this.scrollDebounceTimer) {
                 clearTimeout(this.scrollDebounceTimer);
             }
@@ -79,7 +74,6 @@ export class DecorationManager {
      * 빈번한 텍스트 편집 시 데코레이션 위치 재계산 부하를 줄이기 위해 디바운싱(200ms) 처리합니다.
      * @param fileName 대상 파일 이름.
      * @param filePath 로컬 파일 절대 경로.
-     * @returns {void}
      */
     public debouncedRecalculateDecorations(fileName: string, filePath: string): void {
         const timer = this.decorationRecalculateTimers.get(fileName);
@@ -95,7 +89,6 @@ export class DecorationManager {
      * Yjs 상대 위치(RelativePosition)를 이용해 문서 변경 후 데코레이션들의 현재 에디터 절대 좌표를 역산하여 갱신합니다.
      * @param fileName 대상 파일 이름.
      * @param filePath 로컬 파일 절대 경로.
-     * @returns {void}
      */
     public recalculateDecorationsPositions(fileName: string, filePath: string): void {
         const ydoc = this.engine.documentSyncManager.yDocs.get(fileName);
@@ -162,7 +155,6 @@ export class DecorationManager {
 
     /**
      * 현재 열려 있는 에디터 상에 데코레이션 배지 및 호버 툴팁을 렌더링합니다.
-     * @returns {void}
      */
     public refreshDecorationsInEditors(): void {
         const visibleEditors = vscode.window.visibleTextEditors;
@@ -273,7 +265,6 @@ export class DecorationManager {
 
     /**
      * 사용자 에디터 상에서 선택된 영역에 대해 새 데코레이션을 생성하는 대화형 입력 플로우를 수행합니다.
-     * @returns {Promise<void>}
      */
     public async addDecorationFlow(): Promise<void> {
         const editor = vscode.window.activeTextEditor;
@@ -361,7 +352,6 @@ export class DecorationManager {
      * 특정 ID를 가진 데코레이션을 삭제합니다.
      * 게스트의 경우 자신이 생성한 데코레이션에 대해서만 삭제 요청을 보낼 수 있습니다.
      * @param id 삭제할 데코레이션 고유 ID.
-     * @returns {void}
      */
     public deleteDecoration(id: string): void {
         if (this.engine.isHost) {
@@ -383,7 +373,6 @@ export class DecorationManager {
 
     /**
      * 전체 참가자들에게 권한 필터(공개 범위)를 적용하여 데코레이션 목록을 동기화 전송합니다. (호스트 전용)
-     * @returns {void}
      */
     public broadcastDecorations(): void {
         if (!this.engine.isHost) return;
@@ -402,7 +391,6 @@ export class DecorationManager {
      * @param fileName 대상 파일 이름.
      * @param line 이동할 대상 라인 번호 (0-based).
      * @param char 이동할 대상 문자 컬럼 위치 (0-based).
-     * @returns {void}
      */
     public jumpToDecoration(fileName: string, line: number, char: number): void {
         const file = this.engine.fileStorageManager.sharedFiles.find(f => f.name === fileName);
@@ -420,7 +408,6 @@ export class DecorationManager {
     /**
      * 공유 취소 또는 삭제된 특정 파일의 모든 데코레이션을 제거합니다.
      * @param fileName 대상 파일 이름.
-     * @returns {void}
      */
     public removeDecorationsForFile(fileName: string): void {
         this.decorations = this.decorations.filter(d => d.fileName !== fileName);
@@ -430,7 +417,6 @@ export class DecorationManager {
     /**
      * 데코레이션 표시/숨김 여부를 설정하고 에디터 렌더링을 갱신합니다.
      * @param show 데코레이션 표시 여부.
-     * @returns {void}
      */
     public setShowDecorations(show: boolean): void {
         this.showDecorations = show;
@@ -440,7 +426,6 @@ export class DecorationManager {
 
     /**
      * 세션 종료 또는 방 퇴장 시 데코레이션 상태 및 재계산 타이머를 초기화합니다.
-     * @returns {void}
      */
     public reset(): void {
         this.decorations = [];

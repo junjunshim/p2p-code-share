@@ -99,9 +99,7 @@ export class TurnService {
         return null;
     }
 
-    /**
-     * 현재 캐시된 Host 토큰을 무효화합니다 (방 종료 시 호출).
-     */
+    /** 현재 캐시된 Host 토큰을 무효화합니다 (방 종료 시 호출). */
     public clearCache(): void {
         this.cachedHostToken = undefined;
         delete this.failureAtByRole['host'];
@@ -128,9 +126,7 @@ export class TurnService {
         return true;
     }
 
-    /**
-     * VS Code 고유 machineId + 타임스탬프 + Role 기반으로 HMAC 서명을 생성하고 Worker를 호출합니다.
-     */
+    /** VS Code 고유 machineId + 타임스탬프 + Role 기반으로 HMAC 서명을 생성하고 Worker를 호출합니다. */
     private requestTokenFromWorker(role: 'host' | 'guest'): Promise<TurnTokenResponse | null> {
         const request = new Promise<TurnTokenResponse | null>((resolve) => {
             const machineId = vscode.env.machineId || 'unknown-machine-id';

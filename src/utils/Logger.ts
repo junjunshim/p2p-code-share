@@ -1,11 +1,8 @@
-/**
- * @file Logger.ts
- * @description 개발 모드(F5) 실행 시 VS Code 표준 OutputChannel에 체계적인 타임스탬프 및 순서 번호와 함께 로그를 출력하는 전용 로거입니다.
- */
+/** 개발 모드(F5) 실행 시 VS Code 표준 OutputChannel에 체계적인 타임스탬프 및 순서 번호와 함께 로그를 출력하는 전용 로거입니다. */
 
 import * as vscode from 'vscode';
 
-export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+export type LogLevel = 'INFO' | 'WARN' | 'ERROR';
 
 export class Logger {
     private static instance?: Logger;
@@ -50,23 +47,12 @@ export class Logger {
         this.write('INFO', category, message);
     }
 
-    /**
-     * 디버그 상세 로그를 남깁니다.
-     */
-    public debug(category: string, message: string): void {
-        this.write('DEBUG', category, message);
-    }
-
-    /**
-     * 경고 로그를 남깁니다.
-     */
+    /** 경고 로그를 남깁니다. */
     public warn(category: string, message: string): void {
         this.write('WARN', category, message);
     }
 
-    /**
-     * 에러 로그를 남깁니다.
-     */
+    /** 에러 로그를 남깁니다. */
     public error(category: string, message: string, err?: any): void {
         const errMsg = err ? ` | Error: ${err?.stack || err?.message || err}` : '';
         this.write('ERROR', category, `${message}${errMsg}`);
@@ -87,14 +73,5 @@ export class Logger {
         if (!this.isDevMode || !this.outputChannel) return;
         const line = `[${Logger.formatTime()}] [${level}] [${category}] ${text}`;
         this.outputChannel.appendLine(line);
-    }
-
-    /**
-     * OutputChannel 창을 사용자에게 노출합니다.
-     */
-    public show(): void {
-        if (this.outputChannel) {
-            this.outputChannel.show(true);
-        }
     }
 }

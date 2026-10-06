@@ -1,8 +1,4 @@
-/**
- * @file SyncEngine.ts
- * @description 피어 간 파일 내용, 커서 및 상태를 동기화하기 위한 핵심 엔진입니다.
- * 각 서브매니저들을 조정하는 Orchestrator 역할을 수행합니다.
- */
+/** 피어 간 파일 내용, 커서 및 상태를 동기화하기 위한 핵심 엔진입니다. 각 서브매니저들을 조정하는 Orchestrator 역할을 수행합니다. */
 
 import * as vscode from 'vscode';
 import { HubManager } from './HubManager';
@@ -117,30 +113,22 @@ export class SyncEngine {
      */
     private inboundParseChains = new Map<string, Promise<void>>();
 
-    /**
-     * 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임).
-     */
+    /** 현재 세션에서 공유 중인 파일 목록을 반환합니다 (FileStorageManager 위임). */
     public get sharedFiles(): SharedFile[] {
         return this.fileStorageManager.sharedFiles;
     }
 
-    /**
-     * 현재 세션의 참가자 권한 목록을 반환합니다 (ParticipantManager 위임).
-     */
+    /** 현재 세션의 참가자 권한 목록을 반환합니다 (ParticipantManager 위임). */
     public get participants(): { [key: string]: PeerPermission } {
         return this.participantManager.participants;
     }
 
-    /**
-     * 현재 등록된 데코레이션 목록을 반환합니다 (DecorationManager 위임).
-     */
+    /** 현재 등록된 데코레이션 목록을 반환합니다 (DecorationManager 위임). */
     public get decorations(): FileDecoration[] {
         return this.decorationManager.decorations;
     }
 
-    /**
-     * 현재 설정된 커서 필터링 모드를 반환합니다 (CursorManager 위임).
-     */
+    /** 현재 설정된 커서 필터링 모드를 반환합니다 (CursorManager 위임). */
     public get cursorFilter(): 'host' | 'editable' | 'all' {
         return this.cursorManager.cursorFilter;
     }
@@ -219,9 +207,165 @@ export class SyncEngine {
         return JSON.parse(text) as P2PMessage;
     }
 
-    /**
-     * P2P 데이터 메시지를 위한 이벤트 핸들러를 설정하고 메시지를 라우팅합니다.
-     */
+    /** 채팅 메시지를 기록하고(중복 방어) 호스트는 다른 참여자에게 중계합니다. */
+    private handleChatMessage(msg: any, peerId: string): void {
+        if (msg.chatMessage) {
+            // 이미 기록이 존재하지 않는 경우에만 푸시 (중복 방어)
+            const isDuplicate = this.chatHistory.some(h => h.id === msg.chatMessage.id);
+            if (!isDuplicate) {
+                this.chatHistory.push(msg.chatMessage);
+                if (this.isHost) {
+                    // 다른 참여자들에게만 채팅 중계 (보낸 사람 제외, 단일 IPC 팬아웃)
+                    this.sendMessage('CHAT_MESSAGE', { chatMessage: msg.chatMessage }, [peerId]);
+                }
+
+                // 안 읽은 카운트 누적 (채팅 패널이 열려있지 않을 때만)
+                if (!this.chatPanel) {
+                    this.unreadChatCount++;
+                }
+
+                this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+                this.pushUIUpdate(); // 사이드바 버튼 배지 갱신을 위해 UI 강제 업데이트
+            }
+        }
+    }
+
+    /** Yjs 델타를 적용하고, 호스트는 권한을 검증한 뒤 다른 참여자에게 중계합니다. */
+    private async handleYjsUpdate(msg: any, peerId: string): Promise<void> {
+        if (this.isHost) {
+            // 호스트는 실제 전송 피어가 등록되어 있고 대상 파일 편집 권한이 있는지 확인합니다.
+            const isSharedFile = typeof msg.fileName === 'string' &&
+                this.fileStorageManager.sharedFiles.some(file => file.name === msg.fileName);
+            if (!peerId || !this.participantManager.participants[peerId] ||
+                !isSharedFile || !this.participantManager.canPeerEdit(peerId, msg.fileName)) {
+                this.logToUI(`Blocked unauthorized edit from peer ${peerId || 'unknown'} on ${msg.fileName || 'unknown file'}`);
+                return;
+            }
+        }
+
+        await this.documentSyncManager.handleYjsUpdate(msg);
+        if (this.isHost) {
+            // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외, 단일 IPC 팬아웃)
+            this.sendMessage('YJS_UPDATE', msg, [peerId]);
+        }
+    }
+
+    /** 게스트 참여(GUEST_JOIN) 메시지를 처리합니다. */
+    private handleGuestJoinMessage(msg: any, peerId: string): void {
+        this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
+        if (this.isHost) {
+            const isAutoJoining = this.participantManager.joinRequests.some(r => r.peerId === peerId);
+            if (!isAutoJoining) {
+                this.participantManager.handleGuestJoin(msg, peerId);
+                this.updateStatus('Connected');
+            }
+        }
+    }
+
+    /** 닉네임 변경을 참가자/커서/데코레이션/담당 파일에 반영하고 중계합니다. */
+    private handleGuestRename(msg: any, peerId: string): void {
+        const newName = msg.newName;
+        const renameTargetId = msg.peerId || peerId;
+        if (renameTargetId) {
+            if (this.participantManager.participants[renameTargetId]) {
+                this.participantManager.participants[renameTargetId].name = newName;
+            }
+            // 커서 상태 캐시에 저장된 닉네임도 즉시 갱신
+            const cursorState = this.cursorManager['remoteCursorStates'].get(renameTargetId);
+            if (cursorState) {
+                cursorState.userName = newName;
+            }
+            // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경
+            this.decorationManager.decorations.forEach(d => {
+                if (d.creatorId === renameTargetId) d.creatorName = newName;
+            });
+            // 해당 게스트가 담당자인 파일의 assigneeName 로컬 갱신
+            this.fileStorageManager.sharedFiles.forEach(f => {
+                if (f.assigneeId === renameTargetId) f.assigneeName = newName;
+            });
+        }
+
+        if (this.isHost && renameTargetId) {
+            this.participantManager.broadcastUserList();
+            this.decorationManager.broadcastDecorations();
+
+            // 해당 게스트가 담당자로 지정된 파일의 assigneeName 갱신 및 브로드캐스트
+            this.fileStorageManager.sharedFiles.forEach(f => {
+                if (f.assigneeId === renameTargetId) {
+                    f.assigneeName = newName;
+                    this.sendMessage('FILE_ASSIGNEE_UPDATE', {
+                        fileName: f.name,
+                        assigneeId: renameTargetId,
+                        assigneeName: newName
+                    });
+                }
+            });
+
+            // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신 (단일 IPC 팬아웃)
+            this.sendMessage('GUEST_RENAME', { newName, peerId: renameTargetId }, [renameTargetId]);
+        }
+        this.cursorManager.refreshAllDecorations();
+        this.pushUIUpdate();
+    }
+
+    /** 게스트가 추가한 데코레이션을 검증 후 등록하고 중계합니다. */
+    private handleAddDecoration(msg: any, peerId: string): void {
+        if (this.isHost && msg.decoration) {
+            const exists = this.decorationManager.decorations.some(d => d.id === msg.decoration.id);
+            if (!exists) {
+                // 피어 ID 변조 방지 및 실제 접속자 닉네임 정합성 보장
+                if (peerId && peerId !== 'host') {
+                    msg.decoration.creatorId = peerId;
+                    if (this.participantManager.participants[peerId]) {
+                        msg.decoration.creatorName = this.participantManager.participants[peerId].name;
+                    }
+                }
+                this.decorationManager.decorations.push(msg.decoration);
+                this.decorationManager.broadcastDecorations();
+            }
+        }
+    }
+
+    /** 데코레이션 삭제 요청을 권한 확인 후 처리합니다. */
+    private handleDeleteDecoration(msg: any, peerId: string): void {
+        if (this.isHost) {
+            const deco = this.decorationManager.decorations.find(d => d.id === msg.id);
+            const senderPeerId = peerId;
+            if (deco && (deco.creatorId === senderPeerId || (msg.creatorId && deco.creatorId === msg.creatorId) || senderPeerId === 'host')) {
+                this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.id !== msg.id);
+                this.decorationManager.broadcastDecorations();
+            }
+        }
+    }
+
+    /** PING 에 응답하고, 호스트는 승인 응답을 받지 못한 게스트를 복구합니다. */
+    private handlePing(msg: any, peerId: string): void {
+        if (!this.isHost) {
+            this.sendMessage('PONG', { peerId: this.myId, name: this.myName, timestamp: msg.timestamp });
+        } else if (this.isHost && peerId) {
+            // 게스트가 승인 응답(JOIN_RESPONSE)을 받지 못해 확인 핑을 보낸 경우의 Fallback
+            const isExisting = this.participantManager.participants[peerId] ||
+                               (msg.peerId && this.participantManager.participants[msg.peerId]);
+            if (isExisting) {
+                this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
+                this.participantManager.broadcastUserList();
+            }
+        }
+    }
+
+    /** 호스트 에디터의 현재 뷰포트 위치를 게스트들에게 방송합니다. */
+    private sendFollowUpdate(editor: vscode.TextEditor): void {
+        const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
+        if (!file || editor.visibleRanges.length === 0) return;
+        const range = editor.visibleRanges[0];
+        this.sendMessage('FOLLOW_UPDATE', {
+            fileName: file.name,
+            startLine: range.start.line,
+            endLine: range.end.line
+        });
+    }
+
+    /** P2P 데이터 메시지를 위한 이벤트 핸들러를 설정하고 메시지를 라우팅합니다. */
     public setupHandlers() {
         this.hub.onDidReceiveData = async (text, peerId) => {
             // 대규모 동시 접속 배포판에서 초당 수백 회의 IPC 부하를 방지하기 위해 개발 모드(F5)에서만 패킷 수신 로그 출력
@@ -240,27 +384,7 @@ export class SyncEngine {
                     case 'SET_ROLE': this.handleSetRole(msg); break;
                     case 'ON_CONNECTED': this.handleOnConnected(peerId); break;
                     case 'ASSIGN_PEER_ID': this.handleAssignPeerId(msg); break;
-                    case 'CHAT_MESSAGE':
-                        if (msg.chatMessage) {
-                            // 이미 기록이 존재하지 않는 경우에만 푸시 (중복 방어)
-                            const isDuplicate = this.chatHistory.some(h => h.id === msg.chatMessage.id);
-                            if (!isDuplicate) {
-                                this.chatHistory.push(msg.chatMessage);
-                                if (this.isHost) {
-                                    // 다른 참여자들에게만 채팅 중계 (보낸 사람 제외, 단일 IPC 팬아웃)
-                                    this.sendMessage('CHAT_MESSAGE', { chatMessage: msg.chatMessage }, [peerId]);
-                                }
-                                
-                                // 안 읽은 카운트 누적 (채팅 패널이 열려있지 않을 때만)
-                                if (!this.chatPanel) {
-                                    this.unreadChatCount++;
-                                }
-                                
-                                this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
-                                this.pushUIUpdate(); // 사이드바 버튼 배지 갱신을 위해 UI 강제 업데이트
-                            }
-                        }
-                        break;
+                    case 'CHAT_MESSAGE': this.handleChatMessage(msg, peerId); break;
                     case 'TYPING_LOCK':
                     case 'TYPING_UNLOCK':
                         // 동시 편집 지원을 위해 타이핑 락을 적용하지 않음 (하위 호환성 유지)
@@ -284,79 +408,9 @@ export class SyncEngine {
                             this.participantManager.sendInitialSnapshotsToPeer(peerId, msg.missingFiles);
                         }
                         break;
-                    case 'YJS_UPDATE':
-                        if (this.isHost) {
-                            // 호스트는 실제 전송 피어가 등록되어 있고 대상 파일 편집 권한이 있는지 확인합니다.
-                            const isSharedFile = typeof msg.fileName === 'string' &&
-                                this.fileStorageManager.sharedFiles.some(file => file.name === msg.fileName);
-                            if (!peerId || !this.participantManager.participants[peerId] ||
-                                !isSharedFile || !this.participantManager.canPeerEdit(peerId, msg.fileName)) {
-                                this.logToUI(`Blocked unauthorized edit from peer ${peerId || 'unknown'} on ${msg.fileName || 'unknown file'}`);
-                                break;
-                            }
-                        }
-
-                        await this.documentSyncManager.handleYjsUpdate(msg);
-                        if (this.isHost) {
-                            // 다른 참여자들에게 변경사항 중계 (보낸 피어 제외, 단일 IPC 팬아웃)
-                            this.sendMessage('YJS_UPDATE', msg, [peerId]);
-                        }
-                        break;
-                    case 'GUEST_JOIN': 
-                        this.logToUI(`GUEST_JOIN from peer: ${peerId}, Name: ${msg.name}`);
-                        if (this.isHost) {
-                            const isAutoJoining = this.participantManager.joinRequests.some(r => r.peerId === peerId);
-                            if (!isAutoJoining) {
-                                this.participantManager.handleGuestJoin(msg, peerId);
-                                this.updateStatus('Connected');
-                            }
-                        }
-                        break;
-                    case 'GUEST_RENAME': {
-                        const newName = msg.newName;
-                        const renameTargetId = msg.peerId || peerId;
-                        if (renameTargetId) {
-                            if (this.participantManager.participants[renameTargetId]) {
-                                this.participantManager.participants[renameTargetId].name = newName;
-                            }
-                            // 커서 상태 캐시에 저장된 닉네임도 즉시 갱신
-                            const cursorState = this.cursorManager['remoteCursorStates'].get(renameTargetId);
-                            if (cursorState) {
-                                cursorState.userName = newName;
-                            }
-                            // 해당 게스트가 남긴 데코레이션의 작성자 이름 변경
-                            this.decorationManager.decorations.forEach(d => {
-                                if (d.creatorId === renameTargetId) d.creatorName = newName;
-                            });
-                            // 해당 게스트가 담당자인 파일의 assigneeName 로컬 갱신
-                            this.fileStorageManager.sharedFiles.forEach(f => {
-                                if (f.assigneeId === renameTargetId) f.assigneeName = newName;
-                            });
-                        }
-
-                        if (this.isHost && renameTargetId) { 
-                            this.participantManager.broadcastUserList(); 
-                            this.decorationManager.broadcastDecorations();
-
-                            // 해당 게스트가 담당자로 지정된 파일의 assigneeName 갱신 및 브로드캐스트
-                            this.fileStorageManager.sharedFiles.forEach(f => {
-                                if (f.assigneeId === renameTargetId) {
-                                    f.assigneeName = newName;
-                                    this.sendMessage('FILE_ASSIGNEE_UPDATE', {
-                                        fileName: f.name,
-                                        assigneeId: renameTargetId,
-                                        assigneeName: newName
-                                    });
-                                }
-                            });
-
-                            // 다른 게스트들에게도 이름 변경 사실을 즉각 중계하여 전원의 화면에서 커서 이름 갱신 (단일 IPC 팬아웃)
-                            this.sendMessage('GUEST_RENAME', { newName, peerId: renameTargetId }, [renameTargetId]);
-                        }
-                        this.cursorManager.refreshAllDecorations();
-                        this.pushUIUpdate();
-                        break;
-                    }
+                    case 'YJS_UPDATE': await this.handleYjsUpdate(msg, peerId); break;
+                    case 'GUEST_JOIN': this.handleGuestJoinMessage(msg, peerId); break;
+                    case 'GUEST_RENAME': this.handleGuestRename(msg, peerId); break;
                     case 'USER_LIST_UPDATE': this.handleUserListUpdate(msg); break;
                     case 'FILE_ASSIGNEE_UPDATE': await this.handleFileAssigneeUpdate(msg); break;
                     case 'STOP_SHARING': await this.fileStorageManager.handleRemoteStop(msg.fileName); break;
@@ -367,37 +421,13 @@ export class SyncEngine {
                         break;
                     }
                     case 'JOIN_REQUEST': this.participantManager.handleJoinRequest(msg, peerId); break;
-                    case 'JOIN_REQUEST_ACK': this.participantManager.handleJoinRequestAck(msg); break;
+                    case 'JOIN_REQUEST_ACK': this.participantManager.handleJoinRequestAck(); break;
                     case 'JOIN_RESPONSE': this.participantManager.handleJoinResponse(msg); break;
                     case 'ROOM_CLOSED': this.participantManager.handleRoomClosed(msg); break;
                     case 'KICKED': this.participantManager.handleKicked(msg); break;
                     case 'SET_PERMISSION': await this.participantManager.handleSetPermission(msg); break;
-                    case 'ADD_DECORATION':
-                        if (this.isHost && msg.decoration) {
-                            const exists = this.decorationManager.decorations.some(d => d.id === msg.decoration.id);
-                            if (!exists) {
-                                // 피어 ID 변조 방지 및 실제 접속자 닉네임 정합성 보장
-                                if (peerId && peerId !== 'host') {
-                                    msg.decoration.creatorId = peerId;
-                                    if (this.participantManager.participants[peerId]) {
-                                        msg.decoration.creatorName = this.participantManager.participants[peerId].name;
-                                    }
-                                }
-                                this.decorationManager.decorations.push(msg.decoration);
-                                this.decorationManager.broadcastDecorations();
-                            }
-                        }
-                        break;
-                    case 'DELETE_DECORATION':
-                        if (this.isHost) {
-                            const deco = this.decorationManager.decorations.find(d => d.id === msg.id);
-                            const senderPeerId = peerId;
-                            if (deco && (deco.creatorId === senderPeerId || (msg.creatorId && deco.creatorId === msg.creatorId) || senderPeerId === 'host')) {
-                                this.decorationManager.decorations = this.decorationManager.decorations.filter(d => d.id !== msg.id);
-                                this.decorationManager.broadcastDecorations();
-                            }
-                        }
-                        break;
+                    case 'ADD_DECORATION': this.handleAddDecoration(msg, peerId); break;
+                    case 'DELETE_DECORATION': this.handleDeleteDecoration(msg, peerId); break;
                     case 'SYNC_DECORATIONS':
                         this.decorationManager.decorations = msg.decorations || [];
                         this.decorationManager.refreshDecorationsInEditors();
@@ -406,19 +436,7 @@ export class SyncEngine {
                     case 'GUEST_LEAVE':
                         this.handleGuestLeave(peerId);
                         break;
-                    case 'PING':
-                        if (!this.isHost) {
-                            this.sendMessage('PONG', { peerId: this.myId, name: this.myName, timestamp: msg.timestamp });
-                        } else if (this.isHost && peerId) {
-                            // 게스트가 승인 응답(JOIN_RESPONSE)을 받지 못해 확인 핑을 보낸 경우의 Fallback
-                            const isExisting = this.participantManager.participants[peerId] || 
-                                               (msg.peerId && this.participantManager.participants[msg.peerId]);
-                            if (isExisting) {
-                                this.sendMessageToPeer(peerId, 'JOIN_RESPONSE', { approved: true });
-                                this.participantManager.broadcastUserList();
-                            }
-                        }
-                        break;
+                    case 'PING': this.handlePing(msg, peerId); break;
                     case 'PONG':
                         if (this.isHost) {
                             if (peerId) {
@@ -432,7 +450,6 @@ export class SyncEngine {
                 }
             } catch (e) {}
         };
-
 
     }
 
@@ -630,25 +647,22 @@ export class SyncEngine {
         this.sendMessage('CURSOR_UPDATE', msg, [senderId]);
     }
 
-    /**
-     * 텍스트 문서 변경 이벤트 리스너를 설정합니다.
-     */
+    /** 텍스트 문서 변경 이벤트 리스너를 설정합니다. */
     private setupTextListeners() {
+        this.setupActiveEditorListeners();
+        this.setupDocumentListeners();
+        this.setupViewRefreshListeners();
+    }
+
+    /** 활성 에디터 전환/스크롤 시 화면 추적 동기화와 읽기 전용 상태를 갱신합니다. */
+    private setupActiveEditorListeners() {
         vscode.window.onDidChangeActiveTextEditor(async editor => {
             this.updateActiveFileSharedContext();
             if (!editor) return;
 
             // 호스트 활성 탭 전환 시 화면 추적 동기화
             if (this.isHost && this.isFollowMeMode) {
-                const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
-                if (file && editor.visibleRanges.length > 0) {
-                    const range = editor.visibleRanges[0];
-                    this.sendMessage('FOLLOW_UPDATE', {
-                        fileName: file.name,
-                        startLine: range.start.line,
-                        endLine: range.end.line
-                    });
-                }
+                this.sendFollowUpdate(editor);
             }
 
             if (this.isHost) {
@@ -689,6 +703,10 @@ export class SyncEngine {
             }
         });
 
+    }
+
+    /** 문서 변경/저장/닫기 이벤트를 동기화 파이프라인에 연결합니다. */
+    private setupDocumentListeners() {
         vscode.workspace.onDidChangeTextDocument(e => {
             const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, e.document.uri.fsPath));
             if (!file) return;
@@ -724,7 +742,6 @@ export class SyncEngine {
             this.fileStorageManager.scheduleDebouncedSave(file.path);
         });
 
-
         vscode.workspace.onWillSaveTextDocument(e => {
             if (!this.isHost && this.fileStorageManager.sharedFiles.some(f => isPathEqual(f.path, e.document.uri.fsPath))) {
                 vscode.window.setStatusBarMessage("P2P: Changes synced to Host.", 3000);
@@ -738,6 +755,10 @@ export class SyncEngine {
             }, 500);
         });
 
+    }
+
+    /** 표시 중인 에디터/설정 변경 시 커서·데코레이션을 다시 그립니다. */
+    private setupViewRefreshListeners() {
         vscode.window.onDidChangeVisibleTextEditors(() => {
             this.cursorManager.refreshAllDecorations();
         });
@@ -752,9 +773,7 @@ export class SyncEngine {
         );
     }
 
-    /**
-     * 피어의 역할을 설정하고 초기화합니다.
-     */
+    /** 피어의 역할을 설정하고 초기화합니다. */
     public handleSetRole(msg: any) {
         this.isHost = msg.isHost;
         this.myId = this.isHost ? 'host' : '';
@@ -812,18 +831,14 @@ export class SyncEngine {
         }
     }
 
-    /**
-     * 특정 피어에게 메시지를 전송합니다.
-     */
+    /** 특정 피어에게 메시지를 전송합니다. */
     public sendMessageToPeer(peerId: string, type: string, data: any) { 
         this.hub.sendToEngine({ type: 'peerData', value: { type, ...data } }, peerId); 
     }
 
     private lineStartsCache: { textRef: string; lineStarts: number[] } | null = null;
 
-    /**
-     * 텍스트의 각 라인 시작 인덱스 배열을 캐싱하여 반환합니다.
-     */
+    /** 텍스트의 각 라인 시작 인덱스 배열을 캐싱하여 반환합니다. */
     private getLineStarts(text: string): number[] {
         if (this.lineStartsCache && this.lineStartsCache.textRef === text) {
             return this.lineStartsCache.lineStarts;
@@ -839,9 +854,7 @@ export class SyncEngine {
         return lineStarts;
     }
 
-    /**
-     * Yjs 텍스트와 인덱스로부터 안전한 vscode.Position을 이진 탐색으로 고속 계산합니다. O(log N)
-     */
+    /** Yjs 텍스트와 인덱스로부터 안전한 vscode.Position을 이진 탐색으로 고속 계산합니다. O(log N) */
     public getPositionFromIndex(text: string, index: number): vscode.Position {
         if (!text || index <= 0) {
             return new vscode.Position(0, 0);
@@ -867,9 +880,7 @@ export class SyncEngine {
         return new vscode.Position(line, character);
     }
 
-    /**
-     * Yjs 텍스트와 vscode.Position(line, character)으로부터 인덱스를 O(1)로 고속 계산합니다.
-     */
+    /** Yjs 텍스트와 vscode.Position(line, character)으로부터 인덱스를 O(1)로 고속 계산합니다. */
     public getIndexFromPosition(text: string, position: vscode.Position): number {
         if (!text) {
             return 0;
@@ -897,10 +908,6 @@ export class SyncEngine {
         return lineStart + clampedCharacter;
     }
 
-
-    /**
-     * UI 웹뷰에 로그를 출력합니다.
-     */
     /**
      * 게스트 입장 진행 단계를 갱신합니다(같은 단계는 무시). 사이드바의 "무엇을 기다리는지" 표시에 사용됩니다.
      * @param stage 단계 키(빈 문자열이면 초기화).
@@ -915,6 +922,7 @@ export class SyncEngine {
         this.pushUIUpdate(true);
     }
 
+    /** UI 웹뷰에 로그를 출력합니다. */
     public logToUI(message: string) {
         this.updateUI({ 
             type: 'log', 
@@ -991,18 +999,14 @@ export class SyncEngine {
         this.updateActiveFileSharedContext();
     }
 
-    /**
-     * 현재 활성화된 에디터의 파일이 공유 중인지 여부를 VS Code context에 업데이트합니다.
-     */
+    /** 현재 활성화된 에디터의 파일이 공유 중인지 여부를 VS Code context에 업데이트합니다. */
     public updateActiveFileSharedContext() {
         const editor = vscode.window.activeTextEditor;
         const isShared = editor ? this.fileStorageManager.sharedFiles.some(f => isPathEqual(f.path, editor.document.uri.fsPath)) : false;
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isActiveFileShared', isShared);
     }
 
-    /**
-     * UI 웹뷰에 상태를 업데이트합니다.
-     */
+    /** UI 웹뷰에 상태를 업데이트합니다. */
     public updateStatus(status: string) {
         let finalStatus = status;
         if (status === 'Connected' && this.connectionType === 'TURN') {
@@ -1017,7 +1021,6 @@ export class SyncEngine {
     /**
      * 현재 활성화된 에디터의 파일 또는 지정된 URI의 파일을 공유 시작합니다.
      * @param targetUri 공유할 대상 파일 URI (선택 사항).
-     * @returns {Promise<void>}
      */
     public async shareActiveFile(targetUri?: vscode.Uri): Promise<void> {
         await this.fileStorageManager.shareActiveFile(targetUri);
@@ -1025,7 +1028,6 @@ export class SyncEngine {
 
     /**
      * 현재 활성화된 에디터 파일의 공유를 중지합니다.
-     * @returns {Promise<void>}
      */
     public async stopSharing(): Promise<void> {
         await this.fileStorageManager.stopSharing();
@@ -1034,7 +1036,6 @@ export class SyncEngine {
     /**
      * 특정 파일명의 공유를 중지합니다 (호스트 전용).
      * @param fileName 공유를 중지할 파일 이름.
-     * @returns {Promise<void>}
      */
     public async stopSharingByName(fileName: string): Promise<void> {
         await this.fileStorageManager.stopSharingByName(fileName);
@@ -1043,7 +1044,6 @@ export class SyncEngine {
     /**
      * 새로운 게스트 초대를 위한 피어 세션을 생성합니다 (호스트 전용).
      * @param isSilent UI 전환 없이 조용히 생성할지 여부.
-     * @returns {void}
      */
     public inviteGuest(isSilent: boolean = false): void {
         this.participantManager.inviteGuest(isSilent);
@@ -1053,7 +1053,6 @@ export class SyncEngine {
      * 지정한 방 이름으로 호스트에게 방 참여 요청을 전송합니다 (게스트 전용).
      * @param roomName 참여할 방 이름.
      * @param userName 사용자 닉네임.
-     * @returns {Promise<void>}
      */
     public async sendJoinRequest(roomName: string, userName: string): Promise<void> {
         await this.participantManager.sendJoinRequest(roomName, userName);
@@ -1062,7 +1061,6 @@ export class SyncEngine {
     /**
      * 대기 중인 게스트의 방 참여 요청을 승인합니다 (호스트 전용).
      * @param peerId 승인할 피어 ID.
-     * @returns {void}
      */
     public approveRequest(peerId: string): void {
         this.participantManager.approveRequest(peerId);
@@ -1070,7 +1068,6 @@ export class SyncEngine {
 
     /**
      * 대기 중인 모든 게스트의 방 참여 요청을 일괄 승인합니다 (호스트 전용).
-     * @returns {void}
      */
     public approveAllRequests(): void {
         this.participantManager.approveAllRequests();
@@ -1079,15 +1076,12 @@ export class SyncEngine {
     /**
      * 자동 승인 모드를 활성화 또는 비활성화합니다 (호스트 전용).
      * @param enabled 자동 승인 활성화 여부.
-     * @returns {void}
      */
     public setAutoApprove(enabled: boolean): void {
         this.participantManager.setAutoApprove(enabled);
     }
 
-    /**
-     * 자동 승인 모드 활성화 여부를 조회합니다.
-     */
+    /** 자동 승인 모드 활성화 여부를 조회합니다. */
     public get isAutoApprove(): boolean {
         return this.participantManager.isAutoApprove;
     }
@@ -1095,7 +1089,6 @@ export class SyncEngine {
     /**
      * 특정 게스트의 방 참여 요청을 거절합니다 (호스트 전용).
      * @param peerId 거절할 피어 ID.
-     * @returns {void}
      */
     public rejectRequest(peerId: string): void {
         this.participantManager.rejectRequest(peerId);
@@ -1105,7 +1098,6 @@ export class SyncEngine {
      * 특정 게스트의 파일 접근 권한을 설정합니다 (호스트 전용).
      * @param peerId 대상 피어 ID.
      * @param permission 설정할 권한 객체.
-     * @returns {void}
      */
     public setPeerPermission(peerId: string, permission: PeerPermission): void {
         this.participantManager.setPeerPermission(peerId, permission);
@@ -1113,7 +1105,6 @@ export class SyncEngine {
 
     /**
      * 모든 게스트의 쓰기 권한을 일괄 해제하여 읽기 전용으로 전환합니다 (호스트 전용).
-     * @returns {void}
      */
     public revokeAllWritePermissions(): void {
         this.participantManager.revokeAllWritePermissions();
@@ -1123,7 +1114,6 @@ export class SyncEngine {
      * 특정 파일의 전담 편집 담당자를 지정합니다 (호스트 전용).
      * @param fileName 대상 파일 이름.
      * @param assigneeId 담당자 피어 ID.
-     * @returns {void}
      */
     public setFileAssignee(fileName: string, assigneeId: string): void {
         this.participantManager.setFileAssignee(fileName, assigneeId);
@@ -1132,7 +1122,6 @@ export class SyncEngine {
     /**
      * 로컬 사용자의 닉네임을 변경하고 모든 피어에게 알립니다.
      * @param newName 새로 설정할 닉네임.
-     * @returns {void}
      */
     public changeMyName(newName: string): void {
         this.participantManager.changeMyName(newName);
@@ -1141,7 +1130,6 @@ export class SyncEngine {
     /**
      * 특정 피어를 방에서 강제 퇴장시킵니다 (호스트 전용).
      * @param peerId 퇴장시킬 피어 ID.
-     * @returns {Promise<void>}
      */
     public async kickPeer(peerId: string): Promise<void> {
         await this.participantManager.kickPeer(peerId);
@@ -1150,7 +1138,6 @@ export class SyncEngine {
     /**
      * 피어 연결 단절 이벤트를 처리합니다.
      * @param peerId 연결이 끊어진 피어 ID.
-     * @returns {void}
      */
     public handlePeerDisconnect(peerId: string): void {
         this.participantManager.handlePeerDisconnect(peerId);
@@ -1159,7 +1146,6 @@ export class SyncEngine {
     /**
      * 특정 데코레이션을 삭제합니다.
      * @param id 삭제할 데코레이션 고유 ID.
-     * @returns {void}
      */
     public deleteDecoration(id: string): void {
         this.decorationManager.deleteDecoration(id);
@@ -1170,7 +1156,6 @@ export class SyncEngine {
      * @param fileName 파일 이름.
      * @param line 라인 번호.
      * @param char 문자 컬럼 번호.
-     * @returns {void}
      */
     public jumpToDecoration(fileName: string, line: number, char: number): void {
         this.decorationManager.jumpToDecoration(fileName, line, char);
@@ -1179,7 +1164,6 @@ export class SyncEngine {
     /**
      * 에디터에 표시할 커서 대상을 필터링합니다.
      * @param filter 커서 필터 모드 ('host' | 'editable' | 'all').
-     * @returns {void}
      */
     public setCursorFilter(filter: 'host' | 'editable' | 'all'): void {
         this.cursorManager.setCursorFilter(filter);
@@ -1188,7 +1172,6 @@ export class SyncEngine {
     /**
      * 에디터 데코레이션 표시 여부를 설정합니다.
      * @param show 데코레이션 표시 여부.
-     * @returns {void}
      */
     public setShowDecorations(show: boolean): void {
         this.decorationManager.setShowDecorations(show);
@@ -1196,7 +1179,6 @@ export class SyncEngine {
 
     /**
      * 에디터 선택 영역에 대한 새 데코레이션 추가 플로우를 실행합니다.
-     * @returns {Promise<void>}
      */
     public async addDecorationFlow(): Promise<void> {
         await this.decorationManager.addDecorationFlow();
@@ -1205,7 +1187,6 @@ export class SyncEngine {
     /**
      * 방 나가기(퇴장) 플로우를 처리합니다.
      * 호스트는 공유 파일 중지 검사 및 방 종료 통지를 수행하고, 게스트는 로컬 임시 파일을 완전히 삭제하고 세션을 정리합니다.
-     * @returns {Promise<void>}
      */
     public async leaveRoomFlow(): Promise<void> {
         if (this.isHost) {
@@ -1261,7 +1242,6 @@ export class SyncEngine {
     /**
      * 게스트가 방을 퇴장할 때 호스트가 수신하여 해당 게스트의 리소스(커서, 데코레이션, 참가자 목록)를 정리합니다.
      * @param peerId 퇴장한 피어 ID.
-     * @returns {void}
      */
     private handleGuestLeave(peerId: string): void {
         if (!this.isHost) return;
@@ -1284,7 +1264,6 @@ export class SyncEngine {
     /**
      * 실시간 P2P 채팅 메시지를 생성하고 피어들에게 브로드캐스트합니다.
      * @param text 전송할 채팅 텍스트.
-     * @returns {void}
      */
     public sendChatMessage(text: string): void {
         const cleanText = text.trim();
@@ -1311,7 +1290,6 @@ export class SyncEngine {
     /**
      * 호스트가 화면 동기화(팔로우 모드)를 켜거나 끄고 현재 뷰포트 위치를 즉시 동기화합니다.
      * @param enabled 활성화 여부.
-     * @returns {void}
      */
     public setFollowMeMode(enabled: boolean): void {
         this.isFollowMeMode = enabled;
@@ -1320,17 +1298,7 @@ export class SyncEngine {
         // 켜지는 시점에 현재 에디터 위치 즉시 브로드캐스트
         if (enabled && this.isHost) {
             const editor = vscode.window.activeTextEditor;
-            if (editor) {
-                const file = this.fileStorageManager.sharedFiles.find(f => isPathEqual(f.path, editor.document.uri.fsPath));
-                if (file && editor.visibleRanges.length > 0) {
-                    const range = editor.visibleRanges[0];
-                    this.sendMessage('FOLLOW_UPDATE', {
-                        fileName: file.name,
-                        startLine: range.start.line,
-                        endLine: range.end.line
-                    });
-                }
-            }
+            if (editor) this.sendFollowUpdate(editor);
         }
         this.pushUIUpdate();
     }
@@ -1340,7 +1308,6 @@ export class SyncEngine {
      * @param fileName 대상 파일 이름.
      * @param startLine 호스트 화면의 시작 라인 번호.
      * @param endLine 호스트 화면의 끝 라인 번호.
-     * @returns {Promise<void>}
      */
     public async handleFollowUpdate(fileName: string, startLine: number, endLine: number): Promise<void> {
         try {
@@ -1379,7 +1346,6 @@ export class SyncEngine {
      * @param fileName 대상 파일 이름.
      * @param readonly 읽기 전용 모드 적용 여부.
      * @param targetPath 파일 절대 경로 (선택 사항).
-     * @returns {Promise<void>}
      */
     public async setEditorReadonly(fileName: string, readonly: boolean, targetPath?: string): Promise<void> {
         const file = this.fileStorageManager.sharedFiles.find(f => f.name === fileName);
@@ -1418,7 +1384,6 @@ export class SyncEngine {
     /**
      * SyncEngine의 모든 서브 매니저와 타이머, 연결 상태 변수를 초기화합니다.
      * @param skipUIUpdate UI 갱신 생략 여부 (기본값: false).
-     * @returns {void}
      */
     public reset(skipUIUpdate = false): void {
         this.fileStorageManager.reset();
@@ -1443,18 +1408,13 @@ export class SyncEngine {
             this.followMeThrottleTimer = undefined;
         }
         this.pendingFollowUpdate = undefined;
-        this.remoteTypingLocked.forEach((locked, fileName) => {
+        this.remoteTypingLocked.forEach((_locked, fileName) => {
             this.setEditorReadonly(fileName, false);
         });
         this.remoteTypingLocked.clear();
 
-        // 열려있는 모든 visible 에디터의 readonly 상태 리셋
-        vscode.window.visibleTextEditors.forEach(async editor => {
-            try {
-                await vscode.commands.executeCommand('workbench.action.files.resetActiveEditorReadonlyInSession');
-            } catch (e) {}
-        });
-        this.remoteTypingLocked.clear();
+        // 열려있는 에디터의 readonly 상태를 되돌린다(실패해도 무시).
+        void vscode.commands.executeCommand('workbench.action.files.resetActiveEditorReadonlyInSession').then(undefined, () => undefined);
 
         // 채팅 기록 리셋 및 팝업창 닫기
         this.chatHistory = [];

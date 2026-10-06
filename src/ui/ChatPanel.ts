@@ -1,7 +1,4 @@
-/**
- * @file ChatPanel.ts
- * @description P2P 실시간 협업 세션 내 참가자들 간의 다자간 채팅을 지원하는 Webview 패널입니다.
- */
+/** P2P 실시간 협업 세션 내 참가자들 간의 다자간 채팅을 지원하는 Webview 패널입니다. */
 
 import * as vscode from 'vscode';
 import { ChatMessage } from '../types';
@@ -77,7 +74,7 @@ export class ChatPanel {
         this._extensionUri = extensionUri;
 
         // HTML 세팅
-        this._updateHtml(chatHistory, myId, others);
+        this._renderWebview();
 
         // 패널 닫기 감지
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -106,7 +103,6 @@ export class ChatPanel {
      * @param chatHistory 갱신된 채팅 메시지 이력 배열.
      * @param myId 로컬 사용자 ID.
      * @param others 최신 참가자 명단 맵.
-     * @returns {void}
      */
     public updateHistory(chatHistory: ChatMessage[], myId: string, others: any): void {
         this._panel.webview.postMessage({
@@ -119,7 +115,6 @@ export class ChatPanel {
 
     /**
      * 채팅 패널과 등록된 모든 리소스를 해제합니다.
-     * @returns {void}
      */
     public dispose(): void {
         if (this.onClose) {
@@ -137,27 +132,13 @@ export class ChatPanel {
         }
     }
 
-    /**
-     * Webview의 HTML 본문을 갱신합니다.
-     * @param chatHistory 채팅 메시지 이력.
-     * @param myId 로컬 사용자 ID.
-     * @param others 참가자 맵.
-     * @returns {void}
-     */
-    private _updateHtml(chatHistory: ChatMessage[], myId: string, others: any): void {
-        this._panel.webview.html = this._getHtmlForWebview();
-    }
-
-    /**
-     * media 폴더의 정적 CSS, JS, HTML을 연결한 웹뷰 HTML을 생성합니다.
-     * @returns {string} 웹뷰 HTML 마크업
-     */
-    private _getHtmlForWebview(): string {
+    /** media 폴더의 정적 CSS/JS 를 연결한 웹뷰 HTML 을 적용합니다. */
+    private _renderWebview(): void {
         const webview = this._panel.webview;
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'chat', 'chat.css'));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'chat', 'chat.js'));
 
-        return `<!DOCTYPE html>
+        this._panel.webview.html = `<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">

@@ -1,13 +1,7 @@
-/**
- * @file HubManager.ts
- * @description 사이드바 Webview를 통해 P2P 연결 허브를 관리합니다.
- * P2P 작업을 위한 시그널링, 데이터 전송 및 연결 상태를 처리합니다.
- */
+/** 사이드바 Webview를 통해 P2P 연결 허브를 관리합니다. P2P 작업을 위한 시그널링, 데이터 전송 및 연결 상태를 처리합니다. */
 
 // Webview 관리를 위한 VS Code API
 import * as vscode from 'vscode';
-// 공유 P2P 메시지 타입
-import { P2PMessage } from '../types';
 // WebView(Chromium) 대신 Node에서 STUN 서버 주소를 미리 해석하기 위한 모듈
 import * as dns from 'dns';
 import { TurnService, TurnServerConfig } from './turn/TurnService';
@@ -69,11 +63,6 @@ export class HubManager {
      */
     private _startGeneration = 0;
 
-    /**
-     * HubManager의 새 인스턴스를 생성합니다.
-     */
-    constructor() {}
-
     /** Node에서 IP로 해석된 STUN 서버 URL 캐시 */
     private _stunServerUrls: string[] | null = null;
 
@@ -117,16 +106,14 @@ export class HubManager {
     /**
      * STUN 호스트 이름 해석을 미리 시작해 캐시를 데웁니다.
      * 확장 활성화 시 호출해 두면 방 입장 시 DNS 대기(느린 망에서 최대 1.5초)가 임계 경로에 남지 않습니다.
-     * @returns {void}
      */
     public warmUpStunResolution(): void {
-        void this.resolveStunServers().catch(() => {});
+        void this.resolveStunServers().catch(() => undefined);
     }
 
     /**
      * P2P 허브에 대응하는 사이드바 Webview 인스턴스를 설정합니다.
      * @param webview VS Code Webview 인스턴스.
-     * @returns {void}
      */
     public setWebview(webview: vscode.Webview): void {
         this._webview = webview;
@@ -145,7 +132,6 @@ export class HubManager {
      * @param initiator 현재 노드가 연결 시작자(Host)인지 여부.
      * @param roomName 자동 시그널링에 사용할 방 이름 (기본값: 빈 문자열).
      * @param peerId 피어의 고유 식별자 (기본값: 'default').
-     * @returns {void}
      */
     public createHub(initiator: boolean, roomName: string = '', peerId: string = 'default'): void {
         // peerId가 'none'이거나 'default'인 경우에만 WebRTC 엔진을 최초로 시작합니다.
@@ -195,9 +181,7 @@ export class HubManager {
             .catch(() => this.replyTurnCredentials(requestId, null));
     }
 
-    /**
-     * TURN 자격 증명 결과를 엔진으로 회신합니다. 발급 실패 시 수동 설정을 폴백으로 사용합니다.
-     */
+    /** TURN 자격 증명 결과를 엔진으로 회신합니다. 발급 실패 시 수동 설정을 폴백으로 사용합니다. */
     private replyTurnCredentials(requestId: string, turnServers: TurnServerConfig[] | null): void {
         let list = Array.isArray(turnServers) ? turnServers : [];
         if (list.length === 0) {
@@ -210,9 +194,7 @@ export class HubManager {
         this.sendToEngine({ type: 'turnCredentialsResult', requestId, turnServers: list });
     }
 
-    /**
-     * VS Code 설정의 수동 TURN 구성을 읽습니다. Worker 장애 시 폴백으로 사용합니다.
-     */
+    /** VS Code 설정의 수동 TURN 구성을 읽습니다. Worker 장애 시 폴백으로 사용합니다. */
     private getManualTurnConfig(): TurnServerConfig[] | null {
         const config = vscode.workspace.getConfiguration('p2pCodeShare');
         const turnUrl = config.get<string>('turnUrl') || '';
@@ -230,7 +212,6 @@ export class HubManager {
      * @param to 특정 피어 한 명을 대상으로 할 경우 지정하는 피어 ID.
      * @param targets 여러 피어에게 동일 메시지를 보낼 경우의 대상 피어 ID 목록.
      *               피어 수만큼 IPC를 반복하지 않고 단 1회의 IPC로 브로드캐스트합니다.
-     * @returns {void}
      */
     public sendToEngine(msg: any, to?: string, targets?: string[]): void {
         if (!this._webview) {
@@ -242,7 +223,6 @@ export class HubManager {
 
     /**
      * WebRTC 엔진에 정지 메시지를 전송하고 보관 중이던 SDP 정보를 모두 해제합니다.
-     * @returns {void}
      */
     public dispose(): void {
         ++this._startGeneration;
@@ -253,7 +233,6 @@ export class HubManager {
     /**
      * 특정 피어와의 WebRTC 연결을 해제하도록 Webview 엔진에 요청합니다.
      * @param peerId 연결을 종료할 피어 ID.
-     * @returns {void}
      */
     public disconnectPeer(peerId: string): void {
         this.sendToEngine({ type: 'disconnectPeer', peerId });
@@ -263,7 +242,6 @@ export class HubManager {
      * 수신된 WebRTC 시그널링 SDP/ICE Candidate를 엔진에 전달하여 적용합니다.
      * @param sdp 수신된 SDP 객체 또는 ICE Candidate 데이터.
      * @param peerId 대상 피어 ID.
-     * @returns {void}
      */
     public applySignal(sdp: any, peerId: string): void {
         // 특정 피어를 위해 Webview 엔진에 시그널 전송

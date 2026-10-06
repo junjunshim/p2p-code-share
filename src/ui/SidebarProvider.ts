@@ -1,8 +1,4 @@
-/**
- * @file SidebarProvider.ts
- * @description 확장 프로그램 사이드바를 위한 WebviewViewProvider를 구현합니다.
- * 사이드바 Webview와 확장 프로그램 호스트 간의 UI 상호작용 및 통신을 처리합니다.
- */
+/** 확장 프로그램 사이드바를 위한 WebviewViewProvider를 구현합니다. 사이드바 Webview와 확장 프로그램 호스트 간의 UI 상호작용 및 통신을 처리합니다. */
 
 // VS Code API
 import * as vscode from 'vscode';
@@ -40,7 +36,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public onSignal?: (sdp: any, peerId?: string) => void;
 
     /** 작업 취소 시 호출되는 콜백 */
-    public onCancel?: (data?: any) => void;
+    public onCancel?: () => void;
 
     /** 사용자 이름 변경 요청 시 호출되는 콜백 */
     public onRename?: () => void;
@@ -99,9 +95,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     /** 데코레이션 표시/숨김 토글 시 호출되는 콜백 */
     public onToggleShowDecorations?: (show: boolean) => void;
 
-    /**
-     * 현재 바인딩된 Webview 인스턴스를 반환합니다.
-     */
+    /** 현재 바인딩된 Webview 인스턴스를 반환합니다. */
     public get webview(): vscode.Webview | undefined {
         return this._view?.webview;
     }
@@ -115,7 +109,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     /**
      * 사이드바 WebviewView를 해결하고 HTML 및 이벤트 리스너를 바인딩합니다.
      * @param webviewView VS Code에 의해 생성된 WebviewView 인스턴스.
-     * @returns {void}
      */
     public resolveWebviewView(webviewView: vscode.WebviewView): void {
         this._view = webviewView;
@@ -190,9 +183,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * 웹뷰가 준비되기 전 대기열에 쌓인 메시지들을 순차적으로 전송합니다.
-     */
+    /** 웹뷰가 준비되기 전 대기열에 쌓인 메시지들을 순차적으로 전송합니다. */
     private flushPendingMessages(): void {
         if (!this._view || !this._isReady) return;
         while (this._pendingMessageQueue.length > 0) {
@@ -207,7 +198,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
      * 사이드바 웹뷰로 상태 갱신 메시지를 전송합니다.
      * 웹뷰가 아직 준비되지 않은 경우 대기열에 적재하여 누락을 방지합니다.
      * @param msg 웹뷰로 전달할 데이터 메시지 객체.
-     * @returns {void}
      */
     public postMessage(msg: any): void {
         if (!this._view || !this._isReady) {
