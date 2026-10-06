@@ -236,6 +236,16 @@ input {
     background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.05));
     border-color: var(--vscode-list-hoverBorder, transparent);
 }
+/* 접속자 목록이 길어지면 내부 스크롤 적용. #users 는 아코디언이 인라인 max-height 를
+   관리하므로 충돌을 피하기 위해 항목 전용 래퍼(.users-scroll)에 건다. */
+.users-scroll {
+    overflow-y: hidden;
+}
+.users-scroll.scrollable {
+    max-height: 320px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
 .user-name {
     flex: 1;
     overflow: hidden;

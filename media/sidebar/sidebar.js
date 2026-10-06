@@ -455,20 +455,52 @@ function renderRequests(m) {
 }
 
 /**
+ * 접속자 목록에 내부 스크롤을 적용하기 시작하는 인원 수 (이 값을 초과하면 스크롤)
+ */
+const USER_LIST_SCROLL_THRESHOLD = 8;
+
+/**
 * 접속해 있는 참여자 목록을 화면에 렌더링합니다.
 * 30명 동시 접속 시 스크롤 튐 및 DOM 재생성 과부하를 방지하기 위해 Diff 갱신 적용
+* 표시 순서: 호스트 -> 나 -> 나머지(이름 내림차순)
 */
 function renderUsers(m) {
     const udiv = document.getElementById('users');
     if (!udiv || !m.participants || !m.participants.others) return;
-    
+
+    // 스크롤은 아코디언이 인라인 max-height 로 관리하는 #users 에 직접 걸면 충돌하므로,
+    // 목록 항목 전용 내부 래퍼를 두고 거기에 적용한다.
+    let listWrap = udiv.querySelector('.users-scroll');
+    if (!listWrap) {
+        listWrap = document.createElement('div');
+        listWrap.className = 'users-scroll';
+        udiv.appendChild(listWrap);
+    }
+
     const myId = m.participants.myId;
     const isMeHost = myId === 'host';
     const others = m.participants.others;
+    const isMeId = (id) => (id === myId || (id === 'default' && myId !== 'host'));
     const currentPeerIds = new Set(Object.keys(others));
 
+    // 표시 순서 계산: 호스트 -> 나 -> 나머지(이름 내림차순)
+    const orderedIds = [];
+    if (others['host']) orderedIds.push('host');
+    Object.keys(others).forEach(id => {
+        if (id !== 'host' && isMeId(id)) orderedIds.push(id);
+    });
+    const restIds = Object.keys(others).filter(id => id !== 'host' && !isMeId(id));
+    restIds.sort((a, b) => {
+        const nameA = (others[a] && others[a].name) || '';
+        const nameB = (others[b] && others[b].name) || '';
+        // 이름 내림차순(숫자 포함 자연 정렬), 이름이 같으면 id 내림차순으로 순서를 고정한다.
+        const byName = nameB.localeCompare(nameA, undefined, { numeric: true, sensitivity: 'base' });
+        return byName !== 0 ? byName : b.localeCompare(a);
+    });
+    orderedIds.push(...restIds);
+
     // 1. 퇴장한 피어의 DOM 엘리먼트 제거
-    const existingElements = udiv.querySelectorAll('.user-item[data-peer-id]');
+    const existingElements = listWrap.querySelectorAll('.user-item[data-peer-id]');
     existingElements.forEach(el => {
         const peerId = el.getAttribute('data-peer-id');
         if (peerId && !currentPeerIds.has(peerId)) {
@@ -478,18 +510,18 @@ function renderUsers(m) {
 
     // 2. 피어 목록 순회하며 신규 추가 또는 변경된 피어만 부분 갱신
     Object.entries(others).forEach(([id, data]) => {
-        const isMe = (id === myId || (id === 'default' && myId !== 'host'));
+        const isMe = isMeId(id);
         const isHost = (id === 'host');
         const name = data.name || '';
         const canEdit = !!data.globalCanEdit;
         const initials = name ? name.substring(0, 2) : '??';
 
-        let existingItem = udiv.querySelector('.user-item[data-peer-id="' + id + '"]');
+        let existingItem = listWrap.querySelector('.user-item[data-peer-id="' + id + '"]');
         if (!existingItem) {
             existingItem = document.createElement('div');
             existingItem.className = 'user-item';
             existingItem.setAttribute('data-peer-id', id);
-            udiv.appendChild(existingItem);
+            listWrap.appendChild(existingItem);
         }
 
         // 상태 데이터 변경 여부를 판별하기 위한 지문(Fingerprint)
@@ -534,6 +566,22 @@ function renderUsers(m) {
             '<div class="user-name">' + nHTML + '</div>' +
             '<div class="action-area">' + controlButtonsHTML + '</div>';
     });
+
+    // 3. 표시 순서(호스트 -> 나 -> 나머지)대로 DOM 재배치 (이미 순서가 맞으면 건드리지 않음)
+    const currentOrder = Array.from(listWrap.querySelectorAll('.user-item[data-peer-id]'))
+        .map(el => el.getAttribute('data-peer-id'));
+    const orderChanged = currentOrder.length !== orderedIds.length
+        || currentOrder.some((id, index) => id !== orderedIds[index]);
+    if (orderChanged) {
+        // appendChild 는 기존 노드를 이동시키므로, 원하는 순서대로 append 하면 최종 순서가 보장된다.
+        orderedIds.forEach(id => {
+            const el = listWrap.querySelector('.user-item[data-peer-id="' + id + '"]');
+            if (el) listWrap.appendChild(el);
+        });
+    }
+
+    // 4. 인원이 임계치를 넘으면 목록에 내부 스크롤 적용
+    listWrap.classList.toggle('scrollable', orderedIds.length > USER_LIST_SCROLL_THRESHOLD);
 }
 
 /**
