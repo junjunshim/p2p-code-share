@@ -364,18 +364,31 @@ function updateBadge(m) {
     }
 }
 
+/** 직전에 렌더링한 참여 요청 목록 서명. 동일하면 DOM 재구성을 생략합니다. */
+let lastRequestsFingerprint = '';
+
 /** 대기 중인 참여 요청 목록을 화면에 렌더링합니다. */
 function renderRequests(m) {
+    const reqs = (m.participants && m.participants.joinRequests) || [];
+    const isMeHost = m.participants.myId === 'host';
+    const hasRequests = isMeHost && reqs.length > 0;
+
+    // 요청 목록(피어/이름)과 표시 상태가 직전과 같으면 매 UI 틱마다 목록을 다시 그리지 않는다.
+    const fingerprint = hasRequests
+        ? 'Y|' + reqs.map(r => r.peerId + ':' + r.name).join(',')
+        : 'N';
+    if (fingerprint === lastRequestsFingerprint) return;
+    lastRequestsFingerprint = fingerprint;
+
     const btnShowRequests = document.getElementById('btnShowRequests');
     const reqCountDisp = document.getElementById('reqCount');
-    const isMeHost = m.participants.myId === 'host';
-    if (isMeHost && m.participants.joinRequests && m.participants.joinRequests.length > 0) {
+    if (hasRequests) {
         setVisible('btnShowRequests', true);
-        if (reqCountDisp) reqCountDisp.innerText = m.participants.joinRequests.length;
+        if (reqCountDisp) reqCountDisp.innerText = reqs.length;
         const rl = document.getElementById('requestsList');
         if (rl) {
             rl.innerHTML = '';
-            m.participants.joinRequests.forEach(req => {
+            reqs.forEach(req => {
                 const item = document.createElement('div');
                 item.className = 'request-item';
                 item.innerHTML = '<div class="request-header">' +

@@ -49,6 +49,9 @@
     const SEND_NOT_CONNECTED_DELAY_MS = 100;
     const SEND_ITEM_TIMEOUT_MS = 30000;
     const CHUNK_SIZE = 16384; // DataChannel 1회 전송 안전 MTU(16KB). 초과분은 청크로 분할한다.
+    // 인코더/디코더는 stateless 이므로 매 패킷마다 새로 만들지 않고 재사용한다.
+    const textEncoder = new TextEncoder();
+    const textDecoder = new TextDecoder();
 
     /**
      * 큐에 전송 항목을 넣고 즉시 드레인을 시도합니다.
@@ -1151,11 +1154,11 @@
         });
 
         p.on('data', data => {
-            const raw = new Uint8Array(data);
+            const raw = data instanceof Uint8Array ? data : new Uint8Array(data);
             // 하트비트(1바이트 0xFF)는 데이터가 아니므로 무시
             if (raw.length === 1 && raw[0] === 255) return;
 
-            const text = new TextDecoder().decode(raw);
+            const text = textDecoder.decode(raw);
             // 분할 전송된 대용량 패킷이면 청크를 모아 원본 JSON 문자열로 복원한다. (O(1) prefix 검사)
             if (text.startsWith('{"__isChunk":true,')) {
                 try {
@@ -1802,7 +1805,7 @@
             // 16KB 단위로 분할해 보내고 수신 측에서 재조립한다. (파일 스냅샷 등 대용량 페이로드)
             // 소형 패킷은 단일 전송한다(타자, 커서, 핑퐁, 채팅 등).
             if (rawStr.length <= CHUNK_SIZE) {
-                dispatchPeerPayload(m, new TextEncoder().encode(rawStr));
+                dispatchPeerPayload(m, textEncoder.encode(rawStr));
             } else {
                 const transferId = 'c_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
                 const totalChunks = Math.ceil(rawStr.length / CHUNK_SIZE);
@@ -1816,7 +1819,7 @@
                         data: chunkData
                     });
                     // 청크는 같은 transferId 그룹으로 묶어, 적체로 전송이 지연되면 묶음 단위로 중단/정리한다.
-                    dispatchPeerPayload(m, new TextEncoder().encode(chunkPacket), transferId);
+                    dispatchPeerPayload(m, textEncoder.encode(chunkPacket), transferId);
                 }
             }
         }

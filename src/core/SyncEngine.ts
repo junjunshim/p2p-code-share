@@ -99,8 +99,12 @@ export class SyncEngine {
 
     /** 사이드바 UI 갱신 쓰로틀/디바운스를 위한 타이머 */
     private uiUpdateTimeout?: NodeJS.Timeout;
-    /** 직전에 전송된 UI 페이로드 직렬화 해시 (중복 IPC 전송 방지) */
-    private lastUIPayloadString?: string;
+    /** 마지막 전송 이후 UI 상태가 바뀌었는지 여부. 변동이 없으면 페이로드 전송을 생략합니다. */
+    private uiDirty = false;
+    /** 직전에 설정한 isActiveFileShared 컨텍스트 값 (동일 값 setContext 반복 방지) */
+    private lastActiveFileShared?: boolean;
+    /** 직전에 채팅 패널로 밀어 넣은 히스토리/참가자 이름 서명 (변동 없으면 전체 재렌더 생략) */
+    private lastChatPushKey?: string;
 
     /** Follow-Me 모드 스크롤 브로드캐스트 쓰로틀링 타이머 및 대기 버퍼 */
     private followMeThrottleTimer?: NodeJS.Timeout;
@@ -224,7 +228,7 @@ export class SyncEngine {
                     this.unreadChatCount++;
                 }
 
-                this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+                this.pushChatHistoryIfChanged();
                 this.pushUIUpdate(); // 사이드바 버튼 배지 갱신을 위해 UI 강제 업데이트
             }
         }
@@ -937,6 +941,7 @@ export class SyncEngine {
      * @param immediate true인 경우 디바운스 없이 즉시 UI를 갱신합니다.
      */
     public pushUIUpdate(immediate: boolean = false) { 
+        this.uiDirty = true;
         if (immediate) {
             if (this.uiUpdateTimeout) {
                 clearTimeout(this.uiUpdateTimeout);
@@ -956,9 +961,35 @@ export class SyncEngine {
         }, 100);
     }
 
+    /**
+     * 채팅 히스토리나 참가자 이름 서명이 직전과 다를 때만 채팅 패널에 히스토리를 밀어 넣습니다.
+     * 메시지/이름 변경이 없는데도 매 UI 틱마다 전체 히스토리 DOM 을 다시 그리는 비용을 없앱니다.
+     */
+    private pushChatHistoryIfChanged(): void {
+        if (!this.chatPanel) return;
+
+        const history = this.chatHistory;
+        const lastId = history.length > 0 ? history[history.length - 1].id : '';
+        const participants = this.participantManager.participants;
+        // 이름 변경은 히스토리 길이 변화 없이도 표시를 바꾸므로 참가자 이름까지 서명에 포함한다.
+        let names = '';
+        for (const id of Object.keys(participants)) {
+            names += id + ':' + (participants[id]?.name || '') + ';';
+        }
+        const key = history.length + '|' + lastId + '|' + this.myId + '|' + names;
+        if (key === this.lastChatPushKey) return;
+
+        this.lastChatPushKey = key;
+        this.chatPanel.updateHistory(history, this.myId, participants);
+    }
+
     private executePushUIUpdate() {
-        // 닉네임 동적 변경 실시간 갱신을 위해 채팅방 업데이트
-        this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+        // pushUIUpdate 가 변경 시에만 예약하므로 보통 true 이다. 지연 콜백 등 예외 상황을 방어한다.
+        if (!this.uiDirty) return;
+        this.uiDirty = false;
+
+        // 닉네임 동적 변경 실시간 갱신을 위해 채팅방 업데이트(변동이 있을 때만)
+        this.pushChatHistoryIfChanged();
 
         const visibleDecos = this.decorationManager.decorations.filter(d => {
             if (d.visibility === 'host') {
@@ -991,11 +1022,9 @@ export class SyncEngine {
             joinStageText: this.joinStageText
         };
 
-        const serialized = JSON.stringify(payload);
-        if (this.lastUIPayloadString !== serialized) {
-            this.lastUIPayloadString = serialized;
-            this.updateUI(payload);
-        }
+        // 직렬화 기반 중복 비교를 제거해 매 UI 틱마다 발생하던 전체 JSON.stringify 비용을 없앤다.
+        // (렌더는 pushUIUpdate 가 실제 변경 시에만 예약하므로 불필요한 재전송이 거의 없다)
+        this.updateUI(payload);
         this.updateActiveFileSharedContext();
     }
 
@@ -1003,6 +1032,8 @@ export class SyncEngine {
     public updateActiveFileSharedContext() {
         const editor = vscode.window.activeTextEditor;
         const isShared = editor ? this.fileStorageManager.sharedFiles.some(f => isPathEqual(f.path, editor.document.uri.fsPath)) : false;
+        if (this.lastActiveFileShared === isShared) return;
+        this.lastActiveFileShared = isShared;
         vscode.commands.executeCommand('setContext', 'p2pCodeShare.isActiveFileShared', isShared);
     }
 
@@ -1283,7 +1314,7 @@ export class SyncEngine {
         this.sendMessage('CHAT_MESSAGE', { chatMessage });
         
         // 내 로컬 채팅창 갱신
-        this.chatPanel?.updateHistory(this.chatHistory, this.myId, this.participantManager.participants);
+        this.pushChatHistoryIfChanged();
         this.pushUIUpdate();
     }
 
@@ -1435,7 +1466,8 @@ export class SyncEngine {
         this.initialName = ''; 
         this.isSetupMode = false; 
         this.isFollowMeMode = false; 
-        this.lastUIPayloadString = undefined;
+        this.uiDirty = false;
+        this.lastChatPushKey = undefined;
         TurnService.get().clearCache();
 
         if (!skipUIUpdate) {

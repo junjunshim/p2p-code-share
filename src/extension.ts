@@ -34,6 +34,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 방 입장 임계 경로에서 STUN DNS 대기(느린 망에서 최대 1.5초)를 제거하기 위해 미리 해석해 둡니다.
     hub.warmUpStunResolution();
+    // setContext 는 값이 실제로 바뀐 경우에만 호출한다(매 UI 틱 명령 실행 비용 제거).
+    let lastContextIsConnected: boolean | undefined;
+    let lastContextIsHost: boolean | undefined;
     const engine = new SyncEngine(hub, context, (state) => {
         // 로그 메시지는 엔진 웹뷰 및 OutputChannel로 전달하고 불필요한 setContext 및 사이드바 렌더링을 즉시 건너뜀
         if (state.type === 'log') {
@@ -42,9 +45,15 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        // P2P 연결 상태에 따라 VS Code 컨텍스트 상태 업데이트
-        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
-        vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
+        // P2P 연결 상태에 따라 VS Code 컨텍스트 상태 업데이트(변동 시에만)
+        if (lastContextIsConnected !== state.isConnected) {
+            lastContextIsConnected = state.isConnected;
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isConnected', state.isConnected);
+        }
+        if (lastContextIsHost !== engine.isHost) {
+            lastContextIsHost = engine.isHost;
+            vscode.commands.executeCommand('setContext', 'p2pCodeShare.isHost', engine.isHost);
+        }
         
         // 상태 업데이트를 사이드바에 알림
         sidebar.postMessage({
