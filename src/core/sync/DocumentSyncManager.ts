@@ -31,6 +31,13 @@ export class DocumentSyncManager {
     private static readonly RECENT_TARGET_LIMIT = 8;
 
     /**
+     * 확장이 applyEdit 에 넘긴 원격 편집 지문.
+     * VS Code 는 이 편집을 그대로 되돌려 변경 이벤트로 전달하므로, 문서 전체를 다시 만들지 않고
+     * (range, text) 일치만으로 에코를 확정할 수 있다. 지문은 다음 이벤트 1건에만 유효하다.
+     */
+    private pendingRemoteApply = new Map<string, { startLine: number; startChar: number; endLine: number; endChar: number; text: string }>();
+
+    /**
      * 파일별 최신 Yjs 텍스트(LF) 캐시.
      * Yjs 는 편집이 누적되면 item 이 쪼개져 toString() 이 O(n) 전체 재구성이 되므로,
      * 입력/커서/데코레이션 경로에서 반복 호출하지 않도록 문자열을 재사용한다. ydoc update 마다 무효화한다.
@@ -97,11 +104,25 @@ export class DocumentSyncManager {
      * 다르면 사용자 편집으로 간주하여 절대 버리지 않습니다(호출측에서 Yjs 에 반영).
      * @param fileName 대상 파일 이름.
      * @param doc 변경이 발생한 VS Code 문서.
+     * @param contentChanges 이번 변경 이벤트의 변경 내역(applyEdit 지문 대조용, 생략하면 내용 비교만 수행).
      * @returns 에코(원격 반영 결과)이면 true.
      */
-    public isRemoteEcho(fileName: string, doc: vscode.TextDocument): boolean {
+    public isRemoteEcho(fileName: string, doc: vscode.TextDocument, contentChanges?: readonly vscode.TextDocumentContentChangeEvent[]): boolean {
         const ytext = this.yTexts.get(fileName);
         if (!ytext) return false;
+
+        // 확장이 방금 applyEdit 에 넘긴 편집이 그대로 되돌아온 경우(에코)는 지문 비교만으로 확정한다.
+        // 지문은 이번 이벤트 1건에만 유효하므로 먼저 소비하고, 맞지 않으면 아래 전체 비교로 폴백한다.
+        const pending = this.pendingRemoteApply.get(fileName);
+        if (pending) {
+            this.pendingRemoteApply.delete(fileName);
+            const change = contentChanges && contentChanges.length === 1 ? contentChanges[0] : undefined;
+            if (change && change.text === pending.text
+                && change.range.start.line === pending.startLine && change.range.start.character === pending.startChar
+                && change.range.end.line === pending.endLine && change.range.end.character === pending.endChar) {
+                return true;
+            }
+        }
 
         // Yjs 텍스트 삽입은 CRLF 를 차단하므로 LF 가 보장된다. CR 이 없으면 정규화(정규식 스캔)를 생략한다.
         const yjsText = this.getYjsTextFor(fileName, ytext);
@@ -436,11 +457,21 @@ export class DocumentSyncManager {
             targets.splice(0, targets.length - DocumentSyncManager.RECENT_TARGET_LIMIT);
         }
         this.recentRemoteTargets.set(fileName, targets);
+
+        // 이 편집이 그대로 되돌아오는 변경 이벤트를 O(1)로 식별하기 위한 지문(다음 이벤트 1건만 유효).
+        this.pendingRemoteApply.set(fileName, {
+            startLine: range.start.line,
+            startChar: range.start.character,
+            endLine: range.end.line,
+            endChar: range.end.character,
+            text: replaceText
+        });
         try {
             const edit = new vscode.WorkspaceEdit();
             edit.replace(doc.uri, range, replaceText);
             await vscode.workspace.applyEdit(edit);
         } catch (e) {
+            this.pendingRemoteApply.delete(fileName);
             this.engine.logToUI(`applyEdit failed for ${fileName}: ${e}`);
         } finally {
             this.engine.decorationManager.debouncedRecalculateDecorations(fileName, filePath);
@@ -499,6 +530,7 @@ export class DocumentSyncManager {
             this.yTexts.delete(fileName);
         }
         this.recentRemoteTargets.delete(fileName);
+        this.pendingRemoteApply.delete(fileName);
         this.editorUpdateQueues.delete(fileName);
         this.yjsTextCache.delete(fileName);
     }
@@ -515,6 +547,7 @@ export class DocumentSyncManager {
         this.yDocs.clear();
         this.yTexts.clear();
         this.recentRemoteTargets.clear();
+        this.pendingRemoteApply.clear();
         this.editorUpdateQueues.clear();
         this.pendingRemoteUpdates.clear();
         this.yjsTextCache.clear();

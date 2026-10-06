@@ -721,8 +721,8 @@ export class SyncEngine {
             }
 
             // 확장이 적용한 원격 내용(에코)이면 Yjs 에 되돌려 반영하지 않는다 (에코 폭주 원천 차단).
-            // VS Code 는 applyEdit 완료 뒤에 변경 이벤트를 전달하므로, 플래그가 아니라 내용 비교로 판정한다.
-            if (this.documentSyncManager.isRemoteEcho(file.name, e.document)) {
+            // applyEdit 지문 -> 내용 비교 순으로 판정하므로 변경 내역을 함께 넘긴다.
+            if (this.documentSyncManager.isRemoteEcho(file.name, e.document, e.contentChanges)) {
                 return;
             }
 
